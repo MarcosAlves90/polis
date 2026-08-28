@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://polis.dev/spec/v1/evidence-event.schema.json",
-  "title": "POLIS Evidence Event v1 alpha.7",
+  "title": "POLIS Evidence Event v1",
   "$defs": {
     "gate": {
       "enum": [

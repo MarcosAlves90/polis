@@ -1,4 +1,4 @@
-# POLIS Package Specification v1 — alpha.7
+# POLIS Package Specification v1 — 4.0.0
 
 This specification is normative for `.polis` package bytes and machine-level runtime semantics. The End-to-End Guide references this contract and MUST NOT redefine it.
 

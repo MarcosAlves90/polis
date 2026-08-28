@@ -18,6 +18,7 @@ import (
 
 	"github.com/MarcosAlves90/polis/internal/changeexec"
 	"github.com/MarcosAlves90/polis/internal/packageverify"
+	"github.com/MarcosAlves90/polis/internal/pathguard"
 	"github.com/MarcosAlves90/polis/internal/policyexec"
 	"github.com/MarcosAlves90/polis/spec"
 )
@@ -36,6 +37,22 @@ type Result struct {
 	SHA256     string
 	BaseCommit string
 	TargetTree string
+}
+
+const (
+	gitRevParse = "rev-parse"
+	gitCached   = "--cached"
+)
+
+type isolatedValidation struct {
+	repo            string
+	baseCommit      string
+	targetTree      string
+	patch           []byte
+	regressionPatch []byte
+	change          spec.ChangeContract
+	policy          spec.Policy
+	evidence        io.Writer
 }
 
 func Build(ctx context.Context, opts Options) (Result, error) {
@@ -69,14 +86,14 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	} else if opts.RegressionPatch != "" {
 		return Result{}, errors.New("non-defect build must not provide regression-patch")
 	}
-	objectFormat, err := gitOutput(ctx, repo, nil, nil, "rev-parse", "--show-object-format")
+	objectFormat, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "--show-object-format")
 	if err != nil {
 		return Result{}, fmt.Errorf("detect Git object format: %w", err)
 	}
 	if objectFormat != "sha1" && objectFormat != "sha256" {
 		return Result{}, fmt.Errorf("unsupported Git object format %q", objectFormat)
 	}
-	baseCommit, err := gitOutput(ctx, repo, nil, nil, "rev-parse", "HEAD")
+	baseCommit, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "HEAD")
 	if err != nil {
 		return Result{}, fmt.Errorf("resolve HEAD: %w", err)
 	}
@@ -104,7 +121,17 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	var evidence bytes.Buffer
-	if err := validateIsolated(ctx, repo, baseCommit, targetTree, patch, regressionPatch, changeContract, policy, &evidence); err != nil {
+	validation := isolatedValidation{
+		repo:            repo,
+		baseCommit:      baseCommit,
+		targetTree:      targetTree,
+		patch:           patch,
+		regressionPatch: regressionPatch,
+		change:          changeContract,
+		policy:          policy,
+		evidence:        &evidence,
+	}
+	if err := validateIsolated(ctx, validation); err != nil {
 		return Result{}, err
 	}
 
@@ -160,7 +187,7 @@ func resolveRepo(ctx context.Context, repo string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve repo path: %w", err)
 	}
-	root, err := gitOutput(ctx, abs, nil, nil, "rev-parse", "--show-toplevel")
+	root, err := gitOutput(ctx, abs, nil, nil, gitRevParse, "--show-toplevel")
 	if err != nil {
 		return "", fmt.Errorf("not a Git worktree: %w", err)
 	}
@@ -172,7 +199,7 @@ func resolveRepo(ctx context.Context, repo string) (string, error) {
 }
 
 func requireCleanIndex(ctx context.Context, repo string) error {
-	cmd := exec.CommandContext(ctx, "git", "-C", repo, "diff", "--cached", "--quiet", "HEAD", "--")
+	cmd := exec.CommandContext(ctx, "git", "-C", repo, "diff", gitCached, "--quiet", "HEAD", "--")
 	err := cmd.Run()
 	if err == nil {
 		return nil
@@ -224,14 +251,23 @@ func buildTargetWithTemporaryIndex(ctx context.Context, repo, baseCommit string)
 	if err != nil {
 		return "", nil, fmt.Errorf("write target tree: %w", err)
 	}
-	patch, err := gitBytes(ctx, repo, env, nil, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--find-renames", baseCommit, "--")
+	patch, err := gitBytes(ctx, repo, env, nil, "diff", gitCached, "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--find-renames", baseCommit, "--")
 	if err != nil {
 		return "", nil, fmt.Errorf("generate patch: %w", err)
 	}
 	return targetTree, patch, nil
 }
 
-func validateIsolated(ctx context.Context, repo, baseCommit, targetTree string, patch, regressionPatch []byte, change spec.ChangeContract, policy spec.Policy, evidence io.Writer) error {
+func validateIsolated(ctx context.Context, validation isolatedValidation) error {
+	repo := validation.repo
+	baseCommit := validation.baseCommit
+	targetTree := validation.targetTree
+	patch := validation.patch
+	regressionPatch := validation.regressionPatch
+	change := validation.change
+	policy := validation.policy
+	evidence := validation.evidence
+
 	var redPaths map[string]struct{}
 	if change.Kind == spec.ChangeKindDefect {
 		redWorktree, cleanup, err := detachedWorktree(ctx, repo, baseCommit, "polis-red-worktree-*")
@@ -284,9 +320,9 @@ func validateIsolated(ctx context.Context, repo, baseCommit, targetTree string, 
 	if err := changeexec.ExecuteTarget(change, worktree, evidence); err != nil {
 		return err
 	}
-	validation := policyexec.Execute(policy, worktree, evidence)
-	if validation.Overall != spec.StatusPass {
-		return fmt.Errorf("project policy validation %s", validation.Overall)
+	policyValidation := policyexec.Execute(policy, worktree, evidence)
+	if policyValidation.Overall != spec.StatusPass {
+		return fmt.Errorf("project policy validation %s", policyValidation.Overall)
 	}
 	return nil
 }
@@ -309,7 +345,7 @@ func detachedWorktree(ctx context.Context, repo, baseCommit, pattern string) (st
 }
 
 func changedIndexPaths(ctx context.Context, worktree string) (map[string]struct{}, error) {
-	b, err := gitBytes(ctx, worktree, nil, nil, "diff", "--cached", "--name-only", "-z", "HEAD", "--")
+	b, err := gitBytes(ctx, worktree, nil, nil, "diff", gitCached, "--name-only", "-z", "HEAD", "--")
 	if err != nil {
 		return nil, fmt.Errorf("list changed paths: %w", err)
 	}
@@ -391,8 +427,11 @@ func readExternalInput(repo, filename string, max int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	rel, err := filepath.Rel(repo, abs)
-	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+	contained, err := pathguard.Contains(repo, abs)
+	if err != nil {
+		return nil, fmt.Errorf("resolve input boundary: %w", err)
+	}
+	if contained {
 		return nil, errors.New("input must be outside target worktree")
 	}
 	info, err := os.Stat(abs)

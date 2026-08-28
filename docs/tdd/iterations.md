@@ -213,3 +213,60 @@ The reconstructed alpha.7 slice was re-executed from the frozen alpha.6 source b
 The first alpha.7 normative measurement remained below threshold even though per-package statement coverage was higher. Investigation established that the canonical Go coverage producer `go test ./... -coverprofile=...` does not instrument all production packages while cross-package integration tests execute them. The canonical Go profile was therefore changed to `go test -coverpkg=./... ./... -coverprofile=.polis/coverage.out` so the project-wide suite instruments all project packages.
 
 Even after that correction, the measured POLIS line coverage was initially `78.062804069%`, correctly FAIL under the unchanged strict `>80` gate. Additional tests were added for consumer-apply safety helpers and evidence-tampering failure classes. The next observed runtime-owned measurement was `1812/2261 = 80.141530296%`, PASS. The threshold and coverage algorithm were not weakened.
+
+
+## SDD-0009 — physical path boundary
+
+### Red
+
+`go test ./internal/pathguard` failed to compile because `Contains` and canonical physical-path resolution did not exist. This represents the macOS-observed class where lexical aliases such as `/var/...` and `/private/var/...` can denote the same worktree while `filepath.Rel` alone classifies them differently.
+
+### Green
+
+- one shared `internal/pathguard` implementation canonicalizes existing symlinks and the nearest existing ancestor of missing output paths;
+- packagebuild, redcapture, and coverage report containment use the shared physical boundary;
+- alias regression tests pass;
+- existing path-escape behavior remains fail-closed.
+
+## SDD-0010 — V4.0.0 finalization
+
+The CLI and Guide version were promoted to 4.0.0 without changing package format v2, Project Policy v2, or Change Contract v1. Platform claims remain limited to environments actually executed.
+
+## SDD-0011 — portable pathguard absolute-path error validation
+
+### Red
+
+Consumer execution of POLIS V3.1 revision V005 on macOS reached isolated validation and failed `TestCanonicalPropagatesAbsolutePathResolutionFailure`: the test expected `filepath.Abs` to fail after deleting the process current directory, but macOS returned successfully. This demonstrated a non-portable test oracle rather than a proven production containment failure.
+
+### Green
+
+- `canonical` delegates only its absolute-path resolution dependency to `canonicalWithAbs`; production behavior still supplies `filepath.Abs`.
+- the error branch is exercised with a deterministic injected resolver failure;
+- the test no longer changes or deletes the process current working directory and requires no OS-specific skip.
+
+## Iteration — cross-toolchain coverage margin
+
+**Red observed:** V013 executed on macOS/Go 1.27 reached the project-wide coverage gate with `1723 / 2177 = 79.145613229215%`; no real patch application occurred, as required by failure atomicity.
+
+**Green change:** Added deterministic tests covering previously unexercised production failure branches in `internal/packagebuild`, `internal/packageapply`, and `spec`. No coverage threshold, parser, exclusion, or production behavior was weakened.
+
+**Producer evidence:** combining the complete prior suite evidence with the new focused executions covers `1900 / 2314 = 82.10890233362143%` of production lines on Linux/Go 1.23.2. The consumer remains authoritative for its own native toolchain and must independently pass `>80.0` before apply.
+
+## SDD-0013 — Sonar maintainability cleanup
+
+### Static-analysis Red
+
+The user reported Sonar findings `go:S1192` for repeated `rev-parse`/`--cached` literals and `go:S107` for the nine-parameter `validateIsolated` helper.
+
+The first refactor attempt also produced an executable Red in `internal/packagebuild`: the new `validation` input name collided with an existing local `validation := policyexec.Execute(...)`, causing compilation failure. This was not bypassed or weakened.
+
+### Green
+
+- package-local Git argv constants remove repeated literals;
+- `validateIsolated` now accepts `context.Context` plus one private `isolatedValidation` value;
+- the conflicting local policy result was renamed `policyValidation`;
+- affected tests pass;
+- all project packages pass when executed in bounded package runs;
+- changed packages pass `go test -race`;
+- `gofmt`, `go vet`, and `go mod verify` pass;
+- conservative merged project-wide line coverage is `1921/2333 = 82.340334333476%`, above the unchanged strict `>80.0%` threshold.

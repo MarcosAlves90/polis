@@ -17,7 +17,7 @@ import (
 	"github.com/MarcosAlves90/polis/internal/redcapture"
 )
 
-const version = "4.0.0-alpha.7"
+const version = "4.0.0"
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 

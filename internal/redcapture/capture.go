@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/MarcosAlves90/polis/internal/changeexec"
+	"github.com/MarcosAlves90/polis/internal/pathguard"
 	"github.com/MarcosAlves90/polis/spec"
 )
 
@@ -27,6 +28,8 @@ type Result struct {
 	Path   string
 	SHA256 string
 }
+
+const gitRevParse = "rev-parse"
 
 func Capture(ctx context.Context, opts Options) (Result, error) {
 	if opts.Repo == "" || opts.Contract == "" || opts.Out == "" {
@@ -51,7 +54,11 @@ func Capture(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if inside(repo, outAbs) {
+	contained, err := pathguard.Contains(repo, outAbs)
+	if err != nil {
+		return Result{}, fmt.Errorf("resolve output boundary: %w", err)
+	}
+	if contained {
 		return Result{}, errors.New("output must be outside target worktree")
 	}
 	if _, err := os.Lstat(outAbs); err == nil {
@@ -62,7 +69,7 @@ func Capture(ctx context.Context, opts Options) (Result, error) {
 	if err := requireCleanIndex(ctx, repo); err != nil {
 		return Result{}, err
 	}
-	head, err := gitOutput(ctx, repo, nil, nil, "rev-parse", "HEAD")
+	head, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "HEAD")
 	if err != nil {
 		return Result{}, err
 	}
@@ -111,7 +118,7 @@ func Capture(ctx context.Context, opts Options) (Result, error) {
 	if err != nil || !bytes.Equal(raw, patch) {
 		return Result{}, errors.New("written regression patch does not match validated bytes")
 	}
-	if got, _ := gitOutput(ctx, repo, nil, nil, "rev-parse", "HEAD"); got != head {
+	if got, _ := gitOutput(ctx, repo, nil, nil, gitRevParse, "HEAD"); got != head {
 		return Result{}, errors.New("source HEAD changed during capture")
 	}
 	if got, _ := gitOutput(ctx, repo, nil, nil, "write-tree"); got != indexTree {
@@ -130,7 +137,7 @@ func resolveRepo(ctx context.Context, repo string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	root, err := gitOutput(ctx, abs, nil, nil, "rev-parse", "--show-toplevel")
+	root, err := gitOutput(ctx, abs, nil, nil, gitRevParse, "--show-toplevel")
 	if err != nil {
 		return "", fmt.Errorf("not a Git worktree: %w", err)
 	}
@@ -142,7 +149,11 @@ func readExternal(repo, filename string, max int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if inside(repo, abs) {
+	contained, err := pathguard.Contains(repo, abs)
+	if err != nil {
+		return nil, fmt.Errorf("resolve input boundary: %w", err)
+	}
+	if contained {
 		return nil, errors.New("input must be outside target worktree")
 	}
 	info, err := os.Stat(abs)
@@ -156,11 +167,6 @@ func readExternal(repo, filename string, max int64) ([]byte, error) {
 		return nil, errors.New("input exceeds maximum size")
 	}
 	return os.ReadFile(abs)
-}
-
-func inside(root, candidate string) bool {
-	rel, err := filepath.Rel(root, candidate)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 func requireCleanIndex(ctx context.Context, repo string) error {

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://polis.dev/spec/v1/manifest.schema.json",
-  "title": "POLIS Manifest format v2 alpha.7",
+  "title": "POLIS Manifest format v2",
   "type": "object",
   "additionalProperties": false,
   "required": [

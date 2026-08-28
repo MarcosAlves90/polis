@@ -154,3 +154,23 @@ func TestReadExternalRejectsDirectoryAndOversize(t *testing.T) {
 		t.Fatal("expected size rejection")
 	}
 }
+
+func TestReadExternalRejectsPhysicalAliasIntoRepo(t *testing.T) {
+	base := t.TempDir()
+	repo := filepath.Join(base, "real", "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(filepath.Join(base, "real"), alias); err != nil {
+		t.Fatal(err)
+	}
+	insideReal := filepath.Join(repo, "change.json")
+	if err := os.WriteFile(insideReal, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	insideAlias := filepath.Join(alias, "repo", "change.json")
+	if _, err := readExternal(repo, insideAlias, 1024); err == nil {
+		t.Fatal("expected physical alias into repo to be rejected")
+	}
+}

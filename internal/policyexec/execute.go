@@ -7,9 +7,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/MarcosAlves90/polis/internal/commandexec"
+	"github.com/MarcosAlves90/polis/internal/pathguard"
 	"github.com/MarcosAlves90/polis/spec"
 )
 
@@ -94,17 +94,16 @@ func executeCoverage(enc *json.Encoder, gate spec.GatePolicy, repoRoot string) s
 }
 
 func readCoverageReport(repoRoot, reportPath string) ([]byte, error) {
-	root, err := filepath.EvalSymlinks(repoRoot)
+	contained, err := pathguard.Contains(repoRoot, reportPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolve repository root: %w", err)
+		return nil, fmt.Errorf("resolve coverage report boundary: %w", err)
+	}
+	if !contained {
+		return nil, errors.New("coverage report resolves outside repository")
 	}
 	resolved, err := filepath.EvalSymlinks(reportPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolve coverage report: %w", err)
-	}
-	rel, err := filepath.Rel(root, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return nil, errors.New("coverage report resolves outside repository")
 	}
 	info, err := os.Stat(resolved)
 	if err != nil {

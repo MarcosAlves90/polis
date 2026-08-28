@@ -1,6 +1,6 @@
 {
   "title": "End-to-End Software Project Delivery Guide",
-  "version": "4.0.0-alpha.7",
+  "version": "4.0.0",
   "language": "en",
   "architecture": {
     "modules": [
@@ -77,7 +77,7 @@
       "metric": "authoritative project-wide line coverage",
       "operator": ">",
       "threshold_percent": 80.0,
-      "rule": "Exactly 80.0 percent is FAIL. Policy schema v2 requires a runtime-owned coverage adapter; alpha.7 implements go-coverprofile-v1 and the canonical Go profile instruments all project packages with -coverpkg=./... before POLIS computes line_coverage_percent."
+      "rule": "Exactly 80.0 percent is FAIL. Policy schema v2 requires a runtime-owned coverage adapter; V4.0.0 implements go-coverprofile-v1 and the canonical Go profile instruments all project packages with -coverpkg=./... before POLIS computes line_coverage_percent."
     },
     "tests": "The complete authoritative project test suite MUST pass before delivery PASS.",
     "tdd_evidence": "When implementation is claimed as TDD-driven, observed Red and Green command evidence MUST be recorded.",

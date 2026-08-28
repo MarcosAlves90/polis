@@ -1,6 +1,6 @@
 # SDD-0007 — Delivery Change Contract and Red/Green Regression Evidence
 
-Status: accepted for 4.0.0-alpha.7
+Status: accepted for 4.0.0
 
 ## Objective
 

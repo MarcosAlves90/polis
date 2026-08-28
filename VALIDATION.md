@@ -1,116 +1,73 @@
-# Validation evidence — POLIS V4 alpha.7
+# Validation evidence — POLIS V4.0.0
 
-Validation date: 2026-08-27 UTC
+Validation date: 2026-08-28 UTC
 
 ## Scope
 
-This checkpoint validates the reconstructed and re-executed alpha.7 source tree implementing:
+This checkpoint finalizes POLIS V4.0.0 from the published baseline commit `78cd2278d7eea7d9e3059b233dc4671d0b0f5de0` (tree `90a59de901f04c5fd783d37229748a6c03265049`). SDD-0009 replaces lexical repository-boundary decisions with a shared canonical physical-path guard. SDD-0011 corrects a non-portable test oracle discovered by native macOS consumer execution of POLIS V3.1 revision V005.
 
-- End-to-End Guide `4.0.0-alpha.7`;
-- POLIS Package Specification v1, package `format_version: 2`;
-- POLIS CLI `4.0.0-alpha.7`;
-- Project Policy schema v2;
-- Change Contract schema v1;
-- canonical defect `capture-red -> build -> verify -> apply` flow.
+Package format remains v2. Project Policy remains schema v2. Change Contract remains schema v1.
 
-The earlier intermediate alpha.7 worktree was not persisted. Alpha.7 was reconstructed from the frozen alpha.6 source plus accepted SDD contracts and its TDD Reds/Greens were re-executed. No success claim depends only on the lost intermediate state.
-
-## Environment actually executed
+## Producer environment actually executed
 
 - OS/architecture: Linux x86_64
-- Kernel: 6.18.35
-- Go: `go1.23.2 linux/amd64`
-- Git: `2.47.3`
+- Go: go1.23.2 linux/amd64
+- Git: 2.47.3
 
-## Final local gates
+## Observed TDD evidence
 
-| Gate | Result | Evidence |
-| --- | --- | --- |
-| `gofmt -l .` | PASS | no files reported |
-| `go vet ./...` | PASS | exit 0 |
-| `go test ./...` | PASS | all 10 Go packages Green |
-| `go test -race ./...` | PASS | all 10 Go packages Green under race detector |
-| Project-wide POLIS line coverage | PASS | `1812 / 2261 = 80.141530296%`; strict `> 80.0` |
-| JSON syntax — Guide + schemas | PASS | all JSON parsed successfully |
-| JSON Schema Draft 2020-12 validation | PASS | manifest, policy, Change Contract, and all 40 evidence events from a real generated defect package |
-| Linux amd64 CLI build | PASS | binary built with `-trimpath` |
-| `polis doctor` | PASS | detected Go/runtime/Git on Linux |
-| macOS arm64 cross-compile | PASS (compile only) | Mach-O arm64 produced; not executed |
-| macOS amd64 cross-compile | PASS (compile only) | Mach-O x86_64 produced; not executed |
-| Windows amd64 cross-compile | PASS (compile only) | PE32+ x86-64 produced; not executed |
+### Physical-path boundary
 
-The coverage producer is the alpha.7 canonical Go command:
+Before `internal/pathguard` existed, `go test ./internal/pathguard` failed to compile because `Contains` and canonical path resolution were undefined. After implementation and integration into packagebuild, redcapture, and policy coverage-report containment, the targeted suite returned Green.
 
-```text
-go test -coverpkg=./... ./... -coverprofile=.polis/coverage.out
-```
+Regression coverage includes physical aliases produced through symlinks, missing output paths below aliased roots, external siblings, root equality, and fail-closed unresolvable symlink paths. This models the macOS class where `/var/...` and `/private/var/...` can identify the same physical location.
 
-POLIS itself parsed the resulting profile with `go-coverprofile-v1`. The threshold and algorithm were not weakened after alpha.7 initially measured below 80%.
+### Portable absolute-path error validation
 
-## Observed defect E2E using the compiled Linux binary
+POLIS V3.1 revision V005 was executed by the consumer on macOS. Bundle inventory/checksums, consumer baseline validation, isolated worktree creation, and exact patch identity passed. Isolated validation then failed at `TestCanonicalPropagatesAbsolutePathResolutionFailure`: the test expected `filepath.Abs` to fail after its current working directory was removed. macOS did not exhibit that Linux-observed `Getwd` behavior.
 
-A fresh synthetic Git repository was created with a deliberately incorrect `Double` function.
+The test was replaced by deterministic dependency injection: production `canonical` still supplies `filepath.Abs`, while the test injects a resolver returning a sentinel error and asserts exact propagation. The test no longer mutates the process current working directory and has no platform-specific skip.
 
-Observed sequence:
+## Final producer gates
 
-1. `polis init --repo <repo>` — PASS.
-2. Generated policy committed as immutable project input.
-3. Defect Change Contract created outside the worktree.
-4. Failing `TestDoubleRegression` added with `DOUBLE-REGRESSION` oracle.
-5. `polis capture-red` — PASS; captured patch SHA-256 `0b216bc806a8468d0a654be5920cebf415e07da034509c7cef7ffad4d09dbeff`.
-6. Production defect corrected.
-7. `polis build` — PASS.
-8. Generated package SHA-256 `d0bdea8f0472f353534eb82aa23ee6567fb5fc50ba76e00af8f7e424b71d8ca5`.
-9. `polis verify` on exact generated bytes — PASS.
-10. Repository restored to exact clean baseline.
-11. `polis apply` — PASS.
-12. Final `go test ./...` — PASS.
-13. Consumer `HEAD` remained equal to baseline commit.
-14. Consumer real Git index remained equal to baseline tree.
-15. Final working tree contained the intended unstaged production fix plus regression test.
-16. Fresh consumer evidence existed under `.git/polis/results/` rather than the working tree.
+- `gofmt -l .` — PASS, no files reported.
+- `go vet ./...` — PASS.
+- every Go package test — PASS. Long packages were also executed separately because the execution wrapper can terminate a monolithic command before all package results are emitted.
+- race detector — PASS for every package. `internal/packageapply` was split into exhaustive named-test groups so each bounded process completes within the execution wrapper limit.
+- `go mod verify` — PASS.
+- JSON syntax for Guide and all schemas — PASS using Go `encoding/json`.
+- native Linux amd64 build with `-trimpath` — PASS.
+- native `polis doctor` — PASS and reports `POLIS doctor 4.0.0`.
 
-The generated format-v2 package contained exactly:
+## Normative project-wide line coverage
 
-```text
-polis-change.json
-polis-checksums.sha256
-polis-evidence.ndjson
-polis-manifest.json
-polis-payload.patch
-polis-policy.json
-polis-regression.patch
-```
+Coverage was measured conservatively by running every production package under Go coverage instrumentation and unioning the resulting profiles. `internal/packageapply` was divided into three exhaustive named-test groups because its single instrumented process can exceed the runner time budget. The same line-union algorithm used by the POLIS `go-coverprofile-v1` contract deduplicated executable source lines across the profiles.
 
-Its embedded evidence contained 40 schema-valid events. `polis verify` additionally validated the complete semantic event trace rather than relying on schema validity alone.
+Observed result after SDD-0011:
 
-## TDD/SDD evidence
+- covered lines: 1853
+- executable lines: 2314
+- line coverage: 80.077787381158%
+- policy threshold: strictly greater than 80.0%
+- result: PASS
 
-SDD contracts are under `docs/sdd/`. The alpha.7 implementation is governed primarily by:
+This measurement is conservative relative to `-coverpkg=./...` because it does not credit cross-package execution to another package's production lines. No exclusions or threshold changes were introduced to obtain PASS.
 
-- SDD-0007 — Delivery Change Contract and Red/Green Regression Evidence;
-- SDD-0008 — canonical Red capture.
+## Security properties affected
 
-Observed Red/Green evidence is recorded in `docs/tdd/iterations.md`. Material Reds included missing Change Contract APIs, missing shared direct executor, format-v2 inventory incompatibility, missing `capture-red`, and coverage below the unchanged strict threshold before additional behavioral tests.
+- Change Contracts physically inside the target worktree are rejected even when referenced through an alias/symlink path.
+- `capture-red` output paths physically inside the target worktree are rejected before creation, including currently non-existent descendants.
+- coverage reports that resolve outside the repository remain rejected.
+- containment uses one shared implementation instead of separate lexical checks.
+- unresolved path conditions fail closed at the caller boundary.
+- the SDD-0011 correction changes only testability of `filepath.Abs` error propagation; containment semantics are unchanged.
 
-## Security and integrity properties exercised
+## Platform evidence boundary
 
-- no shell insertion around project commands;
-- external Change Contract/regression probe must remain outside the source worktree;
-- real Git staging is not used for package construction or Red capture;
-- exact base commit and Git object format are checked;
-- path traversal and invalid archive member types are rejected;
-- policy, Change Contract, regression probe, and payload are bound by SHA-256;
-- checksum inventory is exact;
-- defect Red is reproduced against immutable baseline and Green against final target;
-- regression-probe paths must remain in the final delivered delta;
-- exact project-policy evidence trace is required;
-- coverage arithmetic is recomputed;
-- consumer mutation occurs only after isolated validation;
-- consumer HEAD/index are preserved.
+Linux amd64 is the producer runtime environment fully executed. Native macOS consumer execution of V005 proved bundle/checksum verification, Git baseline/worktree setup, exact patch identity, and Go test execution on that platform, but validation stopped at the non-portable test oracle before PASS. Therefore macOS is not yet claimed fully validated. Revision V006 must rerun the complete consumer launcher on macOS; real worktree mutation still occurs only after every isolated gate passes.
 
-## Current production boundary
+## Cross-toolchain coverage hardening after V013 consumer evidence
 
-**BLOCKED for an unrestricted cross-platform production-complete claim.**
+A native macOS consumer execution of the V013 POLIS V3.1 delivery (Go 1.27) passed bundle integrity, baseline, isolated patch identity, changed-behavior tests, and affected tests, then correctly stopped before real application because project-wide line coverage was `1723 / 2177 = 79.145613229215%`, below the unchanged strict `>80.0` requirement.
 
-Linux amd64 behavior above was actually executed. macOS and Windows binaries compile, but they were not executable in the available environment, so compilation is not presented as runtime validation. No other alpha.7 semantic blocker is currently known from the executed suite.
+The follow-up does not weaken the gate. Deterministic tests were added for previously uncovered production failure paths in package construction, package application, and policy validation. On the Linux/Go 1.23.2 producer, conservative merged line evidence now reaches `1900 / 2314 = 82.10890233362143%`. A V014 consumer run must still independently establish native coverage `>80.0`; this producer result is not substituted for native evidence.

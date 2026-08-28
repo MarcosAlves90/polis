@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://polis.dev/spec/v1/policy.schema.json",
-  "title": "POLIS Project Policy v2 alpha.7",
+  "title": "POLIS Project Policy v2",
   "type": "object",
   "additionalProperties": false,
   "required": [

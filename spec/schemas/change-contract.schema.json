@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://polis.dev/spec/v1/change-contract.schema.json",
-  "title": "POLIS Change Contract v1 alpha.7",
+  "title": "POLIS Change Contract v1",
   "type": "object",
   "additionalProperties": false,
   "required": [

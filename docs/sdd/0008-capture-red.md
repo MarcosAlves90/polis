@@ -1,6 +1,6 @@
 # SDD-0008 — Canonical Red-State Capture
 
-Status: accepted for 4.0.0-alpha.7
+Status: accepted for 4.0.0
 
 ## Objective
 
