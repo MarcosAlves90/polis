@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        run: go build -trimpath ./cmd/polis
+
+      - name: Doctor
+        run: go run ./cmd/polis doctor
+
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Formatting
+        shell: bash
+        run: |
+          files="$(gofmt -l .)"
+          if [[ -n "$files" ]]; then
+            printf 'gofmt required for:\n%s\n' "$files" >&2
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Module integrity
+        run: go mod verify
+
+      - name: Race detector
+        run: go test -race ./...
+
+      - name: Project-wide coverage
+        shell: bash
+        run: |
+          go test -coverpkg=./... ./... -coverprofile="$RUNNER_TEMP/coverage.out"
+          awk '
+            BEGIN { threshold=80.0 }
+            /^mode:/ { next }
+            {
+              loc=$1
+              count=$3+0
+              colon=0
+              for (j=length(loc); j>=1; j--) {
+                if (substr(loc,j,1)==":") { colon=j; break }
+              }
+              if (colon==0) exit 40
+              file=substr(loc,1,colon-1)
+              span=substr(loc,colon+1)
+              split(span,h,",")
+              split(h[1],s,".")
+              split(h[2],e,".")
+              a=s[1]+0
+              b=e[1]+0
+              if (a<1 || b<a) exit 41
+              for (ln=a; ln<=b; ln++) {
+                key=file SUBSEP ln
+                total[key]=1
+                if (count>0) covered[key]=1
+              }
+            }
+            END {
+              t=0
+              c=0
+              for (k in total) t++
+              for (k in covered) c++
+              if (t==0) exit 42
+              pct=(c/t)*100.0
+              printf "covered_lines=%d total_lines=%d line_coverage_percent=%.12f threshold=>80.0\n", c, t, pct
+              if (!(pct > threshold)) exit 43
+            }
+          ' "$RUNNER_TEMP/coverage.out"
