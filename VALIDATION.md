@@ -64,10 +64,14 @@ This measurement is conservative relative to `-coverpkg=./...` because it does n
 
 ## Platform evidence boundary
 
-Linux amd64 is the producer runtime environment fully executed. Native macOS consumer execution of V005 proved bundle/checksum verification, Git baseline/worktree setup, exact patch identity, and Go test execution on that platform, but validation stopped at the non-portable test oracle before PASS. Therefore macOS is not yet claimed fully validated. Revision V006 must rerun the complete consumer launcher on macOS; real worktree mutation still occurs only after every isolated gate passes.
+Linux amd64 is the producer runtime environment fully executed. Native macOS runtime evidence is also established on the exact host that successfully applies the POLIS V3.1 evidence-closing delivery for this checkpoint. That launcher is fail-closed: this documentation patch is applied only after native Darwin detection, exact baseline and target-tree checks, complete Go tests, race detection, authoritative project-wide coverage strictly greater than 80%, formatting/static/dependency checks, JSON validation, native build, and `polis doctor` all PASS in isolation.
+
+The complete native macOS run log is preserved under Git metadata at `.git/polis/results/` and the launcher prints the exact results path. Architecture and runtime/tool versions are recorded in that run log. The macOS claim is evidence-scoped to the native host and architecture that produced the successful run; it does not imply runtime validation of every macOS architecture.
+
+Windows native runtime validation remains outstanding. Cross-compilation alone is not treated as runtime evidence.
 
 ## Cross-toolchain coverage hardening after V013 consumer evidence
 
 A native macOS consumer execution of the V013 POLIS V3.1 delivery (Go 1.27) passed bundle integrity, baseline, isolated patch identity, changed-behavior tests, and affected tests, then correctly stopped before real application because project-wide line coverage was `1723 / 2177 = 79.145613229215%`, below the unchanged strict `>80.0` requirement.
 
-The follow-up does not weaken the gate. Deterministic tests were added for previously uncovered production failure paths in package construction, package application, and policy validation. On the Linux/Go 1.23.2 producer, conservative merged line evidence now reaches `1900 / 2314 = 82.10890233362143%`. A V014 consumer run must still independently establish native coverage `>80.0`; this producer result is not substituted for native evidence.
+The follow-up did not weaken the gate. Deterministic tests were added for previously uncovered production failure paths in package construction, package application, and policy validation. The evidence-closing delivery reruns the canonical project-wide coverage producer natively on macOS and refuses to apply this documentation update unless the computed line coverage is strictly greater than 80.0%.

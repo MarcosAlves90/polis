@@ -65,12 +65,14 @@
       "consumer evidence stored under Git metadata",
       "doctor diagnostics",
       "normative go-coverprofile-v1 line-coverage adapter using project-wide -coverpkg instrumentation in the canonical Go profile",
-      "canonical polis init policy bootstrap for root-level Go modules"
+      "canonical polis init policy bootstrap for root-level Go modules",
+      "native runtime evidence on Linux amd64 and on at least one macOS host through a fail-closed POLIS V3.1 consumer validation"
     ],
     "not_yet_production_complete": [
-      "cross-platform runtime validation outside the currently executed Linux environment"
+      "native Windows runtime validation",
+      "runtime validation of macOS architectures other than the architecture represented by the recorded native consumer evidence"
     ],
-    "rule": "Implemented alpha capabilities MUST be executable and tested. Cross-compilation alone is not runtime evidence for a platform."
+    "rule": "Implemented capabilities MUST be executable and tested. Native runtime claims are scoped to the exact platforms and architectures represented by recorded execution evidence; cross-compilation alone is not runtime evidence."
   },
   "quality_gates": {
     "coverage": {
