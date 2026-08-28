@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/polis-dev/polis-v4/spec"
+	"github.com/MarcosAlves90/polis/spec"
 )
 
 func TestRunPassAndFail(t *testing.T) {

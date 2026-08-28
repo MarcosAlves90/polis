@@ -1,3 +1,3 @@
-module github.com/polis-dev/polis-v4
+module github.com/MarcosAlves90/polis
 
 go 1.23

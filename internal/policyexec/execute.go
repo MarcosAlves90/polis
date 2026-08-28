@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/polis-dev/polis-v4/internal/commandexec"
-	"github.com/polis-dev/polis-v4/spec"
+	"github.com/MarcosAlves90/polis/internal/commandexec"
+	"github.com/MarcosAlves90/polis/spec"
 )
 
 const maxCoverageReportBytes = 16 * 1024 * 1024

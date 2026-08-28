@@ -7,8 +7,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/polis-dev/polis-v4/internal/commandexec"
-	"github.com/polis-dev/polis-v4/spec"
+	"github.com/MarcosAlves90/polis/internal/commandexec"
+	"github.com/MarcosAlves90/polis/spec"
 )
 
 func ExecuteBaseline(contract spec.ChangeContract, repoRoot string, evidence io.Writer) error {

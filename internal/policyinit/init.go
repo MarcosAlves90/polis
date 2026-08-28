@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/polis-dev/polis-v4/spec"
+	"github.com/MarcosAlves90/polis/spec"
 )
 
 const (

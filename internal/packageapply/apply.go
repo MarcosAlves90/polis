@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/polis-dev/polis-v4/internal/changeexec"
-	"github.com/polis-dev/polis-v4/internal/packageverify"
-	"github.com/polis-dev/polis-v4/internal/policyexec"
-	"github.com/polis-dev/polis-v4/spec"
+	"github.com/MarcosAlves90/polis/internal/changeexec"
+	"github.com/MarcosAlves90/polis/internal/packageverify"
+	"github.com/MarcosAlves90/polis/internal/policyexec"
+	"github.com/MarcosAlves90/polis/spec"
 )
 
 type Result struct {

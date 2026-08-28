@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/polis-dev/polis-v4/internal/packagebuild"
-	"github.com/polis-dev/polis-v4/spec"
+	"github.com/MarcosAlves90/polis/internal/packagebuild"
+	"github.com/MarcosAlves90/polis/spec"
 )
 
 func canonicalPolicyBytes(t *testing.T) []byte {
