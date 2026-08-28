@@ -16,11 +16,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/MarcosAlves90/polis/internal/changeexec"
-	"github.com/MarcosAlves90/polis/internal/packageverify"
-	"github.com/MarcosAlves90/polis/internal/pathguard"
-	"github.com/MarcosAlves90/polis/internal/policyexec"
-	"github.com/MarcosAlves90/polis/spec"
+	"github.com/MarcosAlves90/polis/v4/internal/changeexec"
+	"github.com/MarcosAlves90/polis/v4/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v4/internal/pathguard"
+	"github.com/MarcosAlves90/polis/v4/internal/policyexec"
+	"github.com/MarcosAlves90/polis/v4/spec"
 )
 
 type Options struct {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/spec"
+	"github.com/MarcosAlves90/polis/v4/spec"
 )
 
 func simpleRepo(t *testing.T) string {

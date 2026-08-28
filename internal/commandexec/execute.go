@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/MarcosAlves90/polis/spec"
+	"github.com/MarcosAlves90/polis/v4/spec"
 )
 
 type Observation struct {

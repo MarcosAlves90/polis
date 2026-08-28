@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/spec"
+	"github.com/MarcosAlves90/polis/v4/spec"
 )
 
 func runGit(t *testing.T, repo string, args ...string) string {

@@ -10,11 +10,11 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/MarcosAlves90/polis/internal/packageapply"
-	"github.com/MarcosAlves90/polis/internal/packagebuild"
-	"github.com/MarcosAlves90/polis/internal/packageverify"
-	"github.com/MarcosAlves90/polis/internal/policyinit"
-	"github.com/MarcosAlves90/polis/internal/redcapture"
+	"github.com/MarcosAlves90/polis/v4/internal/packageapply"
+	"github.com/MarcosAlves90/polis/v4/internal/packagebuild"
+	"github.com/MarcosAlves90/polis/v4/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v4/internal/policyinit"
+	"github.com/MarcosAlves90/polis/v4/internal/redcapture"
 )
 
 const version = "4.0.0"

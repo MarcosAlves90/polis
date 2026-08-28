@@ -8,9 +8,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/MarcosAlves90/polis/internal/commandexec"
-	"github.com/MarcosAlves90/polis/internal/pathguard"
-	"github.com/MarcosAlves90/polis/spec"
+	"github.com/MarcosAlves90/polis/v4/internal/commandexec"
+	"github.com/MarcosAlves90/polis/v4/internal/pathguard"
+	"github.com/MarcosAlves90/polis/v4/spec"
 )
 
 const maxCoverageReportBytes = 16 * 1024 * 1024

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/internal/packageverify"
-	"github.com/MarcosAlves90/polis/internal/redcapture"
-	"github.com/MarcosAlves90/polis/spec"
+	"github.com/MarcosAlves90/polis/v4/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v4/internal/redcapture"
+	"github.com/MarcosAlves90/polis/v4/spec"
 )
 
 func testPolicyBytes(t *testing.T, failing bool) []byte {

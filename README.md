@@ -2,6 +2,8 @@
 
 POLIS is a deterministic software-delivery protocol and Go CLI for evidence-driven validation, packaging, and safe application of code changes.
 
+Go module: `github.com/MarcosAlves90/polis/v4`.
+
 ![Banner do POLIS](./polis-banner.png)
 
 POLIS V4 separates authority into three modules:
@@ -15,7 +17,7 @@ POLIS V4 separates authority into three modules:
 With Go 1.23+ and Git installed, install POLIS as a terminal command on Linux, macOS, or Windows:
 
 ```text
-go install github.com/MarcosAlves90/polis/cmd/polis@latest
+go install github.com/MarcosAlves90/polis/v4/cmd/polis@latest
 ```
 
 Then ensure the Go binary directory is on `PATH` and verify the installation with `polis doctor`.
