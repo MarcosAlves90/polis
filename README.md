@@ -10,16 +10,27 @@ POLIS V4 separates authority into three modules:
 2. `spec/` — normative package bytes, schemas, statuses, Change Contract, policy, coverage, integrity, and evidence semantics.
 3. `cmd/polis` + `internal/` — deterministic Go reference implementation.
 
+## Installation
+
+With Go 1.23+ and Git installed, install POLIS as a terminal command on Linux, macOS, or Windows:
+
+```text
+go install github.com/MarcosAlves90/polis/cmd/polis@latest
+```
+
+Then ensure the Go binary directory is on `PATH` and verify the installation with `polis doctor`.
+
+See the [installation guide](docs/installation.md) for operating-system-specific `PATH` instructions, source installation, upgrades, and removal.
+
 ## Commands
 
 ```bash
-go build -o polis ./cmd/polis
-./polis doctor
-./polis init --repo /path/to/repo
-./polis capture-red --repo /path/to/repo --contract /outside/change.json --out /outside/regression.patch
-./polis build --repo /path/to/repo --project project-slug --change change-slug --contract /outside/change.json --regression-patch /outside/regression.patch --out /path/to/output
-./polis verify artifact.polis
-./polis apply --repo /path/to/repo artifact.polis
+polis doctor
+polis init --repo /path/to/repo
+polis capture-red --repo /path/to/repo --contract /outside/change.json --out /outside/regression.patch
+polis build --repo /path/to/repo --project project-slug --change change-slug --contract /outside/change.json --regression-patch /outside/regression.patch --out /path/to/output
+polis verify artifact.polis
+polis apply --repo /path/to/repo artifact.polis
 ```
 
 `--regression-patch` is required only for `defect` Change Contracts.
@@ -37,4 +48,4 @@ go build -o polis ./cmd/polis
 
 ## Platform evidence
 
-Platform support claims are evidence-scoped. Producer validation for this release is performed on Linux; cross-compilation alone is not described as native runtime validation. Consumer validation reruns the relevant gates on the actual target platform before applying a delivery.
+Platform support claims are evidence-scoped. Native CI exercises Linux, macOS, and Windows. Consumer validation reruns the relevant gates on the actual target platform before applying a delivery.
