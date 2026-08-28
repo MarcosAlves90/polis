@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://polis.dev/spec/v1/manifest.schema.json",
+  "title": "POLIS Manifest format v2 alpha.7",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "project",
+    "change",
+    "git_object_format",
+    "base_commit",
+    "target_tree",
+    "policy_sha256",
+    "change_contract_sha256",
+    "regression_patch_sha256",
+    "payload_sha256"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 2
+    },
+    "project": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "change": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "git_object_format": {
+      "enum": [
+        "sha1",
+        "sha256"
+      ]
+    },
+    "base_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "target_tree": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "policy_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "change_contract_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "regression_patch_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "payload_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "git_object_format": {
+            "const": "sha1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "base_commit": {
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "target_tree": {
+            "pattern": "^[0-9a-f]{40}$"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "git_object_format": {
+            "const": "sha256"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "base_commit": {
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "target_tree": {
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+# POLIS CLI binaries
+/polis
+/polis.exe
+*.test
+
+# Build and distribution outputs
+/dist/
+/build/
+/bin/
+*.polis
+*-polis-*.zip
+*-polis-*.sha256
+
+# Coverage and test artifacts
+*.coverprofile
+coverage.out
+coverage.txt
+coverage.html
+/.polis/coverage.out
+
+# Temporary runtime/build files
+/tmp/
+/temp/
+*.tmp
+*.log
+
+# Go workspace/local tooling
+go.work
+go.work.sum
+
+# IDE/editor local state
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db
