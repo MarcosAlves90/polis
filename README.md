@@ -2,6 +2,8 @@
 
 POLIS is a deterministic software-delivery protocol and Go CLI for evidence-driven validation, packaging, and safe application of code changes.
 
+![Banner do POLIS](./polis-banner.png)
+
 POLIS V4 separates authority into three modules:
 
 1. `guide/` — engineering workflow, SDD/TDD, scope, safety, and evidence obligations.
