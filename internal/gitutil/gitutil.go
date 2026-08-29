@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+const wrappedErrorFormat = "%s: %w"
+
 func Output(ctx context.Context, repo string, env []string, stdin io.Reader, args ...string) (string, error) {
 	b, err := Bytes(ctx, repo, env, stdin, args...)
 	return strings.TrimSpace(string(b)), err
@@ -35,7 +37,7 @@ func DetachedWorktree(ctx context.Context, repo, baseCommit, pattern, stagingErr
 		if stagingError == "" {
 			return "", nil, err
 		}
-		return "", nil, fmt.Errorf("%s: %w", stagingError, err)
+		return "", nil, fmt.Errorf(wrappedErrorFormat, stagingError, err)
 	}
 	worktree := filepath.Join(parent, "repo")
 	if _, err := Bytes(ctx, repo, nil, nil, "worktree", "add", "--detach", worktree, baseCommit); err != nil {
@@ -43,7 +45,7 @@ func DetachedWorktree(ctx context.Context, repo, baseCommit, pattern, stagingErr
 		if createError == "" {
 			return "", nil, err
 		}
-		return "", nil, fmt.Errorf("%s: %w", createError, err)
+		return "", nil, fmt.Errorf(wrappedErrorFormat, createError, err)
 	}
 	cleanup := func() {
 		_, _ = Bytes(context.Background(), repo, nil, nil, "worktree", "remove", "--force", worktree)
@@ -114,9 +116,13 @@ func ResolveRoot(ctx context.Context, repo string, opts ResolveRootOptions) (str
 	return root, nil
 }
 
+func Wrap(label string, err error) error {
+	return fmt.Errorf(wrappedErrorFormat, label, err)
+}
+
 func wrapOptional(label string, err error) error {
 	if label == "" {
 		return err
 	}
-	return fmt.Errorf("%s: %w", label, err)
+	return Wrap(label, err)
 }

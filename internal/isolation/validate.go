@@ -83,10 +83,10 @@ func validateTarget(ctx context.Context, validation Validation, redPaths map[str
 	}
 	defer cleanup()
 	if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(validation.Patch), "apply", "--check", "-"); err != nil {
-		return fmt.Errorf("%s: %w", validation.TargetApplyCheckError, err)
+		return gitutil.Wrap(validation.TargetApplyCheckError, err)
 	}
 	if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(validation.Patch), "apply", "--index", "-"); err != nil {
-		return fmt.Errorf("%s: %w", validation.TargetApplyError, err)
+		return gitutil.Wrap(validation.TargetApplyError, err)
 	}
 	if err := requireRegressionPaths(ctx, worktree, redPaths); err != nil {
 		return err
