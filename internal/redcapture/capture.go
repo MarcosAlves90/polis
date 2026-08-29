@@ -11,9 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/MarcosAlves90/polis/v4/internal/changeexec"
+	"github.com/MarcosAlves90/polis/v4/internal/fileutil"
+	"github.com/MarcosAlves90/polis/v4/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v4/internal/pathguard"
 	"github.com/MarcosAlves90/polis/v4/spec"
 )
@@ -133,15 +134,15 @@ func snapshotSource(ctx context.Context, repo string) (sourceSnapshot, error) {
 	if err := requireCleanIndex(ctx, repo); err != nil {
 		return sourceSnapshot{}, err
 	}
-	head, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "HEAD")
+	head, err := gitutil.Output(ctx, repo, nil, nil, gitRevParse, "HEAD")
 	if err != nil {
 		return sourceSnapshot{}, err
 	}
-	indexTree, err := gitOutput(ctx, repo, nil, nil, "write-tree")
+	indexTree, err := gitutil.Output(ctx, repo, nil, nil, "write-tree")
 	if err != nil {
 		return sourceSnapshot{}, err
 	}
-	status, err := gitOutput(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return sourceSnapshot{}, err
 	}
@@ -180,53 +181,24 @@ func writeAndClose(f *os.File, patch []byte) error {
 }
 
 func verifySourceSnapshot(ctx context.Context, repo string, want sourceSnapshot) error {
-	if got, _ := gitOutput(ctx, repo, nil, nil, gitRevParse, "HEAD"); got != want.head {
+	if got, _ := gitutil.Output(ctx, repo, nil, nil, gitRevParse, "HEAD"); got != want.head {
 		return errors.New("source HEAD changed during capture")
 	}
-	if got, _ := gitOutput(ctx, repo, nil, nil, "write-tree"); got != want.indexTree {
+	if got, _ := gitutil.Output(ctx, repo, nil, nil, "write-tree"); got != want.indexTree {
 		return errors.New("source index changed during capture")
 	}
-	if got, _ := gitOutput(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all"); got != want.status {
+	if got, _ := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all"); got != want.status {
 		return errors.New("source working tree changed during capture")
 	}
 	return nil
 }
 
 func resolveRepo(ctx context.Context, repo string) (string, error) {
-	abs, err := filepath.Abs(repo)
-	if err != nil {
-		return "", err
-	}
-	root, err := gitOutput(ctx, abs, nil, nil, gitRevParse, "--show-toplevel")
-	if err != nil {
-		return "", fmt.Errorf("not a Git worktree: %w", err)
-	}
-	return filepath.Abs(root)
+	return gitutil.ResolveRoot(ctx, repo, gitutil.ResolveRootOptions{GitError: "not a Git worktree"})
 }
 
 func readExternal(repo, filename string, max int64) ([]byte, error) {
-	abs, err := filepath.Abs(filename)
-	if err != nil {
-		return nil, err
-	}
-	contained, err := pathguard.Contains(repo, abs)
-	if err != nil {
-		return nil, fmt.Errorf("resolve input boundary: %w", err)
-	}
-	if contained {
-		return nil, errors.New("input must be outside target worktree")
-	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("input must be a regular file")
-	}
-	if info.Size() > max {
-		return nil, errors.New("input exceeds maximum size")
-	}
-	return os.ReadFile(abs)
+	return fileutil.ReadOutside(repo, filename, fileutil.OutsideReadOptions{Max: max, OversizeMessage: "input exceeds maximum size"})
 }
 
 func requireCleanIndex(ctx context.Context, repo string) error {
@@ -243,63 +215,35 @@ func requireCleanIndex(ctx context.Context, repo string) error {
 }
 
 func capturePatch(ctx context.Context, repo, head string) ([]byte, error) {
-	f, err := os.CreateTemp("", "polis-red-index-*")
+	indexPath, cleanup, err := gitutil.TemporaryIndex("polis-red-index-*")
 	if err != nil {
 		return nil, err
 	}
-	indexPath := f.Name()
-	_ = f.Close()
-	_ = os.Remove(indexPath)
-	defer os.Remove(indexPath)
+	defer cleanup()
 	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
-	if _, err := gitBytes(ctx, repo, env, nil, "read-tree", head); err != nil {
+	if _, err := gitutil.Bytes(ctx, repo, env, nil, "read-tree", head); err != nil {
 		return nil, err
 	}
-	if _, err := gitBytes(ctx, repo, env, nil, "add", "-A", "--", "."); err != nil {
+	if _, err := gitutil.Bytes(ctx, repo, env, nil, "add", "-A", "--", "."); err != nil {
 		return nil, err
 	}
-	return gitBytes(ctx, repo, env, nil, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--find-renames", head, "--")
+	return gitutil.Bytes(ctx, repo, env, nil, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--find-renames", head, "--")
 }
 
 func validateProbe(ctx context.Context, repo, head string, patch []byte, contract spec.ChangeContract) error {
-	parent, err := os.MkdirTemp("", "polis-capture-red-*")
+	worktree, cleanup, err := gitutil.DetachedWorktree(ctx, repo, head, "polis-capture-red-*", "", "")
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(parent)
-	worktree := filepath.Join(parent, "repo")
-	if _, err := gitBytes(ctx, repo, nil, nil, "worktree", "add", "--detach", worktree, head); err != nil {
-		return err
-	}
-	defer func() {
-		_, _ = gitBytes(context.Background(), repo, nil, nil, "worktree", "remove", "--force", worktree)
-	}()
-	if _, err := gitBytes(ctx, worktree, nil, bytes.NewReader(patch), "apply", "--check", "-"); err != nil {
+	defer cleanup()
+	if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(patch), "apply", "--check", "-"); err != nil {
 		return fmt.Errorf("regression probe apply check failed: %w", err)
 	}
-	if _, err := gitBytes(ctx, worktree, nil, bytes.NewReader(patch), "apply", "--index", "-"); err != nil {
+	if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(patch), "apply", "--index", "-"); err != nil {
 		return fmt.Errorf("regression probe apply failed: %w", err)
 	}
 	if err := changeexec.ExecuteBaseline(contract, worktree, io.Discard); err != nil {
 		return fmt.Errorf("regression Red oracle not satisfied: %w", err)
 	}
 	return nil
-}
-
-func gitOutput(ctx context.Context, repo string, env []string, stdin io.Reader, args ...string) (string, error) {
-	b, err := gitBytes(ctx, repo, env, stdin, args...)
-	return strings.TrimSpace(string(b)), err
-}
-
-func gitBytes(ctx context.Context, repo string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
-	if env != nil {
-		cmd.Env = env
-	}
-	cmd.Stdin = stdin
-	b, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(b)))
-	}
-	return b, nil
 }

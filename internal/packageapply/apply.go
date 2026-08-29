@@ -9,14 +9,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
-	"github.com/MarcosAlves90/polis/v4/internal/changeexec"
+	"github.com/MarcosAlves90/polis/v4/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v4/internal/isolation"
 	"github.com/MarcosAlves90/polis/v4/internal/packageverify"
-	"github.com/MarcosAlves90/polis/v4/internal/policyexec"
 	"github.com/MarcosAlves90/polis/v4/spec"
 )
 
@@ -31,17 +29,6 @@ const (
 	gitApplyCheck = "--check"
 	gitRevParse   = "rev-parse"
 )
-
-type isolatedValidation struct {
-	repo            string
-	baseCommit      string
-	targetTree      string
-	patch           []byte
-	regressionPatch []byte
-	change          spec.ChangeContract
-	policy          spec.Policy
-	evidence        io.Writer
-}
 
 func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 	pkg, err := packageverify.Load(artifact)
@@ -62,7 +49,22 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 	}
 	defer evidenceFile.Close()
 
-	if err := validateIsolated(ctx, isolatedValidation{repo: repo, baseCommit: pkg.Manifest.BaseCommit, targetTree: pkg.Manifest.TargetTree, patch: pkg.Patch, regressionPatch: pkg.RegressionPatch, change: pkg.Change, policy: pkg.Policy, evidence: evidenceFile}); err != nil {
+	if err := isolation.Validate(ctx, isolation.Validation{
+		Repo:                  repo,
+		BaseCommit:            pkg.Manifest.BaseCommit,
+		TargetTree:            pkg.Manifest.TargetTree,
+		Patch:                 pkg.Patch,
+		RegressionPatch:       pkg.RegressionPatch,
+		Change:                pkg.Change,
+		Policy:                pkg.Policy,
+		Evidence:              evidenceFile,
+		RedWorktreePattern:    "polis-apply-red-*",
+		TargetWorktreePattern: "polis-apply-worktree-*",
+		CreateWorktreeError:   "create isolated consumer worktree",
+		TargetApplyCheckError: "isolated apply check failed",
+		TargetApplyError:      "isolated apply failed",
+		PolicyFailureLabel:    "consumer policy validation",
+	}); err != nil {
 		return Result{}, err
 	}
 	if err := evidenceFile.Sync(); err != nil {
@@ -73,10 +75,10 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 	if err := verifyBaseline(ctx, repo, pkg.Manifest); err != nil {
 		return Result{}, fmt.Errorf("baseline changed after isolated validation: %w", err)
 	}
-	if _, err := gitBytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", gitApplyCheck, "-"); err != nil {
+	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", gitApplyCheck, "-"); err != nil {
 		return Result{}, fmt.Errorf("real git apply --check failed: %w", err)
 	}
-	if _, err := gitBytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", "-"); err != nil {
+	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", "-"); err != nil {
 		return Result{}, fmt.Errorf("real git apply failed: %w", err)
 	}
 	gotTree, err := workingTreeID(ctx, repo, pkg.Manifest.BaseCommit)
@@ -98,36 +100,25 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 }
 
 func resolveRepo(ctx context.Context, repo string) (string, error) {
-	if repo == "" {
-		repo = "."
-	}
-	abs, err := filepath.Abs(repo)
-	if err != nil {
-		return "", fmt.Errorf("resolve repo path: %w", err)
-	}
-	root, err := gitOutput(ctx, abs, nil, nil, gitRevParse, "--show-toplevel")
-	if err != nil {
-		return "", fmt.Errorf("not a Git worktree: %w", err)
-	}
-	return filepath.Abs(root)
+	return gitutil.ResolveRoot(ctx, repo, gitutil.ResolveRootOptions{EmptyAsDot: true, PathError: "resolve repo path", GitError: "not a Git worktree"})
 }
 
 func verifyBaseline(ctx context.Context, repo string, manifest spec.Manifest) error {
-	format, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "--show-object-format")
+	format, err := gitutil.Output(ctx, repo, nil, nil, gitRevParse, "--show-object-format")
 	if err != nil {
 		return fmt.Errorf("detect Git object format: %w", err)
 	}
 	if format != manifest.GitObjectFormat {
 		return fmt.Errorf("git object format mismatch: got %s want %s", format, manifest.GitObjectFormat)
 	}
-	head, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "HEAD")
+	head, err := gitutil.Output(ctx, repo, nil, nil, gitRevParse, "HEAD")
 	if err != nil {
 		return fmt.Errorf("resolve HEAD: %w", err)
 	}
 	if head != manifest.BaseCommit {
 		return fmt.Errorf("base_commit mismatch: got %s want %s", head, manifest.BaseCommit)
 	}
-	status, err := gitOutput(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("inspect consumer status: %w", err)
 	}
@@ -138,7 +129,7 @@ func verifyBaseline(ctx context.Context, repo string, manifest spec.Manifest) er
 }
 
 func createEvidenceFile(ctx context.Context, repo, artifact string) (string, *os.File, error) {
-	gitPath, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "--git-path", "polis/results")
+	gitPath, err := gitutil.Output(ctx, repo, nil, nil, gitRevParse, "--git-path", "polis/results")
 	if err != nil {
 		return "", nil, fmt.Errorf("resolve evidence directory: %w", err)
 	}
@@ -161,143 +152,24 @@ func createEvidenceFile(ctx context.Context, repo, artifact string) (string, *os
 	return filename, f, nil
 }
 
-func validateIsolated(ctx context.Context, validation isolatedValidation) error {
-	redPaths, err := validateRegressionIsolation(ctx, validation)
-	if err != nil {
-		return err
-	}
-	return validateTargetIsolation(ctx, validation, redPaths)
-}
-
-func validateRegressionIsolation(ctx context.Context, validation isolatedValidation) (map[string]struct{}, error) {
-	if validation.change.Kind != spec.ChangeKindDefect {
-		return nil, nil
-	}
-	red, cleanup, err := detachedWorktree(ctx, validation.repo, validation.baseCommit, "polis-apply-red-*")
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-	if _, err := gitBytes(ctx, red, nil, bytes.NewReader(validation.regressionPatch), "apply", gitApplyCheck, "-"); err != nil {
-		return nil, fmt.Errorf("regression probe apply check failed: %w", err)
-	}
-	if _, err := gitBytes(ctx, red, nil, bytes.NewReader(validation.regressionPatch), "apply", "--index", "-"); err != nil {
-		return nil, fmt.Errorf("regression probe apply failed: %w", err)
-	}
-	redPaths, err := changedIndexPaths(ctx, red)
-	if err != nil {
-		return nil, err
-	}
-	if err := changeexec.ExecuteBaseline(validation.change, red, validation.evidence); err != nil {
-		return nil, fmt.Errorf("regression baseline validation: %w", err)
-	}
-	return redPaths, nil
-}
-
-func validateTargetIsolation(ctx context.Context, validation isolatedValidation, redPaths map[string]struct{}) error {
-	worktree, cleanup, err := detachedWorktree(ctx, validation.repo, validation.baseCommit, "polis-apply-worktree-*")
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-	if _, err := gitBytes(ctx, worktree, nil, bytes.NewReader(validation.patch), "apply", gitApplyCheck, "-"); err != nil {
-		return fmt.Errorf("isolated apply check failed: %w", err)
-	}
-	if _, err := gitBytes(ctx, worktree, nil, bytes.NewReader(validation.patch), "apply", "--index", "-"); err != nil {
-		return fmt.Errorf("isolated apply failed: %w", err)
-	}
-	if err := requireRegressionPaths(ctx, worktree, redPaths); err != nil {
-		return err
-	}
-	if err := requireTargetTree(ctx, worktree, validation.targetTree); err != nil {
-		return err
-	}
-	if err := changeexec.ExecuteTarget(validation.change, worktree, validation.evidence); err != nil {
-		return err
-	}
-	result := policyexec.Execute(validation.policy, worktree, validation.evidence)
-	if result.Overall != spec.StatusPass {
-		return fmt.Errorf("consumer policy validation %s", result.Overall)
-	}
-	return nil
-}
-
-func requireRegressionPaths(ctx context.Context, worktree string, redPaths map[string]struct{}) error {
-	targetPaths, err := changedIndexPaths(ctx, worktree)
-	if err != nil {
-		return err
-	}
-	for p := range redPaths {
-		if _, ok := targetPaths[p]; !ok {
-			return fmt.Errorf("regression probe path %q is absent from final payload", p)
-		}
-	}
-	return nil
-}
-
-func requireTargetTree(ctx context.Context, worktree, targetTree string) error {
-	gotTree, err := gitOutput(ctx, worktree, nil, nil, "write-tree")
-	if err != nil {
-		return fmt.Errorf("read isolated target tree: %w", err)
-	}
-	if gotTree != targetTree {
-		return fmt.Errorf("isolated target_tree mismatch: got %s want %s", gotTree, targetTree)
-	}
-	return nil
-}
-
-func detachedWorktree(ctx context.Context, repo, baseCommit, pattern string) (string, func(), error) {
-	parent, err := os.MkdirTemp("", pattern)
-	if err != nil {
-		return "", nil, fmt.Errorf("create isolated worktree staging: %w", err)
-	}
-	worktree := filepath.Join(parent, "repo")
-	if _, err := gitBytes(ctx, repo, nil, nil, "worktree", "add", "--detach", worktree, baseCommit); err != nil {
-		os.RemoveAll(parent)
-		return "", nil, fmt.Errorf("create isolated consumer worktree: %w", err)
-	}
-	cleanup := func() {
-		_, _ = gitBytes(context.Background(), repo, nil, nil, "worktree", "remove", "--force", worktree)
-		_ = os.RemoveAll(parent)
-	}
-	return worktree, cleanup, nil
-}
-
-func changedIndexPaths(ctx context.Context, worktree string) (map[string]struct{}, error) {
-	b, err := gitBytes(ctx, worktree, nil, nil, "diff", "--cached", "--name-only", "-z", "HEAD", "--")
-	if err != nil {
-		return nil, fmt.Errorf("list changed paths: %w", err)
-	}
-	result := map[string]struct{}{}
-	for _, raw := range bytes.Split(b, []byte{0}) {
-		if len(raw) > 0 {
-			result[string(raw)] = struct{}{}
-		}
-	}
-	return result, nil
-}
-
 func workingTreeID(ctx context.Context, repo, baseCommit string) (string, error) {
-	f, err := os.CreateTemp("", "polis-apply-index-*")
+	indexPath, cleanup, err := gitutil.TemporaryIndex("polis-apply-index-*")
 	if err != nil {
 		return "", err
 	}
-	indexPath := f.Name()
-	_ = f.Close()
-	_ = os.Remove(indexPath)
-	defer os.Remove(indexPath)
+	defer cleanup()
 	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
-	if _, err := gitBytes(ctx, repo, env, nil, "read-tree", baseCommit); err != nil {
+	if _, err := gitutil.Bytes(ctx, repo, env, nil, "read-tree", baseCommit); err != nil {
 		return "", err
 	}
-	if _, err := gitBytes(ctx, repo, env, nil, "add", "-A", "--", "."); err != nil {
+	if _, err := gitutil.Bytes(ctx, repo, env, nil, "add", "-A", "--", "."); err != nil {
 		return "", err
 	}
-	return gitOutput(ctx, repo, env, nil, "write-tree")
+	return gitutil.Output(ctx, repo, env, nil, "write-tree")
 }
 
 func reversePatch(ctx context.Context, repo string, patch []byte) error {
-	_, err := gitBytes(ctx, repo, nil, bytes.NewReader(patch), "apply", "--reverse", "-")
+	_, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(patch), "apply", "--reverse", "-")
 	return err
 }
 
@@ -312,22 +184,4 @@ func fileSHA256(filename string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-func gitOutput(ctx context.Context, repo string, env []string, stdin io.Reader, args ...string) (string, error) {
-	b, err := gitBytes(ctx, repo, env, stdin, args...)
-	return strings.TrimSpace(string(b)), err
-}
-
-func gitBytes(ctx context.Context, repo string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
-	if env != nil {
-		cmd.Env = env
-	}
-	cmd.Stdin = stdin
-	b, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(b)))
-	}
-	return b, nil
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MarcosAlves90/polis/v4/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v4/spec"
 )
 
@@ -61,12 +62,12 @@ func TestReversePatchRestoresAppliedChange(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	patch, err := gitBytes(context.Background(), repo, nil, nil, "diff", "--binary", "--full-index", "HEAD", "--")
+	patch, err := gitutil.Bytes(context.Background(), repo, nil, nil, "diff", "--binary", "--full-index", "HEAD", "--")
 	if err != nil {
 		t.Fatal(err)
 	}
 	git(t, repo, "restore", "--", "file.txt")
-	if _, err := gitBytes(context.Background(), repo, nil, strings.NewReader(string(patch)), "apply", "-"); err != nil {
+	if _, err := gitutil.Bytes(context.Background(), repo, nil, strings.NewReader(string(patch)), "apply", "-"); err != nil {
 		t.Fatal(err)
 	}
 	if err := reversePatch(context.Background(), repo, patch); err != nil {
@@ -83,14 +84,14 @@ func TestReversePatchRestoresAppliedChange(t *testing.T) {
 
 func TestDetachedWorktreeRejectsUnknownBase(t *testing.T) {
 	repo := simpleRepo(t)
-	if _, _, err := detachedWorktree(context.Background(), repo, strings.Repeat("f", 40), "polis-test-bad-*"); err == nil {
+	if _, _, err := gitutil.DetachedWorktree(context.Background(), repo, strings.Repeat("f", 40), "polis-test-bad-*", "create isolated worktree staging", "create isolated consumer worktree"); err == nil {
 		t.Fatal("expected invalid-base error")
 	}
 }
 
 func TestChangedIndexPathsReportsStagedPath(t *testing.T) {
 	repo := simpleRepo(t)
-	paths, err := changedIndexPaths(context.Background(), repo)
+	paths, err := gitutil.ChangedIndexPaths(context.Background(), repo, "--cached")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +102,7 @@ func TestChangedIndexPathsReportsStagedPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	git(t, repo, "add", "file.txt")
-	paths, err = changedIndexPaths(context.Background(), repo)
+	paths, err = gitutil.ChangedIndexPaths(context.Background(), repo, "--cached")
 	if err != nil {
 		t.Fatal(err)
 	}

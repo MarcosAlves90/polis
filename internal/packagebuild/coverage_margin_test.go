@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/MarcosAlves90/polis/v4/internal/gitutil"
 )
 
 func TestRepositoryBoundaryHelpers(t *testing.T) {
@@ -20,7 +22,7 @@ func TestRepositoryBoundaryHelpers(t *testing.T) {
 	if err := requireCleanIndex(ctx, nonRepo); err == nil {
 		t.Fatal("expected index inspection failure outside repository")
 	}
-	if _, err := changedIndexPaths(ctx, nonRepo); err == nil {
+	if _, err := gitutil.ChangedIndexPaths(ctx, nonRepo, "--cached"); err == nil {
 		t.Fatal("expected changed-index failure outside repository")
 	}
 }
@@ -72,7 +74,7 @@ func TestTemporaryTargetAndWorktreeRejectInvalidBase(t *testing.T) {
 	if _, _, err := buildTargetWithTemporaryIndex(ctx, repo, "not-a-commit"); err == nil {
 		t.Fatal("expected invalid base rejection")
 	}
-	if _, cleanup, err := detachedWorktree(ctx, repo, "not-a-commit", "polis-invalid-worktree-*"); err == nil {
+	if _, cleanup, err := gitutil.DetachedWorktree(ctx, repo, "not-a-commit", "polis-invalid-worktree-*", "create isolated worktree staging", "create isolated worktree"); err == nil {
 		cleanup()
 		t.Fatal("expected invalid worktree base rejection")
 	}

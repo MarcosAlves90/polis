@@ -43,3 +43,7 @@ go.work.sum
 # OS metadata
 .DS_Store
 Thumbs.db
+# SonarQube/SonarScanner local artifacts
+/.scannerwork/
+/.sonar/
+/.sonarlint/

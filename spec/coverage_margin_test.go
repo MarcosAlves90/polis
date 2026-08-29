@@ -28,7 +28,7 @@ func TestPolicyValidationFailureCoverageMargin(t *testing.T) {
 	if err := dec.Decode(&first); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensurePolicyEOF(dec); err == nil || !strings.Contains(err.Error(), "trailing data") {
+	if err := ensureDecoderEOF(dec, "policy"); err == nil || !strings.Contains(err.Error(), "trailing data") {
 		t.Fatalf("expected malformed trailing data, got %v", err)
 	}
 

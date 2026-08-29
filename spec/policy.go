@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"path"
 	"strings"
@@ -82,7 +81,7 @@ func DecodePolicy(raw []byte) (Policy, error) {
 	if err := dec.Decode(&rp); err != nil {
 		return Policy{}, fmt.Errorf("decode policy: %w", err)
 	}
-	if err := ensurePolicyEOF(dec); err != nil {
+	if err := ensureDecoderEOF(dec, "policy"); err != nil {
 		return Policy{}, err
 	}
 	p := Policy{SchemaVersion: rp.SchemaVersion, Gates: make([]GatePolicy, 0, len(rp.Gates))}
@@ -97,18 +96,6 @@ func DecodePolicy(raw []byte) (Policy, error) {
 		return Policy{}, err
 	}
 	return p, nil
-}
-
-func ensurePolicyEOF(dec *json.Decoder) error {
-	var extra any
-	err := dec.Decode(&extra)
-	if errors.Is(err, io.EOF) {
-		return nil
-	}
-	if err == nil {
-		return errors.New("policy contains trailing JSON value")
-	}
-	return fmt.Errorf("policy trailing data: %w", err)
 }
 
 func decodeGatePolicy(raw json.RawMessage) (GatePolicy, error) {
@@ -251,7 +238,7 @@ func decodeCommand(raw json.RawMessage) (CommandSpec, error) {
 	if err := dec.Decode(&cmd); err != nil {
 		return CommandSpec{}, fmt.Errorf("decode command: %w", err)
 	}
-	if err := ensurePolicyEOF(dec); err != nil {
+	if err := ensureDecoderEOF(dec, "policy"); err != nil {
 		return CommandSpec{}, err
 	}
 	if err := cmd.Validate(); err != nil {

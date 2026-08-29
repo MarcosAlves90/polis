@@ -16,10 +16,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/MarcosAlves90/polis/v4/internal/changeexec"
+	"github.com/MarcosAlves90/polis/v4/internal/fileutil"
+	"github.com/MarcosAlves90/polis/v4/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v4/internal/isolation"
 	"github.com/MarcosAlves90/polis/v4/internal/packageverify"
-	"github.com/MarcosAlves90/polis/v4/internal/pathguard"
-	"github.com/MarcosAlves90/polis/v4/internal/policyexec"
 	"github.com/MarcosAlves90/polis/v4/spec"
 )
 
@@ -56,17 +56,6 @@ type buildArtifact struct {
 	evidence        []byte
 }
 
-type isolatedValidation struct {
-	repo            string
-	baseCommit      string
-	targetTree      string
-	patch           []byte
-	regressionPatch []byte
-	change          spec.ChangeContract
-	policy          spec.Policy
-	evidence        io.Writer
-}
-
 func Build(ctx context.Context, opts Options) (Result, error) {
 	if err := validateBuildOptions(opts); err != nil {
 		return Result{}, err
@@ -99,11 +88,23 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	var evidence bytes.Buffer
-	validation := isolatedValidation{
-		repo: repo, baseCommit: baseCommit, targetTree: targetTree, patch: patch,
-		regressionPatch: regressionPatch, change: changeContract, policy: policy, evidence: &evidence,
+	validation := isolation.Validation{
+		Repo:                  repo,
+		BaseCommit:            baseCommit,
+		TargetTree:            targetTree,
+		Patch:                 patch,
+		RegressionPatch:       regressionPatch,
+		Change:                changeContract,
+		Policy:                policy,
+		Evidence:              &evidence,
+		RedWorktreePattern:    "polis-red-worktree-*",
+		TargetWorktreePattern: "polis-worktree-*",
+		CreateWorktreeError:   "create isolated worktree",
+		TargetApplyCheckError: "isolated git apply --check failed",
+		TargetApplyError:      "isolated git apply --index failed",
+		PolicyFailureLabel:    "project policy validation",
 	}
-	if err := validateIsolated(ctx, validation); err != nil {
+	if err := isolation.Validate(ctx, validation); err != nil {
 		return Result{}, err
 	}
 
@@ -162,14 +163,14 @@ func loadRegressionPatch(repo, filename, changeKind string) ([]byte, error) {
 }
 
 func resolveSourceIdentity(ctx context.Context, repo string) (string, string, error) {
-	objectFormat, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "--show-object-format")
+	objectFormat, err := gitutil.Output(ctx, repo, nil, nil, gitRevParse, "--show-object-format")
 	if err != nil {
 		return "", "", fmt.Errorf("detect Git object format: %w", err)
 	}
 	if objectFormat != "sha1" && objectFormat != "sha256" {
 		return "", "", fmt.Errorf("unsupported Git object format %q", objectFormat)
 	}
-	baseCommit, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "HEAD")
+	baseCommit, err := gitutil.Output(ctx, repo, nil, nil, gitRevParse, "HEAD")
 	if err != nil {
 		return "", "", fmt.Errorf("resolve HEAD: %w", err)
 	}
@@ -180,7 +181,7 @@ func requireBuildSourceState(ctx context.Context, repo string) error {
 	if err := requireCleanIndex(ctx, repo); err != nil {
 		return err
 	}
-	status, err := gitOutput(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("inspect working tree: %w", err)
 	}
@@ -239,19 +240,7 @@ func finalizeArtifact(artifact buildArtifact, manifestRaw []byte) (Result, error
 }
 
 func resolveRepo(ctx context.Context, repo string) (string, error) {
-	abs, err := filepath.Abs(repo)
-	if err != nil {
-		return "", fmt.Errorf("resolve repo path: %w", err)
-	}
-	root, err := gitOutput(ctx, abs, nil, nil, gitRevParse, "--show-toplevel")
-	if err != nil {
-		return "", fmt.Errorf("not a Git worktree: %w", err)
-	}
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return "", fmt.Errorf("resolve Git root: %w", err)
-	}
-	return rootAbs, nil
+	return gitutil.ResolveRoot(ctx, repo, gitutil.ResolveRootOptions{PathError: "resolve repo path", GitError: "not a Git worktree", RootError: "resolve Git root"})
 }
 
 func requireCleanIndex(ctx context.Context, repo string) error {
@@ -273,7 +262,7 @@ func loadCommittedPolicy(ctx context.Context, repo string) ([]byte, spec.Policy,
 	if err != nil {
 		return nil, spec.Policy{}, fmt.Errorf("read .polis/policy.json: %w", err)
 	}
-	committed, err := gitBytes(ctx, repo, nil, nil, "show", "HEAD:.polis/policy.json")
+	committed, err := gitutil.Bytes(ctx, repo, nil, nil, "show", "HEAD:.polis/policy.json")
 	if err != nil {
 		return nil, spec.Policy{}, errors.New(".polis/policy.json must exist in HEAD")
 	}
@@ -288,146 +277,27 @@ func loadCommittedPolicy(ctx context.Context, repo string) ([]byte, spec.Policy,
 }
 
 func buildTargetWithTemporaryIndex(ctx context.Context, repo, baseCommit string) (string, []byte, error) {
-	f, err := os.CreateTemp("", "polis-index-*")
+	indexPath, cleanup, err := gitutil.TemporaryIndex("polis-index-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("allocate temporary index path: %w", err)
 	}
-	indexPath := f.Name()
-	_ = f.Close()
-	_ = os.Remove(indexPath)
-	defer os.Remove(indexPath)
+	defer cleanup()
 	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
-	if _, err := gitBytes(ctx, repo, env, nil, "read-tree", baseCommit); err != nil {
+	if _, err := gitutil.Bytes(ctx, repo, env, nil, "read-tree", baseCommit); err != nil {
 		return "", nil, fmt.Errorf("initialize temporary index: %w", err)
 	}
-	if _, err := gitBytes(ctx, repo, env, nil, "add", "-A", "--", "."); err != nil {
+	if _, err := gitutil.Bytes(ctx, repo, env, nil, "add", "-A", "--", "."); err != nil {
 		return "", nil, fmt.Errorf("capture working tree in temporary index: %w", err)
 	}
-	targetTree, err := gitOutput(ctx, repo, env, nil, "write-tree")
+	targetTree, err := gitutil.Output(ctx, repo, env, nil, "write-tree")
 	if err != nil {
 		return "", nil, fmt.Errorf("write target tree: %w", err)
 	}
-	patch, err := gitBytes(ctx, repo, env, nil, "diff", gitCached, "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--find-renames", baseCommit, "--")
+	patch, err := gitutil.Bytes(ctx, repo, env, nil, "diff", gitCached, "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--find-renames", baseCommit, "--")
 	if err != nil {
 		return "", nil, fmt.Errorf("generate patch: %w", err)
 	}
 	return targetTree, patch, nil
-}
-
-func validateIsolated(ctx context.Context, validation isolatedValidation) error {
-	redPaths, err := validateRegressionIsolation(ctx, validation)
-	if err != nil {
-		return err
-	}
-	return validateTargetIsolation(ctx, validation, redPaths)
-}
-
-func validateRegressionIsolation(ctx context.Context, validation isolatedValidation) (map[string]struct{}, error) {
-	if validation.change.Kind != spec.ChangeKindDefect {
-		return nil, nil
-	}
-	worktree, cleanup, err := detachedWorktree(ctx, validation.repo, validation.baseCommit, "polis-red-worktree-*")
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-	if _, err := gitBytes(ctx, worktree, nil, bytes.NewReader(validation.regressionPatch), "apply", "--check", "-"); err != nil {
-		return nil, fmt.Errorf("regression probe apply check failed: %w", err)
-	}
-	if _, err := gitBytes(ctx, worktree, nil, bytes.NewReader(validation.regressionPatch), "apply", "--index", "-"); err != nil {
-		return nil, fmt.Errorf("regression probe apply failed: %w", err)
-	}
-	redPaths, err := changedIndexPaths(ctx, worktree)
-	if err != nil {
-		return nil, err
-	}
-	if err := changeexec.ExecuteBaseline(validation.change, worktree, validation.evidence); err != nil {
-		return nil, fmt.Errorf("regression baseline validation: %w", err)
-	}
-	return redPaths, nil
-}
-
-func validateTargetIsolation(ctx context.Context, validation isolatedValidation, redPaths map[string]struct{}) error {
-	worktree, cleanup, err := detachedWorktree(ctx, validation.repo, validation.baseCommit, "polis-worktree-*")
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-	if _, err := gitBytes(ctx, worktree, nil, bytes.NewReader(validation.patch), "apply", "--check", "-"); err != nil {
-		return fmt.Errorf("isolated git apply --check failed: %w", err)
-	}
-	if _, err := gitBytes(ctx, worktree, nil, bytes.NewReader(validation.patch), "apply", "--index", "-"); err != nil {
-		return fmt.Errorf("isolated git apply --index failed: %w", err)
-	}
-	if err := requireRegressionPaths(ctx, worktree, redPaths); err != nil {
-		return err
-	}
-	if err := requireTargetTree(ctx, worktree, validation.targetTree); err != nil {
-		return err
-	}
-	if err := changeexec.ExecuteTarget(validation.change, worktree, validation.evidence); err != nil {
-		return err
-	}
-	result := policyexec.Execute(validation.policy, worktree, validation.evidence)
-	if result.Overall != spec.StatusPass {
-		return fmt.Errorf("project policy validation %s", result.Overall)
-	}
-	return nil
-}
-
-func requireRegressionPaths(ctx context.Context, worktree string, redPaths map[string]struct{}) error {
-	targetPaths, err := changedIndexPaths(ctx, worktree)
-	if err != nil {
-		return err
-	}
-	for path := range redPaths {
-		if _, ok := targetPaths[path]; !ok {
-			return fmt.Errorf("regression probe path %q is absent from final payload", path)
-		}
-	}
-	return nil
-}
-
-func requireTargetTree(ctx context.Context, worktree, targetTree string) error {
-	gotTree, err := gitOutput(ctx, worktree, nil, nil, "write-tree")
-	if err != nil {
-		return fmt.Errorf("read isolated target tree: %w", err)
-	}
-	if gotTree != targetTree {
-		return fmt.Errorf("isolated target_tree mismatch: got %s want %s", gotTree, targetTree)
-	}
-	return nil
-}
-
-func detachedWorktree(ctx context.Context, repo, baseCommit, pattern string) (string, func(), error) {
-	parent, err := os.MkdirTemp("", pattern)
-	if err != nil {
-		return "", nil, fmt.Errorf("create isolated worktree staging: %w", err)
-	}
-	worktree := filepath.Join(parent, "repo")
-	if _, err := gitBytes(ctx, repo, nil, nil, "worktree", "add", "--detach", worktree, baseCommit); err != nil {
-		os.RemoveAll(parent)
-		return "", nil, fmt.Errorf("create isolated worktree: %w", err)
-	}
-	cleanup := func() {
-		_, _ = gitBytes(context.Background(), repo, nil, nil, "worktree", "remove", "--force", worktree)
-		_ = os.RemoveAll(parent)
-	}
-	return worktree, cleanup, nil
-}
-
-func changedIndexPaths(ctx context.Context, worktree string) (map[string]struct{}, error) {
-	b, err := gitBytes(ctx, worktree, nil, nil, "diff", gitCached, "--name-only", "-z", "HEAD", "--")
-	if err != nil {
-		return nil, fmt.Errorf("list changed paths: %w", err)
-	}
-	result := map[string]struct{}{}
-	for _, raw := range bytes.Split(b, []byte{0}) {
-		if len(raw) > 0 {
-			result[string(raw)] = struct{}{}
-		}
-	}
-	return result, nil
 }
 
 func writeCandidateArchive(out string, manifest, policy, change, regression, payload, evidence []byte) (string, error) {
@@ -495,28 +365,7 @@ func writeCandidateArchive(out string, manifest, policy, change, regression, pay
 }
 
 func readExternalInput(repo, filename string, max int64) ([]byte, error) {
-	abs, err := filepath.Abs(filename)
-	if err != nil {
-		return nil, err
-	}
-	contained, err := pathguard.Contains(repo, abs)
-	if err != nil {
-		return nil, fmt.Errorf("resolve input boundary: %w", err)
-	}
-	if contained {
-		return nil, errors.New("input must be outside target worktree")
-	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("input must be a regular file")
-	}
-	if info.Size() > max {
-		return nil, fmt.Errorf("input exceeds maximum size %d", max)
-	}
-	return os.ReadFile(abs)
+	return fileutil.ReadOutside(repo, filename, fileutil.OutsideReadOptions{Max: max, OversizeMessage: "input exceeds maximum size %d"})
 }
 
 func fileSHA256(filename string) (string, error) {
@@ -560,23 +409,4 @@ func copyExclusive(source, target string) error {
 	}
 	ok = true
 	return nil
-}
-
-func gitOutput(ctx context.Context, repo string, env []string, stdin io.Reader, args ...string) (string, error) {
-	b, err := gitBytes(ctx, repo, env, stdin, args...)
-	return strings.TrimSpace(string(b)), err
-}
-
-func gitBytes(ctx context.Context, repo string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
-	allArgs := append([]string{"-C", repo}, args...)
-	cmd := exec.CommandContext(ctx, "git", allArgs...)
-	if env != nil {
-		cmd.Env = env
-	}
-	cmd.Stdin = stdin
-	b, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(b)))
-	}
-	return b, nil
 }

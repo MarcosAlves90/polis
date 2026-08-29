@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 )
 
@@ -44,25 +43,13 @@ func DecodeChangeContract(raw []byte) (ChangeContract, error) {
 	if err := dec.Decode(&c); err != nil {
 		return ChangeContract{}, fmt.Errorf("decode change contract: %w", err)
 	}
-	if err := ensureChangeEOF(dec); err != nil {
+	if err := ensureDecoderEOF(dec, "change contract"); err != nil {
 		return ChangeContract{}, err
 	}
 	if err := c.Validate(); err != nil {
 		return ChangeContract{}, err
 	}
 	return c, nil
-}
-
-func ensureChangeEOF(dec *json.Decoder) error {
-	var extra any
-	err := dec.Decode(&extra)
-	if errors.Is(err, io.EOF) {
-		return nil
-	}
-	if err == nil {
-		return errors.New("change contract contains trailing JSON value")
-	}
-	return fmt.Errorf("change contract trailing data: %w", err)
 }
 
 func (c ChangeContract) Validate() error {

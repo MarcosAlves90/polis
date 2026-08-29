@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"regexp"
 )
 
@@ -37,25 +36,13 @@ func DecodeManifest(raw []byte) (Manifest, error) {
 	if err := dec.Decode(&m); err != nil {
 		return Manifest{}, fmt.Errorf("decode manifest: %w", err)
 	}
-	if err := ensureJSONEOF(dec); err != nil {
+	if err := ensureDecoderEOF(dec, "manifest"); err != nil {
 		return Manifest{}, err
 	}
 	if err := m.Validate(); err != nil {
 		return Manifest{}, err
 	}
 	return m, nil
-}
-
-func ensureJSONEOF(dec *json.Decoder) error {
-	var extra any
-	err := dec.Decode(&extra)
-	if errors.Is(err, io.EOF) {
-		return nil
-	}
-	if err == nil {
-		return errors.New("manifest contains trailing JSON value")
-	}
-	return fmt.Errorf("manifest trailing data: %w", err)
 }
 
 func (m Manifest) Validate() error {
