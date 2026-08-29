@@ -11,6 +11,11 @@
 *-polis-*.zip
 *-polis-*.sha256
 
+# POLIS project configuration
+!/.polis/
+/.polis/*
+!/.polis/policy.json
+
 # Coverage and test artifacts
 *.coverprofile
 coverage.out

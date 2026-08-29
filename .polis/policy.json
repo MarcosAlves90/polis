@@ -1,0 +1,106 @@
+{
+  "schema_version": 2,
+  "gates": [
+    {
+      "id": "test.complete",
+      "mode": "command",
+      "command": {
+        "argv": [
+          "go",
+          "test",
+          "./..."
+        ],
+        "cwd": ".",
+        "timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "coverage",
+      "mode": "coverage",
+      "command": {
+        "argv": [
+          "go",
+          "test",
+          "-coverpkg=./...",
+          "./...",
+          "-coverprofile=.polis/coverage.out"
+        ],
+        "cwd": ".",
+        "timeout_seconds": 1200
+      },
+      "adapter": "go-coverprofile-v1",
+      "report": ".polis/coverage.out",
+      "operator": "\u003e",
+      "threshold_percent": 80
+    },
+    {
+      "id": "lint",
+      "mode": "command",
+      "command": {
+        "argv": [
+          "go",
+          "vet",
+          "./..."
+        ],
+        "cwd": ".",
+        "timeout_seconds": 600
+      }
+    },
+    {
+      "id": "typecheck",
+      "mode": "not_applicable",
+      "reason": "Go test/build perform compile checks; the canonical Go profile defines no independent typecheck command"
+    },
+    {
+      "id": "build",
+      "mode": "command",
+      "command": {
+        "argv": [
+          "go",
+          "build",
+          "./..."
+        ],
+        "cwd": ".",
+        "timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "smoke",
+      "mode": "not_applicable",
+      "reason": "the canonical Go profile cannot infer a project-specific runtime smoke command"
+    },
+    {
+      "id": "compatibility",
+      "mode": "not_applicable",
+      "reason": "the canonical Go profile cannot infer a project-specific compatibility surface"
+    },
+    {
+      "id": "dependency",
+      "mode": "command",
+      "command": {
+        "argv": [
+          "go",
+          "mod",
+          "verify"
+        ],
+        "cwd": ".",
+        "timeout_seconds": 600
+      }
+    },
+    {
+      "id": "migration",
+      "mode": "not_applicable",
+      "reason": "the canonical Go profile cannot infer a persisted-state migration contract"
+    },
+    {
+      "id": "security",
+      "mode": "not_applicable",
+      "reason": "alpha.7 does not assume an external Go vulnerability scanner is installed"
+    },
+    {
+      "id": "platform",
+      "mode": "not_applicable",
+      "reason": "local policy bootstrap does not establish cross-platform runtime evidence"
+    }
+  ]
+}
