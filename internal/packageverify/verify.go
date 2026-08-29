@@ -16,14 +16,24 @@ import (
 	"github.com/MarcosAlves90/polis/v4/spec"
 )
 
+const (
+	memberChange     = "polis/polis-change.json"
+	memberChecksums  = "polis/polis-checksums.sha256"
+	memberEvidence   = "polis/polis-evidence.ndjson"
+	memberManifest   = "polis/polis-manifest.json"
+	memberPayload    = "polis/polis-payload.patch"
+	memberPolicy     = "polis/polis-policy.json"
+	memberRegression = "polis/polis-regression.patch"
+)
+
 var expectedMembers = []string{
-	"polis/polis-change.json",
-	"polis/polis-checksums.sha256",
-	"polis/polis-evidence.ndjson",
-	"polis/polis-manifest.json",
-	"polis/polis-payload.patch",
-	"polis/polis-policy.json",
-	"polis/polis-regression.patch",
+	memberChange,
+	memberChecksums,
+	memberEvidence,
+	memberManifest,
+	memberPayload,
+	memberPolicy,
+	memberRegression,
 }
 
 var lowerSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -45,6 +55,12 @@ type Package struct {
 	Evidence        []byte
 }
 
+type decodedContracts struct {
+	manifest spec.Manifest
+	policy   spec.Policy
+	change   spec.ChangeContract
+}
+
 func Verify(filename string) (Result, error) {
 	pkg, err := Load(filename)
 	if err != nil {
@@ -54,78 +70,125 @@ func Verify(filename string) (Result, error) {
 }
 
 func Load(filename string) (Package, error) {
+	contents, err := loadArchiveContents(filename)
+	if err != nil {
+		return Package{}, err
+	}
+	contracts, err := decodeContracts(contents)
+	if err != nil {
+		return Package{}, err
+	}
+	regressionPatch := contents[memberRegression]
+	if err := validateRegressionPatch(contracts.change, regressionPatch); err != nil {
+		return Package{}, err
+	}
+	if err := validateEvidenceAndIntegrity(contents, contracts); err != nil {
+		return Package{}, err
+	}
+	return packageFromContents(contents, contracts, regressionPatch), nil
+}
+
+func loadArchiveContents(filename string) (map[string][]byte, error) {
 	zr, err := zip.OpenReader(filename)
 	if err != nil {
-		return Package{}, fmt.Errorf("open POLIS archive: %w", err)
+		return nil, fmt.Errorf("open POLIS archive: %w", err)
 	}
 	defer zr.Close()
+	files, err := indexArchiveFiles(zr.File)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateInventory(files); err != nil {
+		return nil, err
+	}
+	return readArchiveContents(files)
+}
 
-	files := make(map[string]*zip.File, len(zr.File))
-	for _, f := range zr.File {
-		if err := validateMemberPath(f.Name); err != nil {
-			return Package{}, err
-		}
-		if !f.Mode().IsRegular() {
-			return Package{}, fmt.Errorf("archive member %q is not a regular file", f.Name)
-		}
-		if _, exists := files[f.Name]; exists {
-			return Package{}, fmt.Errorf("duplicate archive member %q", f.Name)
+func indexArchiveFiles(entries []*zip.File) (map[string]*zip.File, error) {
+	files := make(map[string]*zip.File, len(entries))
+	for _, f := range entries {
+		if err := validateArchiveFile(f, files); err != nil {
+			return nil, err
 		}
 		files[f.Name] = f
 	}
-	if err := validateInventory(files); err != nil {
-		return Package{}, err
-	}
+	return files, nil
+}
 
+func validateArchiveFile(f *zip.File, indexed map[string]*zip.File) error {
+	if err := validateMemberPath(f.Name); err != nil {
+		return err
+	}
+	if !f.Mode().IsRegular() {
+		return fmt.Errorf("archive member %q is not a regular file", f.Name)
+	}
+	if _, exists := indexed[f.Name]; exists {
+		return fmt.Errorf("duplicate archive member %q", f.Name)
+	}
+	return nil
+}
+
+func readArchiveContents(files map[string]*zip.File) (map[string][]byte, error) {
 	contents := make(map[string][]byte, len(files))
 	for name, f := range files {
 		b, err := readZipFile(f)
 		if err != nil {
-			return Package{}, fmt.Errorf("read %s: %w", name, err)
+			return nil, fmt.Errorf("read %s: %w", name, err)
 		}
 		contents[name] = b
 	}
+	return contents, nil
+}
 
-	manifest, err := spec.DecodeManifest(contents["polis/polis-manifest.json"])
+func decodeContracts(contents map[string][]byte) (decodedContracts, error) {
+	manifest, err := spec.DecodeManifest(contents[memberManifest])
 	if err != nil {
-		return Package{}, err
+		return decodedContracts{}, err
 	}
-	policy, err := spec.DecodePolicy(contents["polis/polis-policy.json"])
+	policy, err := spec.DecodePolicy(contents[memberPolicy])
 	if err != nil {
-		return Package{}, err
+		return decodedContracts{}, err
 	}
-	change, err := spec.DecodeChangeContract(contents["polis/polis-change.json"])
+	change, err := spec.DecodeChangeContract(contents[memberChange])
 	if err != nil {
-		return Package{}, err
+		return decodedContracts{}, err
 	}
-	regressionPatch := contents["polis/polis-regression.patch"]
+	return decodedContracts{manifest: manifest, policy: policy, change: change}, nil
+}
+
+func validateRegressionPatch(change spec.ChangeContract, regressionPatch []byte) error {
 	if change.Kind == spec.ChangeKindDefect && len(regressionPatch) == 0 {
-		return Package{}, errors.New("defect package requires non-empty regression patch")
+		return errors.New("defect package requires non-empty regression patch")
 	}
 	if change.Kind != spec.ChangeKindDefect && len(regressionPatch) != 0 {
-		return Package{}, errors.New("non-defect package requires empty regression patch")
+		return errors.New("non-defect package requires empty regression patch")
 	}
-	events, err := spec.DecodeEvidence(contents["polis/polis-evidence.ndjson"])
-	if err != nil {
-		return Package{}, err
-	}
-	if err := spec.ValidatePassEvidence(events, change, policy); err != nil {
-		return Package{}, fmt.Errorf("validate evidence contract: %w", err)
-	}
-	if err := verifyManifestDigests(manifest, contents); err != nil {
-		return Package{}, err
-	}
-	if err := verifyChecksumFile(contents); err != nil {
-		return Package{}, err
-	}
+	return nil
+}
 
+func validateEvidenceAndIntegrity(contents map[string][]byte, contracts decodedContracts) error {
+	events, err := spec.DecodeEvidence(contents[memberEvidence])
+	if err != nil {
+		return err
+	}
+	if err := spec.ValidatePassEvidence(events, contracts.change, contracts.policy); err != nil {
+		return fmt.Errorf("validate evidence contract: %w", err)
+	}
+	if err := verifyManifestDigests(contracts.manifest, contents); err != nil {
+		return err
+	}
+	return verifyChecksumFile(contents)
+}
+
+func packageFromContents(contents map[string][]byte, contracts decodedContracts, regressionPatch []byte) Package {
+	manifest := contracts.manifest
 	result := Result{Project: manifest.Project, Change: manifest.Change, BaseCommit: manifest.BaseCommit, TargetTree: manifest.TargetTree}
 	return Package{
-		Result: result, Manifest: manifest, Policy: policy, Change: change,
-		Patch:           append([]byte(nil), contents["polis/polis-payload.patch"]...),
+		Result: result, Manifest: manifest, Policy: contracts.policy, Change: contracts.change,
+		Patch:           append([]byte(nil), contents[memberPayload]...),
 		RegressionPatch: append([]byte(nil), regressionPatch...),
-		Evidence:        append([]byte(nil), contents["polis/polis-evidence.ndjson"]...),
-	}, nil
+		Evidence:        append([]byte(nil), contents[memberEvidence]...),
+	}
 }
 
 func validateMemberPath(name string) error {
@@ -138,21 +201,35 @@ func validateMemberPath(name string) error {
 	if strings.HasPrefix(name, "/") || strings.HasPrefix(name, "//") {
 		return fmt.Errorf("archive member %q is absolute", name)
 	}
-	if len(name) >= 2 && ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z')) && name[1] == ':' {
+	if hasDriveLetterPrefix(name) {
 		return fmt.Errorf("archive member %q uses drive-letter path", name)
 	}
 	if path.Clean(name) != name {
 		return fmt.Errorf("archive member %q is not normalized", name)
 	}
-	for _, segment := range strings.Split(name, "/") {
-		if segment == "" || segment == "." || segment == ".." {
-			return fmt.Errorf("archive member %q contains prohibited path segment", name)
-		}
+	if hasProhibitedPathSegment(name) {
+		return fmt.Errorf("archive member %q contains prohibited path segment", name)
 	}
 	if !strings.HasPrefix(name, "polis/") {
 		return fmt.Errorf("archive member %q is outside polis root", name)
 	}
 	return nil
+}
+
+func hasDriveLetterPrefix(name string) bool {
+	if len(name) < 2 || name[1] != ':' {
+		return false
+	}
+	return (name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z')
+}
+
+func hasProhibitedPathSegment(name string) bool {
+	for _, segment := range strings.Split(name, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func validateInventory(files map[string]*zip.File) error {
@@ -178,66 +255,111 @@ func readZipFile(f *zip.File) ([]byte, error) {
 
 func verifyManifestDigests(m spec.Manifest, contents map[string][]byte) error {
 	checks := []struct{ name, want string }{
-		{"polis/polis-policy.json", m.PolicySHA256},
-		{"polis/polis-change.json", m.ChangeContractSHA256},
-		{"polis/polis-regression.patch", m.RegressionPatchSHA256},
-		{"polis/polis-payload.patch", m.PayloadSHA256},
+		{memberPolicy, m.PolicySHA256},
+		{memberChange, m.ChangeContractSHA256},
+		{memberRegression, m.RegressionPatchSHA256},
+		{memberPayload, m.PayloadSHA256},
 	}
 	for _, check := range checks {
-		sum := sha256.Sum256(contents[check.name])
-		if hex.EncodeToString(sum[:]) != check.want {
-			return fmt.Errorf("manifest digest mismatch for %s", check.name)
+		if err := verifyDigest(contents[check.name], check.want, check.name); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
+func verifyDigest(data []byte, want, name string) error {
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != want {
+		return fmt.Errorf("manifest digest mismatch for %s", name)
+	}
+	return nil
+}
+
 func verifyChecksumFile(contents map[string][]byte) error {
+	expected := expectedChecksumNames(contents)
+	gotNames, err := scanChecksumEntries(contents, expected)
+	if err != nil {
+		return err
+	}
+	return validateChecksumInventory(gotNames, expected)
+}
+
+func expectedChecksumNames(contents map[string][]byte) []string {
 	expected := make([]string, 0, len(contents)-1)
 	for name := range contents {
-		if name != "polis/polis-checksums.sha256" {
+		if name != memberChecksums {
 			expected = append(expected, name)
 		}
 	}
 	sort.Strings(expected)
+	return expected
+}
 
-	scanner := bufio.NewScanner(strings.NewReader(string(contents["polis/polis-checksums.sha256"])))
+func scanChecksumEntries(contents map[string][]byte, expected []string) ([]string, error) {
+	scanner := bufio.NewScanner(strings.NewReader(string(contents[memberChecksums])))
 	gotNames := make([]string, 0, len(expected))
 	seen := map[string]bool{}
 	lineNo := 0
 	for scanner.Scan() {
 		lineNo++
-		line := scanner.Text()
-		if len(line) < 67 || line[64:66] != "  " {
-			return fmt.Errorf("malformed checksum line %d", lineNo)
-		}
-		digest, name := line[:64], line[66:]
-		if !lowerSHA256.MatchString(digest) {
-			return fmt.Errorf("malformed checksum digest on line %d", lineNo)
-		}
-		if err := validateMemberPath(name); err != nil {
-			return fmt.Errorf("invalid checksum path on line %d: %w", lineNo, err)
-		}
-		if name == "polis/polis-checksums.sha256" {
-			return errors.New("checksum file must not hash itself")
-		}
-		if seen[name] {
-			return fmt.Errorf("duplicate checksum entry %q", name)
+		name, err := verifyChecksumLine(scanner.Text(), lineNo, contents, seen)
+		if err != nil {
+			return nil, err
 		}
 		seen[name] = true
-		data, ok := contents[name]
-		if !ok {
-			return fmt.Errorf("checksum references unknown member %q", name)
-		}
-		sum := sha256.Sum256(data)
-		if hex.EncodeToString(sum[:]) != digest {
-			return fmt.Errorf("checksum mismatch for %q", name)
-		}
 		gotNames = append(gotNames, name)
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read checksum file: %w", err)
+		return nil, fmt.Errorf("read checksum file: %w", err)
 	}
+	return gotNames, nil
+}
+
+func verifyChecksumLine(line string, lineNo int, contents map[string][]byte, seen map[string]bool) (string, error) {
+	digest, name, err := parseChecksumLine(line, lineNo)
+	if err != nil {
+		return "", err
+	}
+	if err := validateChecksumName(name, lineNo, seen); err != nil {
+		return "", err
+	}
+	data, ok := contents[name]
+	if !ok {
+		return "", fmt.Errorf("checksum references unknown member %q", name)
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != digest {
+		return "", fmt.Errorf("checksum mismatch for %q", name)
+	}
+	return name, nil
+}
+
+func parseChecksumLine(line string, lineNo int) (string, string, error) {
+	if len(line) < 67 || line[64:66] != "  " {
+		return "", "", fmt.Errorf("malformed checksum line %d", lineNo)
+	}
+	digest, name := line[:64], line[66:]
+	if !lowerSHA256.MatchString(digest) {
+		return "", "", fmt.Errorf("malformed checksum digest on line %d", lineNo)
+	}
+	return digest, name, nil
+}
+
+func validateChecksumName(name string, lineNo int, seen map[string]bool) error {
+	if err := validateMemberPath(name); err != nil {
+		return fmt.Errorf("invalid checksum path on line %d: %w", lineNo, err)
+	}
+	if name == memberChecksums {
+		return errors.New("checksum file must not hash itself")
+	}
+	if seen[name] {
+		return fmt.Errorf("duplicate checksum entry %q", name)
+	}
+	return nil
+}
+
+func validateChecksumInventory(gotNames, expected []string) error {
 	if len(gotNames) != len(expected) {
 		return fmt.Errorf("checksum inventory mismatch: got %d entries, want %d", len(gotNames), len(expected))
 	}

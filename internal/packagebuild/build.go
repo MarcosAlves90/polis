@@ -44,6 +44,18 @@ const (
 	gitCached   = "--cached"
 )
 
+type buildArtifact struct {
+	opts            Options
+	objectFormat    string
+	baseCommit      string
+	targetTree      string
+	policyRaw       []byte
+	changeRaw       []byte
+	regressionPatch []byte
+	patch           []byte
+	evidence        []byte
+}
+
 type isolatedValidation struct {
 	repo            string
 	baseCommit      string
@@ -56,58 +68,24 @@ type isolatedValidation struct {
 }
 
 func Build(ctx context.Context, opts Options) (Result, error) {
-	if opts.Repo == "" || opts.Project == "" || opts.Change == "" || opts.Out == "" || opts.Contract == "" {
-		return Result{}, errors.New("repo, project, change, out, and contract are required")
+	if err := validateBuildOptions(opts); err != nil {
+		return Result{}, err
 	}
 	repo, err := resolveRepo(ctx, opts.Repo)
 	if err != nil {
 		return Result{}, err
 	}
-	changeRaw, err := readExternalInput(repo, opts.Contract, 1<<20)
+	changeRaw, changeContract, regressionPatch, err := loadBuildInputs(repo, opts)
 	if err != nil {
-		return Result{}, fmt.Errorf("load change contract: %w", err)
-	}
-	changeContract, err := spec.DecodeChangeContract(changeRaw)
-	if err != nil {
-		return Result{}, fmt.Errorf("invalid change contract: %w", err)
-	}
-	var regressionPatch []byte
-	if changeContract.Kind == spec.ChangeKindDefect {
-		if opts.RegressionPatch == "" {
-			return Result{}, errors.New("defect build requires regression-patch")
-		}
-		regressionPatch, err = readExternalInput(repo, opts.RegressionPatch, 16<<20)
-		if err != nil {
-			return Result{}, fmt.Errorf("load regression patch: %w", err)
-		}
-		if len(regressionPatch) == 0 {
-			return Result{}, errors.New("regression patch is empty")
-		}
-	} else if opts.RegressionPatch != "" {
-		return Result{}, errors.New("non-defect build must not provide regression-patch")
-	}
-	objectFormat, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "--show-object-format")
-	if err != nil {
-		return Result{}, fmt.Errorf("detect Git object format: %w", err)
-	}
-	if objectFormat != "sha1" && objectFormat != "sha256" {
-		return Result{}, fmt.Errorf("unsupported Git object format %q", objectFormat)
-	}
-	baseCommit, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "HEAD")
-	if err != nil {
-		return Result{}, fmt.Errorf("resolve HEAD: %w", err)
-	}
-	if err := requireCleanIndex(ctx, repo); err != nil {
 		return Result{}, err
 	}
-	status, err := gitOutput(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
+	objectFormat, baseCommit, err := resolveSourceIdentity(ctx, repo)
 	if err != nil {
-		return Result{}, fmt.Errorf("inspect working tree: %w", err)
+		return Result{}, err
 	}
-	if status == "" {
-		return Result{}, errors.New("working tree has no non-ignored changes")
+	if err := requireBuildSourceState(ctx, repo); err != nil {
+		return Result{}, err
 	}
-
 	policyRaw, policy, err := loadCommittedPolicy(ctx, repo)
 	if err != nil {
 		return Result{}, err
@@ -122,47 +100,126 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 
 	var evidence bytes.Buffer
 	validation := isolatedValidation{
-		repo:            repo,
-		baseCommit:      baseCommit,
-		targetTree:      targetTree,
-		patch:           patch,
-		regressionPatch: regressionPatch,
-		change:          changeContract,
-		policy:          policy,
-		evidence:        &evidence,
+		repo: repo, baseCommit: baseCommit, targetTree: targetTree, patch: patch,
+		regressionPatch: regressionPatch, change: changeContract, policy: policy, evidence: &evidence,
 	}
 	if err := validateIsolated(ctx, validation); err != nil {
 		return Result{}, err
 	}
 
-	policySum := sha256.Sum256(policyRaw)
-	changeSum := sha256.Sum256(changeRaw)
-	regressionSum := sha256.Sum256(regressionPatch)
-	payloadSum := sha256.Sum256(patch)
+	artifact := buildArtifact{
+		opts: opts, objectFormat: objectFormat, baseCommit: baseCommit, targetTree: targetTree,
+		policyRaw: policyRaw, changeRaw: changeRaw, regressionPatch: regressionPatch, patch: patch, evidence: evidence.Bytes(),
+	}
+	manifestRaw, err := encodeManifest(artifact)
+	if err != nil {
+		return Result{}, err
+	}
+	return finalizeArtifact(artifact, manifestRaw)
+}
+
+func validateBuildOptions(opts Options) error {
+	if opts.Repo == "" || opts.Project == "" || opts.Change == "" || opts.Out == "" || opts.Contract == "" {
+		return errors.New("repo, project, change, out, and contract are required")
+	}
+	return nil
+}
+
+func loadBuildInputs(repo string, opts Options) ([]byte, spec.ChangeContract, []byte, error) {
+	changeRaw, err := readExternalInput(repo, opts.Contract, 1<<20)
+	if err != nil {
+		return nil, spec.ChangeContract{}, nil, fmt.Errorf("load change contract: %w", err)
+	}
+	changeContract, err := spec.DecodeChangeContract(changeRaw)
+	if err != nil {
+		return nil, spec.ChangeContract{}, nil, fmt.Errorf("invalid change contract: %w", err)
+	}
+	regressionPatch, err := loadRegressionPatch(repo, opts.RegressionPatch, changeContract.Kind)
+	if err != nil {
+		return nil, spec.ChangeContract{}, nil, err
+	}
+	return changeRaw, changeContract, regressionPatch, nil
+}
+
+func loadRegressionPatch(repo, filename, changeKind string) ([]byte, error) {
+	if changeKind != spec.ChangeKindDefect {
+		if filename != "" {
+			return nil, errors.New("non-defect build must not provide regression-patch")
+		}
+		return nil, nil
+	}
+	if filename == "" {
+		return nil, errors.New("defect build requires regression-patch")
+	}
+	patch, err := readExternalInput(repo, filename, 16<<20)
+	if err != nil {
+		return nil, fmt.Errorf("load regression patch: %w", err)
+	}
+	if len(patch) == 0 {
+		return nil, errors.New("regression patch is empty")
+	}
+	return patch, nil
+}
+
+func resolveSourceIdentity(ctx context.Context, repo string) (string, string, error) {
+	objectFormat, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "--show-object-format")
+	if err != nil {
+		return "", "", fmt.Errorf("detect Git object format: %w", err)
+	}
+	if objectFormat != "sha1" && objectFormat != "sha256" {
+		return "", "", fmt.Errorf("unsupported Git object format %q", objectFormat)
+	}
+	baseCommit, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "HEAD")
+	if err != nil {
+		return "", "", fmt.Errorf("resolve HEAD: %w", err)
+	}
+	return objectFormat, baseCommit, nil
+}
+
+func requireBuildSourceState(ctx context.Context, repo string) error {
+	if err := requireCleanIndex(ctx, repo); err != nil {
+		return err
+	}
+	status, err := gitOutput(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return fmt.Errorf("inspect working tree: %w", err)
+	}
+	if status == "" {
+		return errors.New("working tree has no non-ignored changes")
+	}
+	return nil
+}
+
+func encodeManifest(artifact buildArtifact) ([]byte, error) {
 	manifest := spec.Manifest{
-		FormatVersion:         spec.FormatVersion,
-		Project:               opts.Project,
-		Change:                opts.Change,
-		GitObjectFormat:       objectFormat,
-		BaseCommit:            baseCommit,
-		TargetTree:            targetTree,
-		PolicySHA256:          hex.EncodeToString(policySum[:]),
-		ChangeContractSHA256:  hex.EncodeToString(changeSum[:]),
-		RegressionPatchSHA256: hex.EncodeToString(regressionSum[:]),
-		PayloadSHA256:         hex.EncodeToString(payloadSum[:]),
+		FormatVersion: spec.FormatVersion, Project: artifact.opts.Project, Change: artifact.opts.Change,
+		GitObjectFormat: artifact.objectFormat, BaseCommit: artifact.baseCommit, TargetTree: artifact.targetTree,
+		PolicySHA256: sha256Hex(artifact.policyRaw), ChangeContractSHA256: sha256Hex(artifact.changeRaw),
+		RegressionPatchSHA256: sha256Hex(artifact.regressionPatch), PayloadSHA256: sha256Hex(artifact.patch),
 	}
 	if err := manifest.Validate(); err != nil {
-		return Result{}, fmt.Errorf("invalid build identity: %w", err)
+		return nil, fmt.Errorf("invalid build identity: %w", err)
 	}
 	manifestRaw, err := json.Marshal(manifest)
 	if err != nil {
-		return Result{}, fmt.Errorf("encode manifest: %w", err)
+		return nil, fmt.Errorf("encode manifest: %w", err)
 	}
+	return manifestRaw, nil
+}
 
-	if err := os.MkdirAll(opts.Out, 0o755); err != nil {
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func finalizeArtifact(artifact buildArtifact, manifestRaw []byte) (Result, error) {
+	if err := os.MkdirAll(artifact.opts.Out, 0o755); err != nil {
 		return Result{}, fmt.Errorf("create output directory: %w", err)
 	}
-	candidate, err := writeCandidateArchive(opts.Out, manifestRaw, policyRaw, changeRaw, regressionPatch, patch, evidence.Bytes())
+	candidate, err := writeCandidateArchive(
+		artifact.opts.Out, manifestRaw, artifact.policyRaw, artifact.changeRaw,
+		artifact.regressionPatch, artifact.patch, artifact.evidence,
+	)
 	if err != nil {
 		return Result{}, err
 	}
@@ -174,12 +231,11 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	finalName := fmt.Sprintf("polis-%s-%s-%s.polis", opts.Project, opts.Change, archiveHash[:12])
-	finalPath := filepath.Join(opts.Out, finalName)
+	finalPath := filepath.Join(artifact.opts.Out, fmt.Sprintf("polis-%s-%s-%s.polis", artifact.opts.Project, artifact.opts.Change, archiveHash[:12]))
 	if err := copyExclusive(candidate, finalPath); err != nil {
 		return Result{}, err
 	}
-	return Result{Path: finalPath, SHA256: archiveHash, BaseCommit: baseCommit, TargetTree: targetTree}, nil
+	return Result{Path: finalPath, SHA256: archiveHash, BaseCommit: artifact.baseCommit, TargetTree: artifact.targetTree}, nil
 }
 
 func resolveRepo(ctx context.Context, repo string) (string, error) {
@@ -259,70 +315,86 @@ func buildTargetWithTemporaryIndex(ctx context.Context, repo, baseCommit string)
 }
 
 func validateIsolated(ctx context.Context, validation isolatedValidation) error {
-	repo := validation.repo
-	baseCommit := validation.baseCommit
-	targetTree := validation.targetTree
-	patch := validation.patch
-	regressionPatch := validation.regressionPatch
-	change := validation.change
-	policy := validation.policy
-	evidence := validation.evidence
-
-	var redPaths map[string]struct{}
-	if change.Kind == spec.ChangeKindDefect {
-		redWorktree, cleanup, err := detachedWorktree(ctx, repo, baseCommit, "polis-red-worktree-*")
-		if err != nil {
-			return err
-		}
-		defer cleanup()
-		if _, err := gitBytes(ctx, redWorktree, nil, bytes.NewReader(regressionPatch), "apply", "--check", "-"); err != nil {
-			return fmt.Errorf("regression probe apply check failed: %w", err)
-		}
-		if _, err := gitBytes(ctx, redWorktree, nil, bytes.NewReader(regressionPatch), "apply", "--index", "-"); err != nil {
-			return fmt.Errorf("regression probe apply failed: %w", err)
-		}
-		redPaths, err = changedIndexPaths(ctx, redWorktree)
-		if err != nil {
-			return err
-		}
-		if err := changeexec.ExecuteBaseline(change, redWorktree, evidence); err != nil {
-			return fmt.Errorf("regression baseline validation: %w", err)
-		}
+	redPaths, err := validateRegressionIsolation(ctx, validation)
+	if err != nil {
+		return err
 	}
+	return validateTargetIsolation(ctx, validation, redPaths)
+}
 
-	worktree, cleanup, err := detachedWorktree(ctx, repo, baseCommit, "polis-worktree-*")
+func validateRegressionIsolation(ctx context.Context, validation isolatedValidation) (map[string]struct{}, error) {
+	if validation.change.Kind != spec.ChangeKindDefect {
+		return nil, nil
+	}
+	worktree, cleanup, err := detachedWorktree(ctx, validation.repo, validation.baseCommit, "polis-red-worktree-*")
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	if _, err := gitBytes(ctx, worktree, nil, bytes.NewReader(validation.regressionPatch), "apply", "--check", "-"); err != nil {
+		return nil, fmt.Errorf("regression probe apply check failed: %w", err)
+	}
+	if _, err := gitBytes(ctx, worktree, nil, bytes.NewReader(validation.regressionPatch), "apply", "--index", "-"); err != nil {
+		return nil, fmt.Errorf("regression probe apply failed: %w", err)
+	}
+	redPaths, err := changedIndexPaths(ctx, worktree)
+	if err != nil {
+		return nil, err
+	}
+	if err := changeexec.ExecuteBaseline(validation.change, worktree, validation.evidence); err != nil {
+		return nil, fmt.Errorf("regression baseline validation: %w", err)
+	}
+	return redPaths, nil
+}
+
+func validateTargetIsolation(ctx context.Context, validation isolatedValidation, redPaths map[string]struct{}) error {
+	worktree, cleanup, err := detachedWorktree(ctx, validation.repo, validation.baseCommit, "polis-worktree-*")
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-	if _, err := gitBytes(ctx, worktree, nil, bytes.NewReader(patch), "apply", "--check", "-"); err != nil {
+	if _, err := gitBytes(ctx, worktree, nil, bytes.NewReader(validation.patch), "apply", "--check", "-"); err != nil {
 		return fmt.Errorf("isolated git apply --check failed: %w", err)
 	}
-	if _, err := gitBytes(ctx, worktree, nil, bytes.NewReader(patch), "apply", "--index", "-"); err != nil {
+	if _, err := gitBytes(ctx, worktree, nil, bytes.NewReader(validation.patch), "apply", "--index", "-"); err != nil {
 		return fmt.Errorf("isolated git apply --index failed: %w", err)
 	}
+	if err := requireRegressionPaths(ctx, worktree, redPaths); err != nil {
+		return err
+	}
+	if err := requireTargetTree(ctx, worktree, validation.targetTree); err != nil {
+		return err
+	}
+	if err := changeexec.ExecuteTarget(validation.change, worktree, validation.evidence); err != nil {
+		return err
+	}
+	result := policyexec.Execute(validation.policy, worktree, validation.evidence)
+	if result.Overall != spec.StatusPass {
+		return fmt.Errorf("project policy validation %s", result.Overall)
+	}
+	return nil
+}
+
+func requireRegressionPaths(ctx context.Context, worktree string, redPaths map[string]struct{}) error {
 	targetPaths, err := changedIndexPaths(ctx, worktree)
 	if err != nil {
 		return err
 	}
-	for p := range redPaths {
-		if _, ok := targetPaths[p]; !ok {
-			return fmt.Errorf("regression probe path %q is absent from final payload", p)
+	for path := range redPaths {
+		if _, ok := targetPaths[path]; !ok {
+			return fmt.Errorf("regression probe path %q is absent from final payload", path)
 		}
 	}
+	return nil
+}
+
+func requireTargetTree(ctx context.Context, worktree, targetTree string) error {
 	gotTree, err := gitOutput(ctx, worktree, nil, nil, "write-tree")
 	if err != nil {
 		return fmt.Errorf("read isolated target tree: %w", err)
 	}
 	if gotTree != targetTree {
 		return fmt.Errorf("isolated target_tree mismatch: got %s want %s", gotTree, targetTree)
-	}
-	if err := changeexec.ExecuteTarget(change, worktree, evidence); err != nil {
-		return err
-	}
-	policyValidation := policyexec.Execute(policy, worktree, evidence)
-	if policyValidation.Overall != spec.StatusPass {
-		return fmt.Errorf("project policy validation %s", policyValidation.Overall)
 	}
 	return nil
 }

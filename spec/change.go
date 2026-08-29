@@ -88,34 +88,45 @@ func (c ChangeContract) Validate() error {
 
 func (r RegressionContract) Validate(kind string) error {
 	if kind == ChangeKindDefect {
-		if r.Mode != RegressionModeRedGreen {
-			return errors.New("defect requires red_green regression mode")
-		}
-		if r.Command == nil || r.BaselineExitCode == nil || r.ReasonCode != "" {
-			return errors.New("red_green regression requires command and baseline_exit_code only")
-		}
-		if err := r.Command.Validate(); err != nil {
-			return fmt.Errorf("command: %w", err)
-		}
-		if *r.BaselineExitCode < 1 || *r.BaselineExitCode > 255 {
-			return errors.New("baseline_exit_code must be between 1 and 255")
-		}
-		if len(r.BaselineOutputContains) == 0 {
-			return errors.New("baseline_output_contains must contain at least one token")
-		}
-		seen := map[string]struct{}{}
-		for i, token := range r.BaselineOutputContains {
-			if strings.TrimSpace(token) == "" {
-				return fmt.Errorf("baseline_output_contains[%d] must be non-empty", i)
-			}
-			if _, ok := seen[token]; ok {
-				return fmt.Errorf("baseline_output_contains contains duplicate token %q", token)
-			}
-			seen[token] = struct{}{}
-		}
-		return nil
+		return r.validateDefect()
 	}
+	return r.validateNonDefect()
+}
 
+func (r RegressionContract) validateDefect() error {
+	if r.Mode != RegressionModeRedGreen {
+		return errors.New("defect requires red_green regression mode")
+	}
+	if r.Command == nil || r.BaselineExitCode == nil || r.ReasonCode != "" {
+		return errors.New("red_green regression requires command and baseline_exit_code only")
+	}
+	if err := r.Command.Validate(); err != nil {
+		return fmt.Errorf("command: %w", err)
+	}
+	if *r.BaselineExitCode < 1 || *r.BaselineExitCode > 255 {
+		return errors.New("baseline_exit_code must be between 1 and 255")
+	}
+	return validateBaselineOutputTokens(r.BaselineOutputContains)
+}
+
+func validateBaselineOutputTokens(tokens []string) error {
+	if len(tokens) == 0 {
+		return errors.New("baseline_output_contains must contain at least one token")
+	}
+	seen := map[string]struct{}{}
+	for i, token := range tokens {
+		if strings.TrimSpace(token) == "" {
+			return fmt.Errorf("baseline_output_contains[%d] must be non-empty", i)
+		}
+		if _, ok := seen[token]; ok {
+			return fmt.Errorf("baseline_output_contains contains duplicate token %q", token)
+		}
+		seen[token] = struct{}{}
+	}
+	return nil
+}
+
+func (r RegressionContract) validateNonDefect() error {
 	if r.Mode != RegressionModeNotApplicable {
 		return errors.New("non-defect change requires not_applicable regression mode")
 	}

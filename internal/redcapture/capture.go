@@ -31,105 +31,165 @@ type Result struct {
 
 const gitRevParse = "rev-parse"
 
+type sourceSnapshot struct {
+	head      string
+	indexTree string
+	status    string
+}
+
 func Capture(ctx context.Context, opts Options) (Result, error) {
-	if opts.Repo == "" || opts.Contract == "" || opts.Out == "" {
-		return Result{}, errors.New("repo, contract, and out are required")
+	if err := validateOptions(opts); err != nil {
+		return Result{}, err
 	}
 	repo, err := resolveRepo(ctx, opts.Repo)
 	if err != nil {
 		return Result{}, err
 	}
-	contractRaw, err := readExternal(repo, opts.Contract, 1<<20)
-	if err != nil {
-		return Result{}, fmt.Errorf("load change contract: %w", err)
-	}
-	contract, err := spec.DecodeChangeContract(contractRaw)
-	if err != nil {
-		return Result{}, fmt.Errorf("invalid change contract: %w", err)
-	}
-	if contract.Kind != spec.ChangeKindDefect {
-		return Result{}, errors.New("capture-red requires a defect change contract")
-	}
-	outAbs, err := filepath.Abs(opts.Out)
+	contract, err := loadDefectContract(repo, opts.Contract)
 	if err != nil {
 		return Result{}, err
 	}
-	contained, err := pathguard.Contains(repo, outAbs)
-	if err != nil {
-		return Result{}, fmt.Errorf("resolve output boundary: %w", err)
-	}
-	if contained {
-		return Result{}, errors.New("output must be outside target worktree")
-	}
-	if _, err := os.Lstat(outAbs); err == nil {
-		return Result{}, fmt.Errorf("output already exists: %s", outAbs)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return Result{}, err
-	}
-	if err := requireCleanIndex(ctx, repo); err != nil {
-		return Result{}, err
-	}
-	head, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "HEAD")
+	outAbs, err := resolveOutputPath(repo, opts.Out)
 	if err != nil {
 		return Result{}, err
 	}
-	indexTree, err := gitOutput(ctx, repo, nil, nil, "write-tree")
+	snapshot, err := snapshotSource(ctx, repo)
 	if err != nil {
 		return Result{}, err
 	}
-	status, err := gitOutput(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
-	if err != nil {
-		return Result{}, err
-	}
-	if status == "" {
-		return Result{}, errors.New("working tree has no non-ignored changes")
-	}
-	patch, err := capturePatch(ctx, repo, head)
+	patch, err := capturePatch(ctx, repo, snapshot.head)
 	if err != nil {
 		return Result{}, err
 	}
 	if len(patch) == 0 {
 		return Result{}, errors.New("captured regression patch is empty")
 	}
-	if err := validateProbe(ctx, repo, head, patch, contract); err != nil {
+	if err := validateProbe(ctx, repo, snapshot.head, patch, contract); err != nil {
 		return Result{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(outAbs), 0o755); err != nil {
+	if err := writeCapturedPatch(outAbs, patch); err != nil {
 		return Result{}, err
 	}
-	f, err := os.OpenFile(outAbs, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return Result{}, fmt.Errorf("create output: %w", err)
-	}
-	ok := false
-	defer func() {
-		_ = f.Close()
-		if !ok {
-			_ = os.Remove(outAbs)
-		}
-	}()
-	if _, err := f.Write(patch); err != nil {
+	if err := verifySourceSnapshot(ctx, repo, snapshot); err != nil {
+		_ = os.Remove(outAbs)
 		return Result{}, err
-	}
-	if err := f.Close(); err != nil {
-		return Result{}, err
-	}
-	raw, err := os.ReadFile(outAbs)
-	if err != nil || !bytes.Equal(raw, patch) {
-		return Result{}, errors.New("written regression patch does not match validated bytes")
-	}
-	if got, _ := gitOutput(ctx, repo, nil, nil, gitRevParse, "HEAD"); got != head {
-		return Result{}, errors.New("source HEAD changed during capture")
-	}
-	if got, _ := gitOutput(ctx, repo, nil, nil, "write-tree"); got != indexTree {
-		return Result{}, errors.New("source index changed during capture")
-	}
-	if got, _ := gitOutput(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all"); got != status {
-		return Result{}, errors.New("source working tree changed during capture")
 	}
 	sum := sha256.Sum256(patch)
-	ok = true
 	return Result{Path: outAbs, SHA256: hex.EncodeToString(sum[:])}, nil
+}
+
+func validateOptions(opts Options) error {
+	if opts.Repo == "" || opts.Contract == "" || opts.Out == "" {
+		return errors.New("repo, contract, and out are required")
+	}
+	return nil
+}
+
+func loadDefectContract(repo, filename string) (spec.ChangeContract, error) {
+	contractRaw, err := readExternal(repo, filename, 1<<20)
+	if err != nil {
+		return spec.ChangeContract{}, fmt.Errorf("load change contract: %w", err)
+	}
+	contract, err := spec.DecodeChangeContract(contractRaw)
+	if err != nil {
+		return spec.ChangeContract{}, fmt.Errorf("invalid change contract: %w", err)
+	}
+	if contract.Kind != spec.ChangeKindDefect {
+		return spec.ChangeContract{}, errors.New("capture-red requires a defect change contract")
+	}
+	return contract, nil
+}
+
+func resolveOutputPath(repo, output string) (string, error) {
+	outAbs, err := filepath.Abs(output)
+	if err != nil {
+		return "", err
+	}
+	contained, err := pathguard.Contains(repo, outAbs)
+	if err != nil {
+		return "", fmt.Errorf("resolve output boundary: %w", err)
+	}
+	if contained {
+		return "", errors.New("output must be outside target worktree")
+	}
+	if err := requireAbsentOutput(outAbs); err != nil {
+		return "", err
+	}
+	return outAbs, nil
+}
+
+func requireAbsentOutput(filename string) error {
+	_, err := os.Lstat(filename)
+	if err == nil {
+		return fmt.Errorf("output already exists: %s", filename)
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func snapshotSource(ctx context.Context, repo string) (sourceSnapshot, error) {
+	if err := requireCleanIndex(ctx, repo); err != nil {
+		return sourceSnapshot{}, err
+	}
+	head, err := gitOutput(ctx, repo, nil, nil, gitRevParse, "HEAD")
+	if err != nil {
+		return sourceSnapshot{}, err
+	}
+	indexTree, err := gitOutput(ctx, repo, nil, nil, "write-tree")
+	if err != nil {
+		return sourceSnapshot{}, err
+	}
+	status, err := gitOutput(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return sourceSnapshot{}, err
+	}
+	if status == "" {
+		return sourceSnapshot{}, errors.New("working tree has no non-ignored changes")
+	}
+	return sourceSnapshot{head: head, indexTree: indexTree, status: status}, nil
+}
+
+func writeCapturedPatch(filename string, patch []byte) error {
+	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create output: %w", err)
+	}
+	if err := writeAndClose(f, patch); err != nil {
+		_ = os.Remove(filename)
+		return err
+	}
+	raw, err := os.ReadFile(filename)
+	if err != nil || !bytes.Equal(raw, patch) {
+		_ = os.Remove(filename)
+		return errors.New("written regression patch does not match validated bytes")
+	}
+	return nil
+}
+
+func writeAndClose(f *os.File, patch []byte) error {
+	if _, err := f.Write(patch); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func verifySourceSnapshot(ctx context.Context, repo string, want sourceSnapshot) error {
+	if got, _ := gitOutput(ctx, repo, nil, nil, gitRevParse, "HEAD"); got != want.head {
+		return errors.New("source HEAD changed during capture")
+	}
+	if got, _ := gitOutput(ctx, repo, nil, nil, "write-tree"); got != want.indexTree {
+		return errors.New("source index changed during capture")
+	}
+	if got, _ := gitOutput(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all"); got != want.status {
+		return errors.New("source working tree changed during capture")
+	}
+	return nil
 }
 
 func resolveRepo(ctx context.Context, repo string) (string, error) {

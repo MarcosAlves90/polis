@@ -111,72 +111,128 @@ func ensurePolicyEOF(dec *json.Decoder) error {
 }
 
 func decodeGatePolicy(raw json.RawMessage) (GatePolicy, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return GatePolicy{}, fmt.Errorf("decode gate object: %w", err)
+	fields, err := decodeGateFields(raw)
+	if err != nil {
+		return GatePolicy{}, err
 	}
-	for key := range fields {
-		switch key {
-		case "id", "mode", "command", "reason", "adapter", "report", "operator", "threshold_percent":
-		default:
-			return GatePolicy{}, fmt.Errorf("unknown field %q", key)
-		}
+	id, err := requiredGateString(fields, "id")
+	if err != nil {
+		return GatePolicy{}, err
 	}
-	var id, mode string
-	if rawID, ok := fields["id"]; !ok || json.Unmarshal(rawID, &id) != nil {
-		return GatePolicy{}, errors.New("id must be a string")
-	}
-	if rawMode, ok := fields["mode"]; !ok || json.Unmarshal(rawMode, &mode) != nil {
-		return GatePolicy{}, errors.New("mode must be a string")
+	mode, err := requiredGateString(fields, "mode")
+	if err != nil {
+		return GatePolicy{}, err
 	}
 	gate := GatePolicy{ID: id, Mode: mode}
-	switch mode {
-	case GateModeCommand:
-		if len(fields) != 3 {
-			return GatePolicy{}, errors.New("command gate must contain exactly id, mode, command")
-		}
-		cmd, err := requiredCommand(fields)
-		if err != nil {
-			return GatePolicy{}, err
-		}
-		gate.Command = &cmd
-	case GateModeCoverage:
-		if len(fields) != 7 {
-			return GatePolicy{}, errors.New("coverage gate must contain exactly id, mode, command, adapter, report, operator, threshold_percent")
-		}
-		cmd, err := requiredCommand(fields)
-		if err != nil {
-			return GatePolicy{}, err
-		}
-		gate.Command = &cmd
-		for key, target := range map[string]*string{"adapter": &gate.Adapter, "report": &gate.Report, "operator": &gate.Operator} {
-			rawValue, ok := fields[key]
-			if !ok || json.Unmarshal(rawValue, target) != nil {
-				return GatePolicy{}, fmt.Errorf("%s must be a string", key)
-			}
-		}
-		var threshold float64
-		if rawThreshold, ok := fields["threshold_percent"]; !ok || json.Unmarshal(rawThreshold, &threshold) != nil {
-			return GatePolicy{}, errors.New("threshold_percent must be a number")
-		}
-		gate.ThresholdPercent = &threshold
-	case GateModeNotApplicable:
-		if len(fields) != 3 {
-			return GatePolicy{}, errors.New("not_applicable gate must contain exactly id, mode, reason")
-		}
-		rawReason, ok := fields["reason"]
-		if !ok {
-			return GatePolicy{}, errors.New("not_applicable gate missing reason")
-		}
-		var reason string
-		if err := json.Unmarshal(rawReason, &reason); err != nil {
-			return GatePolicy{}, errors.New("reason must be a string")
-		}
-		gate.Reason = &reason
-	default:
-		return GatePolicy{}, fmt.Errorf("unknown gate mode %q", mode)
+	if err := decodeGateModeFields(&gate, fields); err != nil {
+		return GatePolicy{}, err
 	}
 	return gate, nil
+}
+
+func decodeGateFields(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, fmt.Errorf("decode gate object: %w", err)
+	}
+	allowed := map[string]struct{}{
+		"id": {}, "mode": {}, "command": {}, "reason": {}, "adapter": {},
+		"report": {}, "operator": {}, "threshold_percent": {},
+	}
+	for key := range fields {
+		if _, ok := allowed[key]; !ok {
+			return nil, fmt.Errorf("unknown field %q", key)
+		}
+	}
+	return fields, nil
+}
+
+func requiredGateString(fields map[string]json.RawMessage, name string) (string, error) {
+	raw, ok := fields[name]
+	if !ok {
+		return "", fmt.Errorf("%s must be a string", name)
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", fmt.Errorf("%s must be a string", name)
+	}
+	return value, nil
+}
+
+func decodeGateModeFields(gate *GatePolicy, fields map[string]json.RawMessage) error {
+	switch gate.Mode {
+	case GateModeCommand:
+		return decodeCommandGate(gate, fields)
+	case GateModeCoverage:
+		return decodeCoverageGate(gate, fields)
+	case GateModeNotApplicable:
+		return decodeNotApplicableGate(gate, fields)
+	default:
+		return fmt.Errorf("unknown gate mode %q", gate.Mode)
+	}
+}
+
+func decodeCommandGate(gate *GatePolicy, fields map[string]json.RawMessage) error {
+	if len(fields) != 3 {
+		return errors.New("command gate must contain exactly id, mode, command")
+	}
+	cmd, err := requiredCommand(fields)
+	if err != nil {
+		return err
+	}
+	gate.Command = &cmd
+	return nil
+}
+
+func decodeCoverageGate(gate *GatePolicy, fields map[string]json.RawMessage) error {
+	if len(fields) != 7 {
+		return errors.New("coverage gate must contain exactly id, mode, command, adapter, report, operator, threshold_percent")
+	}
+	cmd, err := requiredCommand(fields)
+	if err != nil {
+		return err
+	}
+	gate.Command = &cmd
+	if err := decodeCoverageStrings(gate, fields); err != nil {
+		return err
+	}
+	return decodeCoverageThreshold(gate, fields)
+}
+
+func decodeCoverageStrings(gate *GatePolicy, fields map[string]json.RawMessage) error {
+	for key, target := range map[string]*string{"adapter": &gate.Adapter, "report": &gate.Report, "operator": &gate.Operator} {
+		rawValue, ok := fields[key]
+		if !ok || json.Unmarshal(rawValue, target) != nil {
+			return fmt.Errorf("%s must be a string", key)
+		}
+	}
+	return nil
+}
+
+func decodeCoverageThreshold(gate *GatePolicy, fields map[string]json.RawMessage) error {
+	var threshold float64
+	rawThreshold, ok := fields["threshold_percent"]
+	if !ok || json.Unmarshal(rawThreshold, &threshold) != nil {
+		return errors.New("threshold_percent must be a number")
+	}
+	gate.ThresholdPercent = &threshold
+	return nil
+}
+
+func decodeNotApplicableGate(gate *GatePolicy, fields map[string]json.RawMessage) error {
+	if len(fields) != 3 {
+		return errors.New("not_applicable gate must contain exactly id, mode, reason")
+	}
+	rawReason, ok := fields["reason"]
+	if !ok {
+		return errors.New("not_applicable gate missing reason")
+	}
+	var reason string
+	if err := json.Unmarshal(rawReason, &reason); err != nil {
+		return errors.New("reason must be a string")
+	}
+	gate.Reason = &reason
+	return nil
 }
 
 func requiredCommand(fields map[string]json.RawMessage) (CommandSpec, error) {
@@ -211,22 +267,28 @@ func (p Policy) Validate() error {
 		return fmt.Errorf("policy must contain exactly %d project gates", len(ProjectGateOrder))
 	}
 	for i, expectedID := range ProjectGateOrder {
-		gate := p.Gates[i]
-		if gate.ID != expectedID {
-			return fmt.Errorf("gate %d must be %q, got %q", i, expectedID, gate.ID)
+		if err := validatePolicyGateAt(i, expectedID, p.Gates[i]); err != nil {
+			return err
 		}
-		if err := gate.Validate(); err != nil {
-			return fmt.Errorf("gate %q: %w", gate.ID, err)
-		}
-		if gate.ID == "test.complete" && gate.Mode != GateModeCommand {
-			return fmt.Errorf("gate %q must use command mode", gate.ID)
-		}
-		if gate.ID == "coverage" && gate.Mode != GateModeCoverage {
-			return fmt.Errorf("gate %q must use coverage mode", gate.ID)
-		}
-		if gate.ID != "coverage" && gate.Mode == GateModeCoverage {
-			return fmt.Errorf("gate %q must not use coverage mode", gate.ID)
-		}
+	}
+	return nil
+}
+
+func validatePolicyGateAt(index int, expectedID string, gate GatePolicy) error {
+	if gate.ID != expectedID {
+		return fmt.Errorf("gate %d must be %q, got %q", index, expectedID, gate.ID)
+	}
+	if err := gate.Validate(); err != nil {
+		return fmt.Errorf("gate %q: %w", gate.ID, err)
+	}
+	if gate.ID == "test.complete" && gate.Mode != GateModeCommand {
+		return fmt.Errorf("gate %q must use command mode", gate.ID)
+	}
+	if gate.ID == "coverage" && gate.Mode != GateModeCoverage {
+		return fmt.Errorf("gate %q must use coverage mode", gate.ID)
+	}
+	if gate.ID != "coverage" && gate.Mode == GateModeCoverage {
+		return fmt.Errorf("gate %q must not use coverage mode", gate.ID)
 	}
 	return nil
 }
@@ -234,38 +296,62 @@ func (p Policy) Validate() error {
 func (g GatePolicy) Validate() error {
 	switch g.Mode {
 	case GateModeCommand:
-		if g.Command == nil || g.Reason != nil || g.Adapter != "" || g.Report != "" || g.Operator != "" || g.ThresholdPercent != nil {
-			return errors.New("command mode has invalid field combination")
-		}
-		return g.Command.Validate()
+		return g.validateCommandMode()
 	case GateModeCoverage:
-		if g.Command == nil || g.Reason != nil || g.ThresholdPercent == nil {
-			return errors.New("coverage mode has invalid field combination")
-		}
-		if err := g.Command.Validate(); err != nil {
-			return err
-		}
-		if g.Adapter != CoverageAdapterGoCoverProfileV1 {
-			return fmt.Errorf("unsupported coverage adapter %q", g.Adapter)
-		}
-		if err := ValidateRepoRelativePath(g.Report); err != nil {
-			return fmt.Errorf("invalid coverage report: %w", err)
-		}
-		if g.Operator != CoverageOperatorGreaterThan {
-			return fmt.Errorf("coverage operator must be %q", CoverageOperatorGreaterThan)
-		}
-		if math.IsNaN(*g.ThresholdPercent) || math.IsInf(*g.ThresholdPercent, 0) || *g.ThresholdPercent < MinimumCoverageThreshold || *g.ThresholdPercent > 100.0 {
-			return fmt.Errorf("coverage threshold_percent must be between %.1f and 100.0", MinimumCoverageThreshold)
-		}
-		return nil
+		return g.validateCoverageMode()
 	case GateModeNotApplicable:
-		if g.Command != nil || g.Reason == nil || strings.TrimSpace(*g.Reason) == "" || g.Adapter != "" || g.Report != "" || g.Operator != "" || g.ThresholdPercent != nil {
-			return errors.New("not_applicable mode requires only a non-empty reason")
-		}
-		return nil
+		return g.validateNotApplicableMode()
 	default:
 		return fmt.Errorf("unknown mode %q", g.Mode)
 	}
+}
+
+func (g GatePolicy) validateCommandMode() error {
+	if g.Command == nil || g.Reason != nil || g.Adapter != "" || g.Report != "" || g.Operator != "" || g.ThresholdPercent != nil {
+		return errors.New("command mode has invalid field combination")
+	}
+	return g.Command.Validate()
+}
+
+func (g GatePolicy) validateCoverageMode() error {
+	if g.Command == nil || g.Reason != nil || g.ThresholdPercent == nil {
+		return errors.New("coverage mode has invalid field combination")
+	}
+	if err := g.Command.Validate(); err != nil {
+		return err
+	}
+	if err := g.validateCoverageMetadata(); err != nil {
+		return err
+	}
+	return g.validateCoverageThreshold()
+}
+
+func (g GatePolicy) validateCoverageMetadata() error {
+	if g.Adapter != CoverageAdapterGoCoverProfileV1 {
+		return fmt.Errorf("unsupported coverage adapter %q", g.Adapter)
+	}
+	if err := ValidateRepoRelativePath(g.Report); err != nil {
+		return fmt.Errorf("invalid coverage report: %w", err)
+	}
+	if g.Operator != CoverageOperatorGreaterThan {
+		return fmt.Errorf("coverage operator must be %q", CoverageOperatorGreaterThan)
+	}
+	return nil
+}
+
+func (g GatePolicy) validateCoverageThreshold() error {
+	value := *g.ThresholdPercent
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < MinimumCoverageThreshold || value > 100.0 {
+		return fmt.Errorf("coverage threshold_percent must be between %.1f and 100.0", MinimumCoverageThreshold)
+	}
+	return nil
+}
+
+func (g GatePolicy) validateNotApplicableMode() error {
+	if g.Command != nil || g.Reason == nil || strings.TrimSpace(*g.Reason) == "" || g.Adapter != "" || g.Report != "" || g.Operator != "" || g.ThresholdPercent != nil {
+		return errors.New("not_applicable mode requires only a non-empty reason")
+	}
+	return nil
 }
 
 func (c CommandSpec) Validate() error {
