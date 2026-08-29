@@ -17,6 +17,7 @@ const (
 	GateModeCommand       = "command"
 	GateModeCoverage      = "coverage"
 	GateModeNotApplicable = "not_applicable"
+	gateStringErrorFormat = "%s must be a string"
 )
 
 var ProjectGateOrder = []string{
@@ -150,11 +151,11 @@ func decodeGateFields(raw json.RawMessage) (map[string]json.RawMessage, error) {
 func requiredGateString(fields map[string]json.RawMessage, name string) (string, error) {
 	raw, ok := fields[name]
 	if !ok {
-		return "", fmt.Errorf("%s must be a string", name)
+		return "", fmt.Errorf(gateStringErrorFormat, name)
 	}
 	var value string
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return "", fmt.Errorf("%s must be a string", name)
+		return "", fmt.Errorf(gateStringErrorFormat, name)
 	}
 	return value, nil
 }
@@ -203,7 +204,7 @@ func decodeCoverageStrings(gate *GatePolicy, fields map[string]json.RawMessage) 
 	for key, target := range map[string]*string{"adapter": &gate.Adapter, "report": &gate.Report, "operator": &gate.Operator} {
 		rawValue, ok := fields[key]
 		if !ok || json.Unmarshal(rawValue, target) != nil {
-			return fmt.Errorf("%s must be a string", key)
+			return fmt.Errorf(gateStringErrorFormat, key)
 		}
 	}
 	return nil
