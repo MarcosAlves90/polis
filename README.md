@@ -51,3 +51,16 @@ polis apply --repo /path/to/repo artifact.polis
 ## Platform evidence
 
 Platform support claims are evidence-scoped. Native CI exercises Linux, macOS, and Windows. Consumer validation reruns the relevant gates on the actual target platform before applying a delivery.
+
+## Local SonarQube analysis
+
+POLIS can be analyzed against a local SonarQube Server without CI. Set a local Sonar token and run the repository wrapper:
+
+```bash
+export SONAR_TOKEN='your-token'
+./scripts/sonar-local.sh
+```
+
+The wrapper defaults `SONAR_HOST_URL` to `http://localhost:9000`, generates `.polis/coverage.out` with the same project-wide coverage command used by the POLIS policy, and then runs `sonar-scanner`. Override `SONAR_HOST_URL` when the Docker-published endpoint differs.
+
+See [CHANGELOG.md](CHANGELOG.md) for release and post-release changes.
