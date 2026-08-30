@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Add `scripts/github-release.sh` for explicit local-direct GitHub Release publication with default/custom `gh`, verified tags, optional frozen assets, SHA-256 manifests, and post-publication verification.
+- Add `docs/releases.md` with the release preflight, publication boundary, GitHub CLI override, release notes, assets, and safety contract.
 - POLIS V5 portable trust-boundary contracts: package format v3, Project Policy v3, Change Contract v2, and Evidence v2 while retaining V4 schema compatibility for migration.
 - Bounded `.polis` parsing with explicit archive/member limits and fuzz targets for package paths and contract decoders.
 - Change Contract scope enforcement through `scope.allowed_paths` on producer build and consumer isolated validation.

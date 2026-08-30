@@ -74,6 +74,18 @@ Automation-oriented commands use these stable categories:
 - `6` validation failure
 - `7` apply failure
 
+## GitHub Releases
+
+Repository-owned GitHub Release publication is available through `scripts/github-release.sh`. It resolves the standard `gh` from `PATH` by default and accepts `POLIS_GH` or `--gh` when an explicit GitHub CLI executable is required.
+
+Run preflight first:
+
+```bash
+./scripts/github-release.sh --tag v5.0.0
+```
+
+Remote mutation requires an explicit `--publish`. See [the GitHub Release guide](docs/releases.md) for tag safety, release notes, optional assets, SHA-256 verification, and immutable-release attestation checks.
+
 ## Local SonarQube analysis
 
 The existing local SonarQube workflow remains available:
