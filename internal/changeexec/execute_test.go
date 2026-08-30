@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
 
 func cmd(argv ...string) spec.CommandSpec {
@@ -22,7 +22,7 @@ func TestExecuteBaselineAcceptsDeclaredRed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 3 || events[1].Status != spec.StatusFail || events[2].Status != spec.StatusPass {
+	if len(events) != 4 || events[1].Status != spec.StatusFail || events[2].Event != "oracle_checked" || events[3].Status != spec.StatusPass {
 		t.Fatalf("events=%+v", events)
 	}
 }

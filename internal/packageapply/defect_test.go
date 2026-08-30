@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v4/internal/packagebuild"
-	"github.com/MarcosAlves90/polis/v4/internal/packageverify"
-	"github.com/MarcosAlves90/polis/v4/internal/redcapture"
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/internal/packagebuild"
+	"github.com/MarcosAlves90/polis/v5/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v5/internal/redcapture"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
 
 type defectFixture struct {
@@ -55,6 +55,7 @@ func createDefectRepository(t *testing.T) string {
 	}
 	git(t, repo, "init", "-q")
 	writeFixtureFile(t, filepath.Join(repo, ".polis", "policy.json"), policyBytes(t))
+	writeFixtureFile(t, filepath.Join(repo, ".polis", "coverage.out"), []byte("mode: set\nexample.com/polisfixture/calc.go:1.1,1.2 1 1\n"))
 	writeFixtureFile(t, filepath.Join(repo, "go.mod"), []byte("module example.com/defect\n\ngo 1.23\n"))
 	writeFixtureFile(t, filepath.Join(repo, "calc.go"), []byte("package defect\nfunc Double(n int) int { return n }\n"))
 	git(t, repo, "add", ".")
@@ -65,10 +66,10 @@ func createDefectRepository(t *testing.T) string {
 func writeDefectContract(t *testing.T) string {
 	t.Helper()
 	exit := 1
-	contract := spec.ChangeContract{SchemaVersion: spec.ChangeContractSchemaVersion, Kind: spec.ChangeKindDefect,
-		Behavior:   spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60},
-		Affected:   spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60},
-		Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &spec.CommandSpec{Argv: []string{"go", "test", "./...", "-run", "TestDouble"}, Cwd: ".", TimeoutSeconds: 60}, BaselineExitCode: &exit, BaselineOutputContains: []string{"DOUBLE-REGRESSION"}},
+	contract := spec.ChangeContract{SchemaVersion: spec.LegacyChangeContractSchemaVersion, Kind: spec.ChangeKindDefect,
+		Behavior:   spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60},
+		Affected:   spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60},
+		Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &spec.CommandSpec{Argv: []string{"go", "test", "-p=1", "./...", "-run", "TestDouble"}, Cwd: ".", TimeoutSeconds: 60}, BaselineExitCode: &exit, BaselineOutputContains: []string{"DOUBLE-REGRESSION"}},
 	}
 	raw, err := json.Marshal(contract)
 	if err != nil {

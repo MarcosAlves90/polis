@@ -1,0 +1,15 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://polis.dev/spec/v5/signature.schema.json",
+  "title":"POLIS Detached Signature v1",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["schema_version","algorithm","artifact_sha256","public_key_sha256","signature_base64"],
+  "properties":{
+    "schema_version":{"const":1},
+    "algorithm":{"const":"ed25519-sha256-v1"},
+    "artifact_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+    "public_key_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+    "signature_base64":{"type":"string","minLength":1}
+  }
+}

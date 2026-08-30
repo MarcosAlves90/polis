@@ -12,11 +12,11 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/MarcosAlves90/polis/v4/internal/changeexec"
-	"github.com/MarcosAlves90/polis/v4/internal/fileutil"
-	"github.com/MarcosAlves90/polis/v4/internal/gitutil"
-	"github.com/MarcosAlves90/polis/v4/internal/pathguard"
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/internal/changeexec"
+	"github.com/MarcosAlves90/polis/v5/internal/fileutil"
+	"github.com/MarcosAlves90/polis/v5/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v5/internal/pathguard"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
 
 type Options struct {

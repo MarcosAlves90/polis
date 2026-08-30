@@ -55,7 +55,7 @@ func DetachedWorktree(ctx context.Context, repo, baseCommit, pattern, stagingErr
 }
 
 func ChangedIndexPaths(ctx context.Context, worktree, cachedFlag string) (map[string]struct{}, error) {
-	b, err := Bytes(ctx, worktree, nil, nil, "diff", cachedFlag, "--name-only", "-z", "HEAD", "--")
+	b, err := Bytes(ctx, worktree, nil, nil, "diff", cachedFlag, "--no-renames", "--name-only", "-z", "HEAD", "--")
 	if err != nil {
 		return nil, fmt.Errorf("list changed paths: %w", err)
 	}
@@ -63,6 +63,20 @@ func ChangedIndexPaths(ctx context.Context, worktree, cachedFlag string) (map[st
 	for _, raw := range bytes.Split(b, []byte{0}) {
 		if len(raw) > 0 {
 			result[string(raw)] = struct{}{}
+		}
+	}
+	return result, nil
+}
+
+func ChangedTreePaths(ctx context.Context, repo, base, targetTree string) ([]string, error) {
+	b, err := Bytes(ctx, repo, nil, nil, "diff", "--no-renames", "--name-only", "-z", base, targetTree, "--")
+	if err != nil {
+		return nil, fmt.Errorf("list base-to-target changed paths: %w", err)
+	}
+	var result []string
+	for _, raw := range bytes.Split(b, []byte{0}) {
+		if len(raw) > 0 {
+			result = append(result, string(raw))
 		}
 	}
 	return result, nil

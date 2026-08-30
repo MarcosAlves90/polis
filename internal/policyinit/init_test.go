@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
 
 func runGit(t *testing.T, repo string, args ...string) string {
@@ -54,6 +54,14 @@ func TestInitAutoCreatesCanonicalGoPolicyWithoutTouchingIndex(t *testing.T) {
 	policy, err := spec.DecodePolicy(raw)
 	if err != nil {
 		t.Fatalf("generated policy invalid: %v", err)
+	}
+	if policy.SchemaVersion != spec.PolicySchemaVersion {
+		t.Fatalf("schema_version=%d want %d", policy.SchemaVersion, spec.PolicySchemaVersion)
+	}
+	for _, gate := range policy.Gates {
+		if gate.Command != nil && gate.Command.Environment == nil {
+			t.Fatalf("gate %q command missing explicit environment", gate.ID)
+		}
 	}
 	if policy.Gates[1].Mode != spec.GateModeCoverage || policy.Gates[1].Adapter != spec.CoverageAdapterGoCoverProfileV1 {
 		t.Fatalf("coverage gate=%+v", policy.Gates[1])

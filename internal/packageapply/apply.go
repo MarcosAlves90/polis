@@ -12,10 +12,16 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/MarcosAlves90/polis/v4/internal/gitutil"
-	"github.com/MarcosAlves90/polis/v4/internal/isolation"
-	"github.com/MarcosAlves90/polis/v4/internal/packageverify"
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v5/internal/isolation"
+	"github.com/MarcosAlves90/polis/v5/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v5/spec"
+)
+
+var (
+	ErrBaselineMismatch = errors.New("consumer baseline mismatch")
+	ErrValidationFailed = errors.New("consumer validation failed")
+	ErrApplyFailed      = errors.New("consumer apply failed")
 )
 
 type Result struct {
@@ -65,7 +71,7 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 		TargetApplyError:      "isolated apply failed",
 		PolicyFailureLabel:    "consumer policy validation",
 	}); err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("%w: %v", ErrValidationFailed, err)
 	}
 	if err := evidenceFile.Sync(); err != nil {
 		return Result{}, fmt.Errorf("sync evidence: %w", err)
@@ -76,10 +82,10 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 		return Result{}, fmt.Errorf("baseline changed after isolated validation: %w", err)
 	}
 	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", gitApplyCheck, "-"); err != nil {
-		return Result{}, fmt.Errorf("real git apply --check failed: %w", err)
+		return Result{}, fmt.Errorf("%w: real git apply --check failed: %v", ErrApplyFailed, err)
 	}
 	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", "-"); err != nil {
-		return Result{}, fmt.Errorf("real git apply failed: %w", err)
+		return Result{}, fmt.Errorf("%w: real git apply failed: %v", ErrApplyFailed, err)
 	}
 	gotTree, err := workingTreeID(ctx, repo, pkg.Manifest.BaseCommit)
 	if err != nil {
@@ -99,6 +105,45 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 	return Result{Project: pkg.Manifest.Project, Change: pkg.Manifest.Change, TargetTree: gotTree, EvidencePath: evidencePath}, nil
 }
 
+func Preflight(ctx context.Context, artifact, repoPath string) (Result, error) {
+	pkg, err := packageverify.Load(artifact)
+	if err != nil {
+		return Result{}, fmt.Errorf("verify package: %w", err)
+	}
+	repo, err := resolveRepo(ctx, repoPath)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := verifyBaseline(ctx, repo, pkg.Manifest); err != nil {
+		return Result{}, err
+	}
+	if err := isolation.Validate(ctx, isolation.Validation{
+		Repo:                  repo,
+		BaseCommit:            pkg.Manifest.BaseCommit,
+		TargetTree:            pkg.Manifest.TargetTree,
+		Patch:                 pkg.Patch,
+		RegressionPatch:       pkg.RegressionPatch,
+		Change:                pkg.Change,
+		Policy:                pkg.Policy,
+		Evidence:              io.Discard,
+		RedWorktreePattern:    "polis-preflight-red-*",
+		TargetWorktreePattern: "polis-preflight-worktree-*",
+		CreateWorktreeError:   "create isolated preflight worktree",
+		TargetApplyCheckError: "preflight isolated apply check failed",
+		TargetApplyError:      "preflight isolated apply failed",
+		PolicyFailureLabel:    "preflight policy validation",
+	}); err != nil {
+		return Result{}, fmt.Errorf("%w: %v", ErrValidationFailed, err)
+	}
+	if err := verifyBaseline(ctx, repo, pkg.Manifest); err != nil {
+		return Result{}, fmt.Errorf("baseline changed after preflight validation: %w", err)
+	}
+	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", gitApplyCheck, "-"); err != nil {
+		return Result{}, fmt.Errorf("%w: real git apply --check failed: %v", ErrValidationFailed, err)
+	}
+	return Result{Project: pkg.Manifest.Project, Change: pkg.Manifest.Change, TargetTree: pkg.Manifest.TargetTree}, nil
+}
+
 func resolveRepo(ctx context.Context, repo string) (string, error) {
 	return gitutil.ResolveRoot(ctx, repo, gitutil.ResolveRootOptions{EmptyAsDot: true, PathError: "resolve repo path", GitError: "not a Git worktree"})
 }
@@ -109,21 +154,21 @@ func verifyBaseline(ctx context.Context, repo string, manifest spec.Manifest) er
 		return fmt.Errorf("detect Git object format: %w", err)
 	}
 	if format != manifest.GitObjectFormat {
-		return fmt.Errorf("git object format mismatch: got %s want %s", format, manifest.GitObjectFormat)
+		return fmt.Errorf("%w: git object format got %s want %s", ErrBaselineMismatch, format, manifest.GitObjectFormat)
 	}
 	head, err := gitutil.Output(ctx, repo, nil, nil, gitRevParse, "HEAD")
 	if err != nil {
 		return fmt.Errorf("resolve HEAD: %w", err)
 	}
 	if head != manifest.BaseCommit {
-		return fmt.Errorf("base_commit mismatch: got %s want %s", head, manifest.BaseCommit)
+		return fmt.Errorf("%w: base_commit got %s want %s", ErrBaselineMismatch, head, manifest.BaseCommit)
 	}
 	status, err := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("inspect consumer status: %w", err)
 	}
 	if status != "" {
-		return errors.New("consumer working tree/index is not clean")
+		return fmt.Errorf("%w: consumer working tree/index is not clean", ErrBaselineMismatch)
 	}
 	return nil
 }

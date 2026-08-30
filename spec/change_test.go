@@ -81,3 +81,9 @@ func TestDecodeChangeContractRejectsTrailingJSON(t *testing.T) {
 		t.Fatal("expected trailing JSON error")
 	}
 }
+
+func FuzzDecodeChangeContract(f *testing.F) {
+	f.Add([]byte(`{"schema_version":2}`))
+	f.Add([]byte(`not-json`))
+	f.Fuzz(func(t *testing.T, raw []byte) { _, _ = DecodeChangeContract(raw) })
+}

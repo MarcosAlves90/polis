@@ -123,3 +123,9 @@ func TestDecodePolicyRejectsInvalidCoverageContract(t *testing.T) {
 		}
 	}
 }
+
+func FuzzDecodePolicy(f *testing.F) {
+	f.Add([]byte(`{"schema_version":3,"gates":[]}`))
+	f.Add([]byte(`not-json`))
+	f.Fuzz(func(t *testing.T, raw []byte) { _, _ = DecodePolicy(raw) })
+}

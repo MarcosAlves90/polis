@@ -30,6 +30,16 @@ type EvidenceEvent struct {
 	DurationMS       *int64   `json:"duration_ms,omitempty"`
 	Stdout           *string  `json:"stdout,omitempty"`
 	Stderr           *string  `json:"stderr,omitempty"`
+	StdoutBytes      *int64   `json:"stdout_bytes,omitempty"`
+	StderrBytes      *int64   `json:"stderr_bytes,omitempty"`
+	StdoutSHA256     string   `json:"stdout_sha256,omitempty"`
+	StderrSHA256     string   `json:"stderr_sha256,omitempty"`
+	StdoutTruncated  *bool    `json:"stdout_truncated,omitempty"`
+	StderrTruncated  *bool    `json:"stderr_truncated,omitempty"`
+	EnvironmentMode  string   `json:"environment_mode,omitempty"`
+	EnvironmentPass  []string `json:"environment_pass,omitempty"`
+	Oracle           string   `json:"oracle,omitempty"`
+	OracleIndex      *int     `json:"oracle_index,omitempty"`
 	Reason           *string  `json:"reason,omitempty"`
 	Adapter          string   `json:"adapter,omitempty"`
 	Report           string   `json:"report,omitempty"`
@@ -43,7 +53,7 @@ type EvidenceEvent struct {
 
 func DecodeEvidence(raw []byte) ([]EvidenceEvent, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	var events []EvidenceEvent
 	lineNo := 0
 	for scanner.Scan() {
@@ -114,6 +124,8 @@ func decodeEventPayload(e *EvidenceEvent, fields map[string]json.RawMessage, all
 		return decodeGateFinished(e, fields, allowed)
 	case "command_finished":
 		return decodeCommandFinished(e, fields, allowed)
+	case "oracle_checked":
+		return decodeOracleChecked(e, fields, allowed)
 	case "coverage_measured":
 		return decodeCoverageMeasured(e, fields, allowed)
 	default:
@@ -148,7 +160,7 @@ func decodeGateFinishedReason(e *EvidenceEvent, fields map[string]json.RawMessag
 }
 
 func decodeCommandFinished(e *EvidenceEvent, fields map[string]json.RawMessage, allowed map[string]bool) error {
-	required := []string{"status", "argv", "cwd", "exit_code", "duration_ms", "stdout", "stderr"}
+	required := []string{"status", "argv", "cwd", "exit_code", "duration_ms"}
 	if err := requireEvidenceFields(fields, allowed, required); err != nil {
 		return err
 	}
@@ -166,7 +178,33 @@ func decodeCommandFinished(e *EvidenceEvent, fields map[string]json.RawMessage, 
 	if err := decodeCommandNumbers(e, fields); err != nil {
 		return err
 	}
-	return decodeCommandOutput(e, fields)
+	if _, legacy := fields["stdout"]; legacy {
+		return decodeLegacyCommandOutput(e, fields, allowed)
+	}
+	return decodeDigestedCommandOutput(e, fields, allowed)
+}
+
+func decodeOracleChecked(e *EvidenceEvent, fields map[string]json.RawMessage, allowed map[string]bool) error {
+	required := []string{"status", "oracle", "oracle_index"}
+	if err := requireEvidenceFields(fields, allowed, required); err != nil {
+		return err
+	}
+	status, err := decodeStatus(fields["status"])
+	if err != nil || status != StatusPass {
+		return errors.New("oracle_checked status must be PASS")
+	}
+	e.Status = status
+	oracle, err := requiredStringField(fields, "oracle")
+	if err != nil || oracle != "baseline_output_contains" {
+		return errors.New("oracle_checked oracle must be baseline_output_contains")
+	}
+	e.Oracle = oracle
+	var index int
+	if err := json.Unmarshal(fields["oracle_index"], &index); err != nil || index < 0 {
+		return errors.New("oracle_checked oracle_index must be an integer >= 0")
+	}
+	e.OracleIndex = &index
+	return nil
 }
 
 func decodeCommandStatus(raw json.RawMessage) (Status, error) {
@@ -218,7 +256,12 @@ func decodeCommandNumbers(e *EvidenceEvent, fields map[string]json.RawMessage) e
 	return nil
 }
 
-func decodeCommandOutput(e *EvidenceEvent, fields map[string]json.RawMessage) error {
+func decodeLegacyCommandOutput(e *EvidenceEvent, fields map[string]json.RawMessage, allowed map[string]bool) error {
+	allowed["stdout"] = true
+	allowed["stderr"] = true
+	if _, ok := fields["stderr"]; !ok {
+		return errors.New("legacy command_finished missing stderr")
+	}
 	var stdout, stderr string
 	if err := json.Unmarshal(fields["stdout"], &stdout); err != nil {
 		return errors.New("command_finished stdout must be a string")
@@ -227,6 +270,56 @@ func decodeCommandOutput(e *EvidenceEvent, fields map[string]json.RawMessage) er
 		return errors.New("command_finished stderr must be a string")
 	}
 	e.Stdout, e.Stderr = &stdout, &stderr
+	return nil
+}
+
+func decodeDigestedCommandOutput(e *EvidenceEvent, fields map[string]json.RawMessage, allowed map[string]bool) error {
+	required := []string{"stdout_bytes", "stderr_bytes", "stdout_sha256", "stderr_sha256", "stdout_truncated", "stderr_truncated"}
+	if err := requireEvidenceFields(fields, allowed, required); err != nil {
+		return err
+	}
+	var stdoutBytes, stderrBytes int64
+	if err := json.Unmarshal(fields["stdout_bytes"], &stdoutBytes); err != nil || stdoutBytes < 0 {
+		return errors.New("command_finished stdout_bytes must be an integer >= 0")
+	}
+	if err := json.Unmarshal(fields["stderr_bytes"], &stderrBytes); err != nil || stderrBytes < 0 {
+		return errors.New("command_finished stderr_bytes must be an integer >= 0")
+	}
+	e.StdoutBytes, e.StderrBytes = &stdoutBytes, &stderrBytes
+	stdoutHash, err := requiredStringField(fields, "stdout_sha256")
+	if err != nil || !sha256Pattern.MatchString(stdoutHash) {
+		return errors.New("command_finished stdout_sha256 must be 64 lowercase hexadecimal characters")
+	}
+	stderrHash, err := requiredStringField(fields, "stderr_sha256")
+	if err != nil || !sha256Pattern.MatchString(stderrHash) {
+		return errors.New("command_finished stderr_sha256 must be 64 lowercase hexadecimal characters")
+	}
+	e.StdoutSHA256, e.StderrSHA256 = stdoutHash, stderrHash
+	var stdoutTruncated, stderrTruncated bool
+	if err := json.Unmarshal(fields["stdout_truncated"], &stdoutTruncated); err != nil {
+		return errors.New("command_finished stdout_truncated must be a boolean")
+	}
+	if err := json.Unmarshal(fields["stderr_truncated"], &stderrTruncated); err != nil {
+		return errors.New("command_finished stderr_truncated must be a boolean")
+	}
+	e.StdoutTruncated, e.StderrTruncated = &stdoutTruncated, &stderrTruncated
+	if rawMode, ok := fields["environment_mode"]; ok {
+		allowed["environment_mode"] = true
+		allowed["environment_pass"] = true
+		mode, err := requiredStringField(fields, "environment_mode")
+		if err != nil {
+			return err
+		}
+		e.EnvironmentMode = mode
+		if rawPass, ok := fields["environment_pass"]; ok {
+			if err := json.Unmarshal(rawPass, &e.EnvironmentPass); err != nil {
+				return errors.New("command_finished environment_pass must be a string array")
+			}
+		} else {
+			_ = rawMode
+			e.EnvironmentPass = nil
+		}
+	}
 	return nil
 }
 
@@ -257,7 +350,12 @@ func decodeCoverageIdentity(e *EvidenceEvent, fields map[string]json.RawMessage)
 	}
 	e.Status = status
 	adapter, err := requiredStringField(fields, "adapter")
-	if err != nil || adapter != CoverageAdapterGoCoverProfileV1 {
+	if err != nil {
+		return err
+	}
+	switch adapter {
+	case CoverageAdapterGoCoverProfileV1, CoverageAdapterLCOVV1, CoverageAdapterCoberturaV1:
+	default:
 		return errors.New("coverage_measured adapter is unsupported")
 	}
 	e.Adapter = adapter

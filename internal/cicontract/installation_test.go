@@ -17,7 +17,7 @@ func TestInstallationDocumentationContract(t *testing.T) {
 	readme := string(readmeRaw)
 	for _, fragment := range []string{
 		"## Installation",
-		"go install github.com/MarcosAlves90/polis/v4/cmd/polis@latest",
+		"go install github.com/MarcosAlves90/polis/v5/cmd/polis@latest",
 		"[installation guide](docs/installation.md)",
 		"polis doctor",
 	} {
@@ -36,7 +36,7 @@ func TestInstallationDocumentationContract(t *testing.T) {
 		"## Linux",
 		"## macOS",
 		"## Windows (PowerShell)",
-		"go install github.com/MarcosAlves90/polis/v4/cmd/polis@latest",
+		"go install github.com/MarcosAlves90/polis/v5/cmd/polis@latest",
 		"go env GOBIN",
 		"go env GOPATH",
 		"export PATH=",

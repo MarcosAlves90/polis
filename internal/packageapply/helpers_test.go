@@ -2,13 +2,14 @@ package packageapply
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v4/internal/gitutil"
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
 
 func simpleRepo(t *testing.T) string {
@@ -34,7 +35,7 @@ func TestVerifyBaselineRejectsObjectFormatMismatch(t *testing.T) {
 		t.Fatal("fixture unexpectedly matches")
 	}
 	err := verifyBaseline(context.Background(), repo, manifest)
-	if err == nil || !strings.Contains(err.Error(), "git object format mismatch") {
+	if err == nil || !errors.Is(err, ErrBaselineMismatch) || !strings.Contains(err.Error(), "git object format") {
 		t.Fatalf("error=%v", err)
 	}
 }

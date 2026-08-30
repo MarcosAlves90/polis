@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v4/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v5/internal/gitutil"
 )
 
 func TestRepositoryBoundaryHelpers(t *testing.T) {

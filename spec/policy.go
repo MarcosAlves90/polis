@@ -10,13 +10,18 @@ import (
 	"strings"
 )
 
-const PolicySchemaVersion = 2
+const (
+	PolicySchemaVersion       = 3
+	LegacyPolicySchemaVersion = 2
+)
 
 const (
-	GateModeCommand       = "command"
-	GateModeCoverage      = "coverage"
-	GateModeNotApplicable = "not_applicable"
-	gateStringErrorFormat = "%s must be a string"
+	GateModeCommand        = "command"
+	GateModeCoverage       = "coverage"
+	GateModeNotApplicable  = "not_applicable"
+	EnvironmentModeClean   = "clean"
+	EnvironmentModeInherit = "inherit"
+	gateStringErrorFormat  = "%s must be a string"
 )
 
 var ProjectGateOrder = []string{
@@ -48,9 +53,15 @@ var evidenceGateSet = func() map[string]struct{} {
 }()
 
 type CommandSpec struct {
-	Argv           []string `json:"argv"`
-	Cwd            string   `json:"cwd"`
-	TimeoutSeconds int      `json:"timeout_seconds"`
+	Argv           []string         `json:"argv"`
+	Cwd            string           `json:"cwd"`
+	TimeoutSeconds int              `json:"timeout_seconds"`
+	Environment    *EnvironmentSpec `json:"environment,omitempty"`
+}
+
+type EnvironmentSpec struct {
+	Mode string   `json:"mode"`
+	Pass []string `json:"pass,omitempty"`
 }
 
 type GatePolicy struct {
@@ -248,26 +259,29 @@ func decodeCommand(raw json.RawMessage) (CommandSpec, error) {
 }
 
 func (p Policy) Validate() error {
-	if p.SchemaVersion != PolicySchemaVersion {
+	if p.SchemaVersion != PolicySchemaVersion && p.SchemaVersion != LegacyPolicySchemaVersion {
 		return fmt.Errorf("unsupported policy schema_version %d", p.SchemaVersion)
 	}
 	if len(p.Gates) != len(ProjectGateOrder) {
 		return fmt.Errorf("policy must contain exactly %d project gates", len(ProjectGateOrder))
 	}
 	for i, expectedID := range ProjectGateOrder {
-		if err := validatePolicyGateAt(i, expectedID, p.Gates[i]); err != nil {
+		if err := validatePolicyGateAt(i, expectedID, p.Gates[i], p.SchemaVersion); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validatePolicyGateAt(index int, expectedID string, gate GatePolicy) error {
+func validatePolicyGateAt(index int, expectedID string, gate GatePolicy, schemaVersion int) error {
 	if gate.ID != expectedID {
 		return fmt.Errorf("gate %d must be %q, got %q", index, expectedID, gate.ID)
 	}
 	if err := gate.Validate(); err != nil {
 		return fmt.Errorf("gate %q: %w", gate.ID, err)
+	}
+	if schemaVersion >= PolicySchemaVersion && gate.Command != nil && gate.Command.Environment == nil {
+		return fmt.Errorf("gate %q: policy schema v3 requires explicit command environment", gate.ID)
 	}
 	if gate.ID == "test.complete" && gate.Mode != GateModeCommand {
 		return fmt.Errorf("gate %q must use command mode", gate.ID)
@@ -315,7 +329,9 @@ func (g GatePolicy) validateCoverageMode() error {
 }
 
 func (g GatePolicy) validateCoverageMetadata() error {
-	if g.Adapter != CoverageAdapterGoCoverProfileV1 {
+	switch g.Adapter {
+	case CoverageAdapterGoCoverProfileV1, CoverageAdapterLCOVV1, CoverageAdapterCoberturaV1:
+	default:
 		return fmt.Errorf("unsupported coverage adapter %q", g.Adapter)
 	}
 	if err := ValidateRepoRelativePath(g.Report); err != nil {
@@ -357,7 +373,66 @@ func (c CommandSpec) Validate() error {
 	if c.TimeoutSeconds < 1 || c.TimeoutSeconds > 3600 {
 		return errors.New("command timeout_seconds must be between 1 and 3600")
 	}
+	if c.Environment != nil {
+		if err := c.Environment.Validate(); err != nil {
+			return fmt.Errorf("command environment: %w", err)
+		}
+	}
 	return nil
+}
+
+func (e EnvironmentSpec) Validate() error {
+	switch e.Mode {
+	case EnvironmentModeInherit:
+		if len(e.Pass) != 0 {
+			return errors.New("inherit environment must not declare pass variables")
+		}
+		return nil
+	case EnvironmentModeClean:
+		seen := map[string]struct{}{}
+		for i, name := range e.Pass {
+			if !validEnvironmentName(name) {
+				return fmt.Errorf("pass[%d] contains invalid environment variable name %q", i, name)
+			}
+			if _, ok := seen[name]; ok {
+				return fmt.Errorf("pass contains duplicate environment variable %q", name)
+			}
+			seen[name] = struct{}{}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported environment mode %q", e.Mode)
+	}
+}
+
+func validEnvironmentName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		if !validEnvironmentRune(r, i == 0) {
+			return false
+		}
+	}
+	return true
+}
+
+func validEnvironmentRune(r rune, first bool) bool {
+	if r == '=' || r == 0 {
+		return false
+	}
+	if first {
+		return isASCIILetter(r) || r == '_'
+	}
+	return isASCIILetter(r) || isASCIIDigit(r) || r == '_'
+}
+
+func isASCIILetter(r rune) bool {
+	return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
+}
+
+func isASCIIDigit(r rune) bool {
+	return r >= '0' && r <= '9'
 }
 
 func ValidateRepoRelativePath(value string) error {

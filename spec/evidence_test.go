@@ -71,3 +71,9 @@ func TestDecodeEvidenceRejectsMalformedFieldVariants(t *testing.T) {
 		}
 	}
 }
+
+func FuzzDecodeEvidence(f *testing.F) {
+	f.Add([]byte("{\"event\":\"gate_started\",\"gate\":\"behavior\"}\n"))
+	f.Add([]byte("not-json\n"))
+	f.Fuzz(func(t *testing.T, raw []byte) { _, _ = DecodeEvidence(raw) })
+}

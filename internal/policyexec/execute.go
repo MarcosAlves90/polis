@@ -8,9 +8,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/MarcosAlves90/polis/v4/internal/commandexec"
-	"github.com/MarcosAlves90/polis/v4/internal/pathguard"
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/internal/commandexec"
+	"github.com/MarcosAlves90/polis/v5/internal/pathguard"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
 
 const maxCoverageReportBytes = 16 * 1024 * 1024
@@ -62,13 +62,7 @@ func executeCoverage(enc *json.Encoder, gate spec.GatePolicy, repoRoot string) s
 	if err != nil {
 		return spec.StatusFail
 	}
-	var metric spec.CoverageMetric
-	switch gate.Adapter {
-	case spec.CoverageAdapterGoCoverProfileV1:
-		metric, err = spec.ParseGoCoverProfile(raw)
-	default:
-		err = fmt.Errorf("unsupported coverage adapter %q", gate.Adapter)
-	}
+	metric, err := spec.ParseCoverage(gate.Adapter, raw)
 	if err != nil {
 		return spec.StatusFail
 	}
@@ -121,18 +115,28 @@ func readCoverageReport(repoRoot, reportPath string) ([]byte, error) {
 func executeCommand(enc *json.Encoder, gate string, command spec.CommandSpec, repoRoot string) spec.Status {
 	obs := commandexec.Run(repoRoot, command)
 	exitCode, duration := obs.ExitCode, obs.DurationMS
-	stdout, stderr := obs.Stdout, obs.Stderr
-	_ = enc.Encode(spec.EvidenceEvent{
-		Event:      "command_finished",
-		Gate:       gate,
-		Status:     obs.Status,
-		Argv:       append([]string(nil), command.Argv...),
-		Cwd:        command.Cwd,
-		ExitCode:   &exitCode,
-		DurationMS: &duration,
-		Stdout:     &stdout,
-		Stderr:     &stderr,
-	})
+	stdoutBytes, stderrBytes := obs.StdoutBytes, obs.StderrBytes
+	stdoutTruncated, stderrTruncated := obs.StdoutTruncated, obs.StderrTruncated
+	event := spec.EvidenceEvent{
+		Event:           "command_finished",
+		Gate:            gate,
+		Status:          obs.Status,
+		Argv:            append([]string(nil), command.Argv...),
+		Cwd:             command.Cwd,
+		ExitCode:        &exitCode,
+		DurationMS:      &duration,
+		StdoutBytes:     &stdoutBytes,
+		StderrBytes:     &stderrBytes,
+		StdoutSHA256:    obs.StdoutSHA256,
+		StderrSHA256:    obs.StderrSHA256,
+		StdoutTruncated: &stdoutTruncated,
+		StderrTruncated: &stderrTruncated,
+	}
+	if command.Environment != nil {
+		event.EnvironmentMode = command.Environment.Mode
+		event.EnvironmentPass = append([]string(nil), command.Environment.Pass...)
+	}
+	_ = enc.Encode(event)
 	return obs.Status
 }
 

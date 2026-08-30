@@ -1,224 +1,31 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://polis.dev/spec/v1/policy.schema.json",
-  "title": "POLIS Project Policy v2",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "gates"
-  ],
-  "properties": {
-    "schema_version": {
-      "const": 2
-    },
-    "gates": {
-      "type": "array",
-      "minItems": 11,
-      "maxItems": 11,
-      "prefixItems": [
-        {
-          "$ref": "#/$defs/requiredCommandGate",
-          "properties": {
-            "id": {
-              "const": "test.complete"
-            }
-          }
-        },
-        {
-          "$ref": "#/$defs/coverageGate"
-        },
-        {
-          "$ref": "#/$defs/optionalGate",
-          "properties": {
-            "id": {
-              "const": "lint"
-            }
-          }
-        },
-        {
-          "$ref": "#/$defs/optionalGate",
-          "properties": {
-            "id": {
-              "const": "typecheck"
-            }
-          }
-        },
-        {
-          "$ref": "#/$defs/optionalGate",
-          "properties": {
-            "id": {
-              "const": "build"
-            }
-          }
-        },
-        {
-          "$ref": "#/$defs/optionalGate",
-          "properties": {
-            "id": {
-              "const": "smoke"
-            }
-          }
-        },
-        {
-          "$ref": "#/$defs/optionalGate",
-          "properties": {
-            "id": {
-              "const": "compatibility"
-            }
-          }
-        },
-        {
-          "$ref": "#/$defs/optionalGate",
-          "properties": {
-            "id": {
-              "const": "dependency"
-            }
-          }
-        },
-        {
-          "$ref": "#/$defs/optionalGate",
-          "properties": {
-            "id": {
-              "const": "migration"
-            }
-          }
-        },
-        {
-          "$ref": "#/$defs/optionalGate",
-          "properties": {
-            "id": {
-              "const": "security"
-            }
-          }
-        },
-        {
-          "$ref": "#/$defs/optionalGate",
-          "properties": {
-            "id": {
-              "const": "platform"
-            }
-          }
-        }
-      ],
-      "items": false
-    }
-  },
-  "$defs": {
-    "command": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "argv",
-        "cwd",
-        "timeout_seconds"
-      ],
-      "properties": {
-        "argv": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "cwd": {
-          "type": "string",
-          "minLength": 1
-        },
-        "timeout_seconds": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 3600
-        }
-      }
-    },
-    "requiredCommandGate": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "mode",
-        "command"
-      ],
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "mode": {
-          "const": "command"
-        },
-        "command": {
-          "$ref": "#/$defs/command"
-        }
-      }
-    },
-    "coverageGate": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "mode",
-        "command",
-        "adapter",
-        "report",
-        "operator",
-        "threshold_percent"
-      ],
-      "properties": {
-        "id": {
-          "const": "coverage"
-        },
-        "mode": {
-          "const": "coverage"
-        },
-        "command": {
-          "$ref": "#/$defs/command"
-        },
-        "adapter": {
-          "const": "go-coverprofile-v1"
-        },
-        "report": {
-          "type": "string",
-          "minLength": 1
-        },
-        "operator": {
-          "const": ">"
-        },
-        "threshold_percent": {
-          "type": "number",
-          "minimum": 80.0,
-          "maximum": 100.0
-        }
-      }
-    },
-    "optionalGate": {
-      "oneOf": [
-        {
-          "$ref": "#/$defs/requiredCommandGate"
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "id",
-            "mode",
-            "reason"
-          ],
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "mode": {
-              "const": "not_applicable"
-            },
-            "reason": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        }
-      ]
-    }
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://polis.dev/spec/v5/policy.schema.json",
+  "title":"POLIS Project Policy v3",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["schema_version","gates"],
+  "properties":{"schema_version":{"const":3},"gates":{"type":"array","minItems":11,"maxItems":11,"prefixItems":[
+    {"$ref":"#/$defs/requiredCommandGate","properties":{"id":{"const":"test.complete"}}},
+    {"$ref":"#/$defs/coverageGate"},
+    {"$ref":"#/$defs/optionalGate","properties":{"id":{"const":"lint"}}},
+    {"$ref":"#/$defs/optionalGate","properties":{"id":{"const":"typecheck"}}},
+    {"$ref":"#/$defs/optionalGate","properties":{"id":{"const":"build"}}},
+    {"$ref":"#/$defs/optionalGate","properties":{"id":{"const":"smoke"}}},
+    {"$ref":"#/$defs/optionalGate","properties":{"id":{"const":"compatibility"}}},
+    {"$ref":"#/$defs/optionalGate","properties":{"id":{"const":"dependency"}}},
+    {"$ref":"#/$defs/optionalGate","properties":{"id":{"const":"migration"}}},
+    {"$ref":"#/$defs/optionalGate","properties":{"id":{"const":"security"}}},
+    {"$ref":"#/$defs/optionalGate","properties":{"id":{"const":"platform"}}}
+  ],"items":false}},
+  "$defs":{
+    "environment":{"oneOf":[
+      {"type":"object","additionalProperties":false,"required":["mode"],"properties":{"mode":{"const":"inherit"}}},
+      {"type":"object","additionalProperties":false,"required":["mode"],"properties":{"mode":{"const":"clean"},"pass":{"type":"array","uniqueItems":true,"items":{"type":"string","pattern":"^[A-Za-z_][A-Za-z0-9_]*$"}}}}
+    ]},
+    "command":{"type":"object","additionalProperties":false,"required":["argv","cwd","timeout_seconds","environment"],"properties":{"argv":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"cwd":{"type":"string","minLength":1},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600},"environment":{"$ref":"#/$defs/environment"}}},
+    "requiredCommandGate":{"type":"object","additionalProperties":false,"required":["id","mode","command"],"properties":{"id":{"type":"string"},"mode":{"const":"command"},"command":{"$ref":"#/$defs/command"}}},
+    "coverageGate":{"type":"object","additionalProperties":false,"required":["id","mode","command","adapter","report","operator","threshold_percent"],"properties":{"id":{"const":"coverage"},"mode":{"const":"coverage"},"command":{"$ref":"#/$defs/command"},"adapter":{"enum":["go-coverprofile-v1","lcov-v1","cobertura-v1"]},"report":{"type":"string","minLength":1},"operator":{"const":">"},"threshold_percent":{"type":"number","minimum":80.0,"maximum":100.0}}},
+    "optionalGate":{"oneOf":[{"$ref":"#/$defs/requiredCommandGate"},{"type":"object","additionalProperties":false,"required":["id","mode","reason"],"properties":{"id":{"type":"string"},"mode":{"const":"not_applicable"},"reason":{"type":"string","minLength":1}}}]}
   }
 }

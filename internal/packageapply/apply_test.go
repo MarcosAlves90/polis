@@ -9,9 +9,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v4/internal/packagebuild"
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/internal/packagebuild"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
+
+func fixturePassCommand() []string {
+	return []string{"git", "rev-parse", "--is-inside-work-tree"}
+}
 
 func policyBytes(t *testing.T) []byte {
 	t.Helper()
@@ -19,15 +23,15 @@ func policyBytes(t *testing.T) []byte {
 	gates := make([]spec.GatePolicy, 0, len(spec.ProjectGateOrder))
 	for _, id := range spec.ProjectGateOrder {
 		if id == "test.complete" {
-			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCommand, Command: &spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60}})
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCommand, Command: &spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}})
 		} else if id == "coverage" {
 			threshold := 80.0
-			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCoverage, Command: &spec.CommandSpec{Argv: []string{"go", "test", "./...", "-coverprofile=.polis/coverage.out"}, Cwd: ".", TimeoutSeconds: 60}, Adapter: spec.CoverageAdapterGoCoverProfileV1, Report: ".polis/coverage.out", Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: &threshold})
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCoverage, Command: &spec.CommandSpec{Argv: []string{"git", "checkout", "--", ".polis/coverage.out"}, Cwd: ".", TimeoutSeconds: 60}, Adapter: spec.CoverageAdapterGoCoverProfileV1, Report: ".polis/coverage.out", Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: &threshold})
 		} else {
 			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeNotApplicable, Reason: &reason})
 		}
 	}
-	b, err := json.Marshal(spec.Policy{SchemaVersion: spec.PolicySchemaVersion, Gates: gates})
+	b, err := json.Marshal(spec.Policy{SchemaVersion: spec.LegacyPolicySchemaVersion, Gates: gates})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +58,9 @@ func repoWithArtifact(t *testing.T) (repo, artifact, target string) {
 	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), policyBytes(t), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(repo, ".polis", "coverage.out"), []byte("mode: set\nexample.com/polisfixture/calc.go:1.1,1.2 1 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("base\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +81,7 @@ func repoWithArtifact(t *testing.T) (repo, artifact, target string) {
 	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	contract := spec.ChangeContract{SchemaVersion: spec.ChangeContractSchemaVersion, Kind: spec.ChangeKindFeature, Behavior: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60}, Affected: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60}, Regression: spec.RegressionContract{Mode: spec.RegressionModeNotApplicable, ReasonCode: spec.RegressionReasonNotDefect}}
+	contract := spec.ChangeContract{SchemaVersion: spec.LegacyChangeContractSchemaVersion, Kind: spec.ChangeKindFeature, Behavior: spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}, Affected: spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}, Regression: spec.RegressionContract{Mode: spec.RegressionModeNotApplicable, ReasonCode: spec.RegressionReasonNotDefect}}
 	contractRaw, err := json.Marshal(contract)
 	if err != nil {
 		t.Fatal(err)
@@ -208,5 +215,34 @@ func TestApplyUsesCurrentDirectoryWhenRepoEmpty(t *testing.T) {
 	defer os.Chdir(old)
 	if _, err := Apply(context.Background(), artifact, ""); err != nil {
 		t.Fatalf("Apply() with default repo error = %v", err)
+	}
+}
+
+func TestPreflightValidatesWithoutMutatingConsumerFiles(t *testing.T) {
+	repo, artifact, target := repoWithArtifact(t)
+	beforeHead := git(t, repo, "rev-parse", "HEAD")
+	beforeIndex := git(t, repo, "write-tree")
+	beforeStatus := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
+	result, err := Preflight(context.Background(), artifact, repo)
+	if err != nil {
+		t.Fatalf("Preflight() error = %v", err)
+	}
+	if result.TargetTree != target {
+		t.Fatalf("target=%s want=%s", result.TargetTree, target)
+	}
+	if got := git(t, repo, "rev-parse", "HEAD"); got != beforeHead {
+		t.Fatalf("HEAD changed: %s -> %s", beforeHead, got)
+	}
+	if got := git(t, repo, "write-tree"); got != beforeIndex {
+		t.Fatalf("index changed: %s -> %s", beforeIndex, got)
+	}
+	if got := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); got != beforeStatus {
+		t.Fatalf("status changed: before=%q after=%q", beforeStatus, got)
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, "app.txt")); string(b) != "base\n" {
+		t.Fatalf("preflight mutated app.txt: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("preflight created new.txt: %v", err)
 	}
 }

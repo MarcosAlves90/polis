@@ -9,10 +9,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v4/internal/packageverify"
-	"github.com/MarcosAlves90/polis/v4/internal/redcapture"
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v5/internal/redcapture"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
+
+func fixturePassCommand() []string {
+	return []string{"git", "rev-parse", "--is-inside-work-tree"}
+}
 
 func testPolicyBytes(t *testing.T, failing bool) []byte {
 	t.Helper()
@@ -20,19 +24,19 @@ func testPolicyBytes(t *testing.T, failing bool) []byte {
 	gates := make([]spec.GatePolicy, 0, len(spec.ProjectGateOrder))
 	for _, id := range spec.ProjectGateOrder {
 		if id == "test.complete" {
-			argv := []string{"go", "test", "./..."}
+			argv := fixturePassCommand()
 			if failing {
 				argv = []string{"git", "diff", "--exit-code", "HEAD", "--", "app.txt"}
 			}
 			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCommand, Command: &spec.CommandSpec{Argv: argv, Cwd: ".", TimeoutSeconds: 60}})
 		} else if id == "coverage" {
 			threshold := 80.0
-			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCoverage, Command: &spec.CommandSpec{Argv: []string{"go", "test", "./...", "-coverprofile=.polis/coverage.out"}, Cwd: ".", TimeoutSeconds: 60}, Adapter: spec.CoverageAdapterGoCoverProfileV1, Report: ".polis/coverage.out", Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: &threshold})
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCoverage, Command: &spec.CommandSpec{Argv: []string{"git", "checkout", "--", ".polis/coverage.out"}, Cwd: ".", TimeoutSeconds: 60}, Adapter: spec.CoverageAdapterGoCoverProfileV1, Report: ".polis/coverage.out", Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: &threshold})
 		} else {
 			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeNotApplicable, Reason: &reason})
 		}
 	}
-	b, err := json.Marshal(spec.Policy{SchemaVersion: spec.PolicySchemaVersion, Gates: gates})
+	b, err := json.Marshal(spec.Policy{SchemaVersion: spec.LegacyPolicySchemaVersion, Gates: gates})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,6 +51,9 @@ func newRepo(t *testing.T, failingPolicy bool) string {
 	}
 	runGit(t, repo, "init", "-q")
 	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), testPolicyBytes(t, failingPolicy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".polis", "coverage.out"), []byte("mode: set\nexample.com/polisfixture/calc.go:1.1,1.2 1 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("base\n"), 0o644); err != nil {
@@ -79,10 +86,10 @@ func runGit(t *testing.T, repo string, args ...string) string {
 func withFeatureContract(t *testing.T, opts Options) Options {
 	t.Helper()
 	contract := spec.ChangeContract{
-		SchemaVersion: spec.ChangeContractSchemaVersion,
+		SchemaVersion: spec.LegacyChangeContractSchemaVersion,
 		Kind:          spec.ChangeKindFeature,
-		Behavior:      spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60},
-		Affected:      spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60},
+		Behavior:      spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60},
+		Affected:      spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60},
 		Regression:    spec.RegressionContract{Mode: spec.RegressionModeNotApplicable, ReasonCode: spec.RegressionReasonNotDefect},
 	}
 	b, err := json.Marshal(contract)
@@ -270,7 +277,7 @@ func TestBuildDefectRequiresAndReproducesRedGreen(t *testing.T) {
 	runGit(t, repo, "add", "double.go")
 	runGit(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "buggy double")
 	exit := 1
-	contract := spec.ChangeContract{SchemaVersion: spec.ChangeContractSchemaVersion, Kind: spec.ChangeKindDefect, Behavior: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60}, Affected: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60}, Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &spec.CommandSpec{Argv: []string{"go", "test", "./...", "-run", "TestDouble"}, Cwd: ".", TimeoutSeconds: 60}, BaselineExitCode: &exit, BaselineOutputContains: []string{"DOUBLE-RED"}}}
+	contract := spec.ChangeContract{SchemaVersion: spec.LegacyChangeContractSchemaVersion, Kind: spec.ChangeKindDefect, Behavior: spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}, Affected: spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}, Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &spec.CommandSpec{Argv: []string{"go", "test", "-p=1", "./...", "-run", "TestDouble"}, Cwd: ".", TimeoutSeconds: 60}, BaselineExitCode: &exit, BaselineOutputContains: []string{"DOUBLE-RED"}}}
 	raw, _ := json.Marshal(contract)
 	contractPath := filepath.Join(t.TempDir(), "change.json")
 	if err := os.WriteFile(contractPath, raw, 0o600); err != nil {
@@ -305,7 +312,7 @@ func TestBuildRejectsContractPlacementAndRegressionModeMisuse(t *testing.T) {
 		t.Fatal(err)
 	}
 	inside := filepath.Join(repo, "change.json")
-	feature := spec.ChangeContract{SchemaVersion: 1, Kind: spec.ChangeKindFeature, Behavior: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60}, Affected: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60}, Regression: spec.RegressionContract{Mode: spec.RegressionModeNotApplicable, ReasonCode: spec.RegressionReasonNotDefect}}
+	feature := spec.ChangeContract{SchemaVersion: 1, Kind: spec.ChangeKindFeature, Behavior: spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}, Affected: spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}, Regression: spec.RegressionContract{Mode: spec.RegressionModeNotApplicable, ReasonCode: spec.RegressionReasonNotDefect}}
 	raw, _ := json.Marshal(feature)
 	os.WriteFile(inside, raw, 0o600)
 	if _, err := Build(context.Background(), Options{Repo: repo, Project: "gitrex", Change: "inside-contract", Out: t.TempDir(), Contract: inside}); err == nil {
@@ -334,7 +341,7 @@ func TestBuildDefectRequiresRegressionPatchAndRejectsProbePathOutsideTarget(t *t
 	runGit(t, repo, "add", "double.go")
 	runGit(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "buggy")
 	exit := 1
-	contract := spec.ChangeContract{SchemaVersion: 1, Kind: spec.ChangeKindDefect, Behavior: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60}, Affected: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60}, Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &spec.CommandSpec{Argv: []string{"go", "test", "./...", "-run", "TestDouble"}, Cwd: ".", TimeoutSeconds: 60}, BaselineExitCode: &exit, BaselineOutputContains: []string{"PATH-RED"}}}
+	contract := spec.ChangeContract{SchemaVersion: 1, Kind: spec.ChangeKindDefect, Behavior: spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}, Affected: spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}, Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &spec.CommandSpec{Argv: []string{"go", "test", "-p=1", "./...", "-run", "TestDouble"}, Cwd: ".", TimeoutSeconds: 60}, BaselineExitCode: &exit, BaselineOutputContains: []string{"PATH-RED"}}}
 	raw, _ := json.Marshal(contract)
 	cp := filepath.Join(t.TempDir(), "change.json")
 	os.WriteFile(cp, raw, 0o600)
@@ -392,5 +399,33 @@ func TestReadExternalInputRejectsPhysicalAliasIntoRepo(t *testing.T) {
 	insideAlias := filepath.Join(alias, "repo", "change.json")
 	if _, err := readExternalInput(repo, insideAlias, 1024); err == nil {
 		t.Fatal("expected physical alias into repo to be rejected")
+	}
+}
+
+func TestBuildRejectsChangedPathOutsideV2Scope(t *testing.T) {
+	repo := newRepo(t, false)
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "outside.txt"), []byte("outside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	contract := spec.ChangeContract{
+		SchemaVersion: spec.ChangeContractSchemaVersion,
+		Kind:          spec.ChangeKindFeature,
+		Scope:         &spec.ChangeScope{AllowedPaths: []string{"app.txt"}},
+		Behavior:      spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env},
+		Affected:      spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env},
+		Regression:    spec.RegressionContract{Mode: spec.RegressionModeNotApplicable, ReasonCode: spec.RegressionReasonNotDefect},
+	}
+	raw, _ := json.Marshal(contract)
+	contractPath := filepath.Join(t.TempDir(), "change.json")
+	if err := os.WriteFile(contractPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Build(context.Background(), Options{Repo: repo, Project: "gitrex", Change: "scope-reject", Out: t.TempDir(), Contract: contractPath})
+	if err == nil || !strings.Contains(err.Error(), "outside change scope") {
+		t.Fatalf("expected scope rejection, got %v", err)
 	}
 }

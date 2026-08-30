@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
 
 const (
@@ -112,7 +112,7 @@ func resolveProfile(root, requested string) (string, error) {
 		if regularFile(filepath.Join(root, "go.mod")) {
 			return ProfileGo, nil
 		}
-		return "", errors.New("no supported POLIS init profile detected; alpha.7 auto-detection supports only root-level go.mod")
+		return "", errors.New("no supported POLIS init profile detected; V5 auto-detection supports only root-level go.mod")
 	default:
 		return "", fmt.Errorf("unknown init profile %q; supported profiles: auto, go", requested)
 	}
@@ -138,12 +138,19 @@ func goPolicy() spec.Policy {
 			{ID: "compatibility", Mode: spec.GateModeNotApplicable, Reason: reason("the canonical Go profile cannot infer a project-specific compatibility surface")},
 			{ID: "dependency", Mode: spec.GateModeCommand, Command: command(600, "go", "mod", "verify")},
 			{ID: "migration", Mode: spec.GateModeNotApplicable, Reason: reason("the canonical Go profile cannot infer a persisted-state migration contract")},
-			{ID: "security", Mode: spec.GateModeNotApplicable, Reason: reason("alpha.7 does not assume an external Go vulnerability scanner is installed")},
+			{ID: "security", Mode: spec.GateModeNotApplicable, Reason: reason("the canonical Go profile does not assume an external vulnerability scanner is installed")},
 			{ID: "platform", Mode: spec.GateModeNotApplicable, Reason: reason("local policy bootstrap does not establish cross-platform runtime evidence")},
 		},
 	}
 }
 
 func command(timeout int, argv ...string) *spec.CommandSpec {
-	return &spec.CommandSpec{Argv: argv, Cwd: ".", TimeoutSeconds: timeout}
+	return &spec.CommandSpec{
+		Argv: argv, Cwd: ".", TimeoutSeconds: timeout,
+		Environment: &spec.EnvironmentSpec{Mode: spec.EnvironmentModeClean, Pass: defaultEnvironmentPass()},
+	}
+}
+
+func defaultEnvironmentPass() []string {
+	return []string{"PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot", "COMSPEC", "PATHEXT", "USERPROFILE", "LOCALAPPDATA"}
 }

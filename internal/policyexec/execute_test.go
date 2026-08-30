@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
 
 func TestPolicyExecHelper(t *testing.T) {
@@ -59,7 +59,7 @@ func testPolicy(t *testing.T, mode string) spec.Policy {
 	if mode != "" {
 		gates[0].Command = helperCommand(t, mode, 10)
 	}
-	return spec.Policy{SchemaVersion: spec.PolicySchemaVersion, Gates: gates}
+	return spec.Policy{SchemaVersion: spec.LegacyPolicySchemaVersion, Gates: gates}
 }
 
 func helperCommand(t *testing.T, mode string, timeout int) *spec.CommandSpec {
@@ -81,7 +81,7 @@ func TestExecutePassAndEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evidence invalid: %v\n%s", err, evidence.String())
 	}
-	if len(events) == 0 || !strings.Contains(evidence.String(), "helper-pass") {
+	if len(events) == 0 || strings.Contains(evidence.String(), "helper-pass") || !strings.Contains(evidence.String(), `"stdout_sha256"`) {
 		t.Fatalf("evidence=%s", evidence.String())
 	}
 }
@@ -92,7 +92,7 @@ func TestExecuteNonZeroIsFail(t *testing.T) {
 	if result.Overall != spec.StatusFail {
 		t.Fatalf("overall=%s evidence=%s", result.Overall, evidence.String())
 	}
-	if !strings.Contains(evidence.String(), `"exit_code":7`) || !strings.Contains(evidence.String(), "helper-fail") {
+	if !strings.Contains(evidence.String(), `"exit_code":7`) || strings.Contains(evidence.String(), "helper-fail") || !strings.Contains(evidence.String(), `"stderr_sha256"`) {
 		t.Fatalf("evidence=%s", evidence.String())
 	}
 }

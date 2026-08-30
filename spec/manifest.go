@@ -8,7 +8,10 @@ import (
 	"regexp"
 )
 
-const FormatVersion = 2
+const (
+	FormatVersion       = 3
+	LegacyFormatVersion = 2
+)
 
 var (
 	projectPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
@@ -46,7 +49,7 @@ func DecodeManifest(raw []byte) (Manifest, error) {
 }
 
 func (m Manifest) Validate() error {
-	if m.FormatVersion != FormatVersion {
+	if m.FormatVersion != FormatVersion && m.FormatVersion != LegacyFormatVersion {
 		return fmt.Errorf("unsupported format_version %d", m.FormatVersion)
 	}
 	if !projectPattern.MatchString(m.Project) {

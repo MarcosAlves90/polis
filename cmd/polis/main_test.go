@@ -3,16 +3,24 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v4/internal/packagebuild"
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/internal/packagebuild"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
+
+func cliFixturePassCommand() []string {
+	return []string{"git", "rev-parse", "--is-inside-work-tree"}
+}
 
 func canonicalPolicyBytes(t *testing.T) []byte {
 	t.Helper()
@@ -20,15 +28,15 @@ func canonicalPolicyBytes(t *testing.T) []byte {
 	gates := make([]spec.GatePolicy, 0, len(spec.ProjectGateOrder))
 	for _, id := range spec.ProjectGateOrder {
 		if id == "test.complete" {
-			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCommand, Command: &spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60}})
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCommand, Command: &spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}})
 		} else if id == "coverage" {
 			threshold := 80.0
-			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCoverage, Command: &spec.CommandSpec{Argv: []string{"go", "test", "./...", "-coverprofile=.polis/coverage.out"}, Cwd: ".", TimeoutSeconds: 60}, Adapter: spec.CoverageAdapterGoCoverProfileV1, Report: ".polis/coverage.out", Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: &threshold})
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCoverage, Command: &spec.CommandSpec{Argv: []string{"git", "checkout", "--", ".polis/coverage.out"}, Cwd: ".", TimeoutSeconds: 60}, Adapter: spec.CoverageAdapterGoCoverProfileV1, Report: ".polis/coverage.out", Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: &threshold})
 		} else {
 			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeNotApplicable, Reason: &reason})
 		}
 	}
-	b, err := json.Marshal(spec.Policy{SchemaVersion: spec.PolicySchemaVersion, Gates: gates})
+	b, err := json.Marshal(spec.Policy{SchemaVersion: spec.LegacyPolicySchemaVersion, Gates: gates})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +45,7 @@ func canonicalPolicyBytes(t *testing.T) []byte {
 
 func featureContractFile(t *testing.T) string {
 	t.Helper()
-	c := spec.ChangeContract{SchemaVersion: spec.ChangeContractSchemaVersion, Kind: spec.ChangeKindFeature, Behavior: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60}, Affected: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60}, Regression: spec.RegressionContract{Mode: spec.RegressionModeNotApplicable, ReasonCode: spec.RegressionReasonNotDefect}}
+	c := spec.ChangeContract{SchemaVersion: spec.LegacyChangeContractSchemaVersion, Kind: spec.ChangeKindFeature, Behavior: spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}, Affected: spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}, Regression: spec.RegressionContract{Mode: spec.RegressionModeNotApplicable, ReasonCode: spec.RegressionReasonNotDefect}}
 	b, err := json.Marshal(c)
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +108,7 @@ func TestRunVerifyRejectsInvalidPackage(t *testing.T) {
 	}
 	var out, errOut bytes.Buffer
 	code := run([]string{"verify", p}, &out, &errOut)
-	if code != 2 {
+	if code != exitInvalidArtifact {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
 	if !strings.Contains(errOut.String(), "POLIS VERIFY: FAIL") {
@@ -125,6 +133,9 @@ func makeBuildRepo(t *testing.T) string {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), canonicalPolicyBytes(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".polis", "coverage.out"), []byte("mode: set\nexample.com/polisfixture/calc.go:1.1,1.2 1 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("base\n"), 0o644); err != nil {
@@ -276,10 +287,7 @@ func TestRunCaptureRedCreatesPatch(t *testing.T) {
 			t.Fatalf("git: %v %s", err, b)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/capturecli\n\ngo 1.23\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "x.go"), []byte("package capturecli\nfunc X() int{return 1}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("baseline\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"add", "."}, {"-c", "user.name=POLIS", "-c", "user.email=x@y", "commit", "-qm", "base"}} {
@@ -288,11 +296,11 @@ func TestRunCaptureRedCreatesPatch(t *testing.T) {
 			t.Fatalf("git %v: %v %s", args, err, b)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(repo, "x_test.go"), []byte("package capturecli\nimport \"testing\"\nfunc TestX(t *testing.T){if X()!=2{t.Fatal(\"CLI-RED\")}}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "regression.txt"), []byte("CLI-RED\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	exit := 1
-	c := spec.ChangeContract{SchemaVersion: 1, Kind: spec.ChangeKindDefect, Behavior: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 30}, Affected: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 30}, Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &spec.CommandSpec{Argv: []string{"go", "test", "./...", "-run", "TestX"}, Cwd: ".", TimeoutSeconds: 30}, BaselineExitCode: &exit, BaselineOutputContains: []string{"CLI-RED"}}}
+	c := spec.ChangeContract{SchemaVersion: 1, Kind: spec.ChangeKindDefect, Behavior: spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 30}, Affected: spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 30}, Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &spec.CommandSpec{Argv: []string{"git", "diff", "--cached", "--exit-code", "HEAD", "--", "regression.txt"}, Cwd: ".", TimeoutSeconds: 30}, BaselineExitCode: &exit, BaselineOutputContains: []string{"CLI-RED"}}}
 	raw, _ := json.Marshal(c)
 	contract := filepath.Join(t.TempDir(), "change.json")
 	os.WriteFile(contract, raw, 0o600)
@@ -305,4 +313,145 @@ func TestRunCaptureRedCreatesPatch(t *testing.T) {
 	if !strings.Contains(out.String(), "POLIS CAPTURE-RED: PASS") {
 		t.Fatalf("out=%s", out.String())
 	}
+}
+
+func TestRunDoctorJSON(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"doctor", "--format", "json"}, &out, &errOut); code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, errOut.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid JSON: %v %s", err, out.String())
+	}
+	if payload["status"] != "PASS" || payload["version"] != version {
+		t.Fatalf("payload=%v", payload)
+	}
+}
+
+func TestRunV5TrustBoundaryCommands(t *testing.T) {
+	repo, built := buildV5CLIArtifact(t)
+
+	assertCLITextContains(t, []string{"inspect", built.Path}, "POLIS INSPECT: PASS", built.TargetTree)
+	assertJSONFields(t, runCLIJSON(t, "inspect", "--format", "json", built.Path), map[string]string{
+		"project":     "polis",
+		"target_tree": built.TargetTree,
+	})
+	assertJSONFields(t, runCLIJSON(t, "verify", "--format", "json", built.Path), map[string]string{
+		"status": "PASS",
+	})
+	assertJSONFields(t, runCLIJSON(t, "preflight", "--repo", repo, "--format", "json", built.Path), map[string]string{
+		"status": "PASS",
+	})
+	assertFileContents(t, filepath.Join(repo, "app.txt"), "base\n")
+
+	privatePath, publicPath := writeCLIKeyPair(t)
+	signaturePath := filepath.Join(t.TempDir(), "artifact.polis.sig")
+	assertJSONFields(t, runCLIJSON(t, "sign", "--key", privatePath, "--out", signaturePath, "--format", "json", built.Path), map[string]string{
+		"status": "PASS",
+	})
+	assertCLITextContains(t, []string{"verify", "--signature", signaturePath, "--trusted-key", publicPath, built.Path}, "POLIS VERIFY: PASS")
+}
+
+func buildV5CLIArtifact(t *testing.T) (string, packagebuild.Result) {
+	t.Helper()
+	repo := makeBuildRepo(t)
+	built, err := packagebuild.Build(context.Background(), packagebuild.Options{
+		Repo: repo, Project: "polis", Change: "v5-cli-contracts", Out: t.TempDir(), Contract: featureContractFile(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "-C", repo, "restore", "--", "app.txt").CombinedOutput(); err != nil {
+		t.Fatalf("restore: %v\n%s", err, output)
+	}
+	return repo, built
+}
+
+func runCLIJSON(t *testing.T, args ...string) map[string]any {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	if code := run(args, &out, &errOut); code != exitPass {
+		t.Fatalf("args=%v code=%d stderr=%s", args, code, errOut.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("args=%v invalid JSON: %v raw=%s", args, err, out.String())
+	}
+	return payload
+}
+
+func assertJSONFields(t *testing.T, payload map[string]any, expected map[string]string) {
+	t.Helper()
+	for key, want := range expected {
+		if got := payload[key]; got != want {
+			t.Fatalf("field %q=%v want=%q payload=%v", key, got, want, payload)
+		}
+	}
+}
+
+func assertCLITextContains(t *testing.T, args []string, tokens ...string) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	if code := run(args, &out, &errOut); code != exitPass {
+		t.Fatalf("args=%v code=%d stderr=%s", args, code, errOut.String())
+	}
+	for _, token := range tokens {
+		if !strings.Contains(out.String(), token) {
+			t.Fatalf("args=%v stdout=%q missing=%q", args, out.String(), token)
+		}
+	}
+}
+
+func assertFileContents(t *testing.T, path, want string) {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(contents) != want {
+		t.Fatalf("%s=%q want=%q", path, contents, want)
+	}
+}
+
+func TestRunV5CommandUsageRejectsPartialSignatureAndBadFormat(t *testing.T) {
+	for _, args := range [][]string{
+		{"inspect", "--format", "yaml", "x.polis"},
+		{"preflight"},
+		{"sign", "x.polis"},
+		{"verify", "--signature", "x.sig", "x.polis"},
+		{"apply", "--trusted-key", "x.pem", "x.polis"},
+		{"doctor", "--format", "yaml"},
+	} {
+		var out, errOut bytes.Buffer
+		if code := run(args, &out, &errOut); code != exitUsage {
+			t.Fatalf("args=%v code=%d stdout=%s stderr=%s", args, code, out.String(), errOut.String())
+		}
+	}
+}
+
+func writeCLIKeyPair(t *testing.T) (string, string) {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicDER, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	privatePath := filepath.Join(dir, "private.pem")
+	publicPath := filepath.Join(dir, "public.pem")
+	if err := os.WriteFile(privatePath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(publicPath, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return privatePath, publicPath
 }

@@ -8,12 +8,22 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"regexp"
 	"sort"
 	"strings"
 
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/spec"
+)
+
+const (
+	MaxArchiveBytes           int64  = 64 << 20
+	MaxTotalUncompressedBytes uint64 = 64 << 20
+	MaxContractMemberBytes    uint64 = 1 << 20
+	MaxEvidenceMemberBytes    uint64 = 16 << 20
+	MaxPatchMemberBytes       uint64 = 32 << 20
+	MaxChecksumsMemberBytes   uint64 = 64 << 10
 )
 
 const (
@@ -45,6 +55,20 @@ type Result struct {
 	TargetTree string
 }
 
+type Inspection struct {
+	Project                     string   `json:"project"`
+	Change                      string   `json:"change"`
+	FormatVersion               int      `json:"format_version"`
+	PolicySchemaVersion         int      `json:"policy_schema_version"`
+	ChangeContractSchemaVersion int      `json:"change_contract_schema_version"`
+	Kind                        string   `json:"kind"`
+	BaseCommit                  string   `json:"base_commit"`
+	TargetTree                  string   `json:"target_tree"`
+	AllowedPaths                []string `json:"allowed_paths"`
+	Gates                       []string `json:"gates"`
+	EvidenceEvents              int      `json:"evidence_events"`
+}
+
 type Package struct {
 	Result          Result
 	Manifest        spec.Manifest
@@ -69,6 +93,33 @@ func Verify(filename string) (Result, error) {
 	return pkg.Result, nil
 }
 
+func Inspect(filename string) (Inspection, error) {
+	pkg, err := Load(filename)
+	if err != nil {
+		return Inspection{}, err
+	}
+	events, err := spec.DecodeEvidence(pkg.Evidence)
+	if err != nil {
+		return Inspection{}, err
+	}
+	inspection := Inspection{
+		Project: pkg.Manifest.Project, Change: pkg.Manifest.Change, FormatVersion: pkg.Manifest.FormatVersion,
+		PolicySchemaVersion: pkg.Policy.SchemaVersion, ChangeContractSchemaVersion: pkg.Change.SchemaVersion,
+		Kind: pkg.Change.Kind, BaseCommit: pkg.Manifest.BaseCommit, TargetTree: pkg.Manifest.TargetTree,
+		EvidenceEvents: len(events),
+	}
+	if pkg.Change.Scope != nil {
+		inspection.AllowedPaths = append([]string(nil), pkg.Change.Scope.AllowedPaths...)
+	} else {
+		inspection.AllowedPaths = []string{"."}
+	}
+	inspection.Gates = make([]string, 0, len(pkg.Policy.Gates))
+	for _, gate := range pkg.Policy.Gates {
+		inspection.Gates = append(inspection.Gates, gate.ID)
+	}
+	return inspection, nil
+}
+
 func Load(filename string) (Package, error) {
 	contents, err := loadArchiveContents(filename)
 	if err != nil {
@@ -89,6 +140,16 @@ func Load(filename string) (Package, error) {
 }
 
 func loadArchiveContents(filename string) (map[string][]byte, error) {
+	info, err := os.Stat(filename)
+	if err != nil {
+		return nil, fmt.Errorf("stat POLIS archive: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("POLIS archive must be a regular file")
+	}
+	if info.Size() > MaxArchiveBytes {
+		return nil, fmt.Errorf("POLIS archive exceeds maximum size %d", MaxArchiveBytes)
+	}
 	zr, err := zip.OpenReader(filename)
 	if err != nil {
 		return nil, fmt.Errorf("open POLIS archive: %w", err)
@@ -105,14 +166,44 @@ func loadArchiveContents(filename string) (map[string][]byte, error) {
 }
 
 func indexArchiveFiles(entries []*zip.File) (map[string]*zip.File, error) {
+	if len(entries) != len(expectedMembers) {
+		return nil, fmt.Errorf("invalid archive inventory: got %d members, want %d", len(entries), len(expectedMembers))
+	}
 	files := make(map[string]*zip.File, len(entries))
+	var total uint64
 	for _, f := range entries {
 		if err := validateArchiveFile(f, files); err != nil {
 			return nil, err
 		}
+		max, ok := memberLimit(f.Name)
+		if !ok {
+			return nil, fmt.Errorf("unexpected archive member %q", f.Name)
+		}
+		if f.UncompressedSize64 > max {
+			return nil, fmt.Errorf("archive member %q exceeds maximum uncompressed size %d", f.Name, max)
+		}
+		total += f.UncompressedSize64
+		if total > MaxTotalUncompressedBytes {
+			return nil, fmt.Errorf("archive exceeds maximum total uncompressed size %d", MaxTotalUncompressedBytes)
+		}
 		files[f.Name] = f
 	}
 	return files, nil
+}
+
+func memberLimit(name string) (uint64, bool) {
+	switch name {
+	case memberManifest, memberPolicy, memberChange:
+		return MaxContractMemberBytes, true
+	case memberEvidence:
+		return MaxEvidenceMemberBytes, true
+	case memberPayload, memberRegression:
+		return MaxPatchMemberBytes, true
+	case memberChecksums:
+		return MaxChecksumsMemberBytes, true
+	default:
+		return 0, false
+	}
 }
 
 func validateArchiveFile(f *zip.File, indexed map[string]*zip.File) error {
@@ -170,6 +261,13 @@ func validateEvidenceAndIntegrity(contents map[string][]byte, contracts decodedC
 	events, err := spec.DecodeEvidence(contents[memberEvidence])
 	if err != nil {
 		return err
+	}
+	if contracts.manifest.FormatVersion == spec.FormatVersion {
+		for i, event := range events {
+			if event.Event == "command_finished" && (event.Stdout != nil || event.Stderr != nil) {
+				return fmt.Errorf("evidence event %d stores raw command output in format v3", i)
+			}
+		}
 	}
 	if err := spec.ValidatePassEvidence(events, contracts.change, contracts.policy); err != nil {
 		return fmt.Errorf("validate evidence contract: %w", err)
@@ -245,12 +343,23 @@ func validateInventory(files map[string]*zip.File) error {
 }
 
 func readZipFile(f *zip.File) ([]byte, error) {
+	max, ok := memberLimit(f.Name)
+	if !ok {
+		return nil, fmt.Errorf("unexpected archive member %q", f.Name)
+	}
 	r, err := f.Open()
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
-	return io.ReadAll(r)
+	b, err := io.ReadAll(io.LimitReader(r, int64(max)+1))
+	if err != nil {
+		return nil, err
+	}
+	if uint64(len(b)) > max {
+		return nil, fmt.Errorf("archive member %q exceeds maximum size %d", f.Name, max)
+	}
+	return b, nil
 }
 
 func verifyManifestDigests(m spec.Manifest, contents map[string][]byte) error {

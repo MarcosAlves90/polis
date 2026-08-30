@@ -1,0 +1,95 @@
+{
+  "title": "End-to-End Software Project Delivery Guide",
+  "version": "5.0.0",
+  "language": "en",
+  "theme": "Portable Trust Boundary",
+  "architecture": {
+    "modules": [
+      {"name":"End-to-End Guide","authority":"engineering workflow, evidence obligations, scope, safety, SDD/TDD orchestration"},
+      {"name":"POLIS Specification","authority":"package bytes, schemas, limits, evidence, signatures, status semantics, path rules, hashing grammar, build/apply protocol"},
+      {"name":"POLIS CLI","authority":"deterministic reference implementation of the POLIS Specification"}
+    ],
+    "non_duplication_rule": "The Guide references machine contracts from the POLIS Specification and does not define competing package layouts or apply semantics."
+  },
+  "development_method": {
+    "sdd": [
+      "Define observable behavior, invariants, trust boundaries, scope, non-goals, and failure semantics before implementation.",
+      "Revise the versioned specification before changing a machine contract.",
+      "Treat accepted specifications as normative until explicitly superseded."
+    ],
+    "tdd": [
+      "Select the next smallest behavior.",
+      "Observe a behavior-specific Red result before the production change when the behavior is testable that way.",
+      "Implement the smallest sufficient change.",
+      "Run the new test, affected tests, and complete policy gates.",
+      "Refactor only while protected behavior remains green."
+    ]
+  },
+  "v5_contracts": {
+    "package_format": 3,
+    "policy_schema": 3,
+    "change_contract_schema": 2,
+    "evidence_contract": 2,
+    "signature_schema": 1,
+    "canonical_member_count": 7,
+    "migration_read_compatibility": ["package format v2", "Project Policy v2", "Change Contract v1"],
+    "invariants": [
+      "exact Git baseline",
+      "exact target tree",
+      "clean consumer worktree and index",
+      "HEAD preservation",
+      "real-index preservation",
+      "isolated validation before apply",
+      "Red-to-Green evidence for reproducible defects",
+      "strict coverage greater than the declared threshold",
+      "fail closed on unproven mandatory conditions"
+    ]
+  },
+  "portable_trust_boundary": {
+    "bounded_input": "Treat .polis bytes as untrusted and reject archives, members, evidence lines, and command output exceeding normative bounds.",
+    "scope": "Change Contract v2 declares scope.allowed_paths and producer plus consumer validate the base-to-target changed path set against it.",
+    "environment": "Every executable schema-v3 command declares inherit or clean environment semantics; clean passes only named variables and never serializes values.",
+    "evidence": "V5 command evidence persists byte counts, SHA-256 digests, truncation state, command identity, environment names, and semantic oracle results instead of raw stdout/stderr.",
+    "authentication": "Detached Ed25519 signatures authenticate SHA-256 of exact .polis bytes when the consumer supplies a trusted public key; package contents never define trust roots.",
+    "preflight": "Consumer preflight repeats package, baseline, isolated validation, target-tree, scope, policy, and git apply --check without applying the payload. Apply never reuses a previous preflight result."
+  },
+  "resource_limits": {
+    "archive_bytes": 67108864,
+    "total_uncompressed_bytes": 67108864,
+    "contract_member_bytes": 1048576,
+    "evidence_member_bytes": 16777216,
+    "evidence_line_bytes": 1048576,
+    "patch_member_bytes": 33554432,
+    "checksums_member_bytes": 65536,
+    "retained_stdout_or_stderr_bytes_per_stream": 1048576
+  },
+  "coverage": {
+    "metric": "line_coverage_percent",
+    "operator": ">",
+    "minimum_threshold_percent": 80.0,
+    "adapters": ["go-coverprofile-v1", "lcov-v1", "cobertura-v1"]
+  },
+  "delivery_workflow": [
+    "Resolve repository identity, immutable baseline, permissions, changed/protected behavior, scope, and non-goals.",
+    "Inspect repository policy, current behavior, tests, CI, architecture, and material runtime evidence.",
+    "Create the Change Contract outside the worktree; V5 contracts explicitly authorize changed paths and command environments.",
+    "For defects, capture Red before the production fix through the canonical regression flow.",
+    "Implement bounded Red-Green-Refactor slices.",
+    "Run affected and complete repository policy validation.",
+    "Build with a clean index and exact baseline; producer scope validation must pass.",
+    "Verify the exact generated artifact bytes.",
+    "Optionally sign the frozen artifact with a detached signature; the consumer independently selects trusted keys.",
+    "Use inspect or preflight for non-mutating consumer evaluation.",
+    "Use apply only on the exact clean baseline; apply repeats validation and scope checks before transactional mutation."
+  ],
+  "non_goals": [
+    "dirty-worktree apply",
+    "automatic conflict resolution",
+    "cached PASS reuse",
+    "parallel or DAG gates without measured need",
+    "arbitrary executable plugins",
+    "cloud registry or service",
+    "claiming hermetic builds from environment filtering",
+    "inventing language-specific init commands without repository evidence"
+  ]
+}

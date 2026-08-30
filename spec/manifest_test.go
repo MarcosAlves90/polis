@@ -69,3 +69,9 @@ func TestManifestValidationRejectsInvalidFields(t *testing.T) {
 		}
 	}
 }
+
+func FuzzDecodeManifest(f *testing.F) {
+	f.Add([]byte(`{"format_version":3}`))
+	f.Add([]byte(`not-json`))
+	f.Fuzz(func(t *testing.T, raw []byte) { _, _ = DecodeManifest(raw) })
+}

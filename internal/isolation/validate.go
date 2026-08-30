@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/MarcosAlves90/polis/v4/internal/changeexec"
-	"github.com/MarcosAlves90/polis/v4/internal/gitutil"
-	"github.com/MarcosAlves90/polis/v4/internal/policyexec"
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/internal/changeexec"
+	"github.com/MarcosAlves90/polis/v5/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v5/internal/policyexec"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
 
 type Validation struct {
@@ -93,6 +93,13 @@ func validateTarget(ctx context.Context, validation Validation, redPaths map[str
 	}
 	if err := gitutil.RequireTargetTree(ctx, worktree, validation.TargetTree); err != nil {
 		return err
+	}
+	changedPaths, err := gitutil.ChangedTreePaths(ctx, worktree, validation.BaseCommit, validation.TargetTree)
+	if err != nil {
+		return err
+	}
+	if err := validation.Change.ValidateChangedPaths(changedPaths); err != nil {
+		return fmt.Errorf("consumer change scope validation: %w", err)
 	}
 	if err := changeexec.ExecuteTarget(validation.Change, worktree, validation.Evidence); err != nil {
 		return err

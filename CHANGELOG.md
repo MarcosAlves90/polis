@@ -8,6 +8,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- POLIS V5 portable trust-boundary contracts: package format v3, Project Policy v3, Change Contract v2, and Evidence v2 while retaining V4 schema compatibility for migration.
+- Bounded `.polis` parsing with explicit archive/member limits and fuzz targets for package paths and contract decoders.
+- Change Contract scope enforcement through `scope.allowed_paths` on producer build and consumer isolated validation.
+- Explicit command-environment contracts with clean allowlisting and environment metadata that never serializes variable values.
+- Digested command evidence with byte counts, SHA-256, truncation flags, and semantic Red-state oracle events instead of raw stdout/stderr in format v3.
+- `polis preflight` for full consumer validation without applying the payload and `polis inspect` for validated artifact metadata.
+- Stable JSON output for automation-oriented CLI commands and categorized exit codes for artifact, baseline, validation, and apply failures.
+- Detached `ed25519-sha256-v1` signatures whose trust root is supplied by the consumer.
+- LCOV and Cobertura line-coverage adapters in addition to Go coverprofile.
+- SDD/TDD 0023 and POLIS Specification v2 for the V5 contracts.
+
+### Changed
+
+- Migrated the Go module and active installation contract to `github.com/MarcosAlves90/polis/v5`.
+- New `polis init` Go policies emit schema v3 with explicit clean environment contracts.
+- Runtime command output capture is bounded to 1 MiB per stream while full-stream digests and byte counts are retained.
+
+### Security
+
+- Artifact consumption now rejects oversized archives/members before unbounded reads.
+- V5 scope contracts prevent a package from changing repository paths outside its declared authorization boundary.
+- V5 evidence no longer persists raw command output by default, reducing accidental secret disclosure from tool output.
+
+### Fixed
+
+- Removed the remaining V5 Sonar maintainability findings in CLI and coverage-policy code by centralizing repeated labels/help text and decomposing cognitive-complexity hotspots without changing observable behavior.
+- Increased behavioral/error-path coverage margin after a Go 1.27 consumer exposed toolchain-dependent `go-coverprofile-v1` instrumentation drift that could move the same source tree across the strict 80% gate.
+- Added regression coverage for malformed coverage reports, digested evidence, CLI fail-closed paths, and detached-signature boundary failures without weakening the coverage threshold.
+
+### Added
+
 - Versioned `.polis/policy.json` so the repository carries its canonical validation policy, including complete tests, strict project-wide coverage above 80%, vet, build, and module-integrity gates.
 - Local SonarQube configuration through `sonar-project.properties`, importing the same Go coverage profile used by POLIS from `.polis/coverage.out`.
 - `scripts/sonar-local.sh` for local SonarQube Server analysis: it generates the canonical Go coverage profile before running `sonar-scanner`, defaults `SONAR_HOST_URL` to `http://localhost:9000`, and keeps authentication in `SONAR_TOKEN`.

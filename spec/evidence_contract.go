@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -72,7 +73,24 @@ func (v *evidenceValidator) expectCommand(gate string, cmd CommandSpec, wantStat
 	if wantExit != nil && (e.ExitCode == nil || *e.ExitCode != *wantExit) {
 		return EvidenceEvent{}, fmt.Errorf("event %d: exit code mismatch for %s", v.index-1, gate)
 	}
+	if err := validateCommandEnvironmentEvidence(e, cmd); err != nil {
+		return EvidenceEvent{}, fmt.Errorf("event %d: %w", v.index-1, err)
+	}
 	return e, nil
+}
+
+func validateCommandEnvironmentEvidence(event EvidenceEvent, command CommandSpec) error {
+	if command.Environment == nil {
+		return nil
+	}
+	if event.EnvironmentMode == "" && event.Stdout != nil {
+		// Legacy evidence is accepted only for migration contracts.
+		return nil
+	}
+	if event.EnvironmentMode != command.Environment.Mode || !reflect.DeepEqual(event.EnvironmentPass, command.Environment.Pass) {
+		return errors.New("command environment evidence does not match contract")
+	}
+	return nil
 }
 
 func (v *evidenceValidator) expectFinish(gate string, status Status, reason *string) error {
@@ -110,13 +128,32 @@ func (v *evidenceValidator) validateRegression(change ChangeContract) error {
 	if err != nil {
 		return err
 	}
-	if err := validateRegressionOutput(commandEvent, change.Regression.BaselineOutputContains); err != nil {
-		return err
+	if commandEvent.Stdout != nil || commandEvent.Stderr != nil {
+		if err := validateRegressionOutput(commandEvent, change.Regression.BaselineOutputContains); err != nil {
+			return err
+		}
+	} else {
+		for i := range change.Regression.BaselineOutputContains {
+			if err := v.expectOracle(i); err != nil {
+				return err
+			}
+		}
 	}
 	if err := v.expectFinish("regression", StatusPass, nil); err != nil {
 		return err
 	}
 	return v.expectPassCommandGate("regression", *change.Regression.Command)
+}
+
+func (v *evidenceValidator) expectOracle(index int) error {
+	e, err := v.next()
+	if err != nil {
+		return err
+	}
+	if e.Event != "oracle_checked" || e.Gate != "regression" || e.Status != StatusPass || e.Oracle != "baseline_output_contains" || e.OracleIndex == nil || *e.OracleIndex != index {
+		return fmt.Errorf("event %d: regression oracle evidence mismatch", v.index-1)
+	}
+	return nil
 }
 
 func (v *evidenceValidator) validateNonDefectRegression() error {
@@ -161,6 +198,9 @@ func (v *evidenceValidator) expectPassCommand(gate string, cmd CommandSpec) erro
 	v.index++
 	if e.Event != "command_finished" || e.Gate != gate || e.Status != StatusPass || e.ExitCode == nil || *e.ExitCode != 0 || !reflect.DeepEqual(e.Argv, cmd.Argv) || e.Cwd != cmd.Cwd {
 		return fmt.Errorf("command evidence mismatch for %s", gate)
+	}
+	if err := validateCommandEnvironmentEvidence(e, cmd); err != nil {
+		return fmt.Errorf("command evidence mismatch for %s: %w", gate, err)
 	}
 	return nil
 }
@@ -243,6 +283,9 @@ func (v *evidenceValidator) validateCoverageCommand(gate GatePolicy) error {
 	v.index++
 	if e.Event != "command_finished" || e.Gate != gate.ID || e.Status != StatusPass || e.ExitCode == nil || *e.ExitCode != 0 || !reflect.DeepEqual(e.Argv, gate.Command.Argv) || e.Cwd != gate.Command.Cwd {
 		return fmt.Errorf("coverage command evidence mismatch")
+	}
+	if err := validateCommandEnvironmentEvidence(e, *gate.Command); err != nil {
+		return fmt.Errorf("coverage command evidence mismatch: %w", err)
 	}
 	return nil
 }

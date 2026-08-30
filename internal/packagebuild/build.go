@@ -16,11 +16,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/MarcosAlves90/polis/v4/internal/fileutil"
-	"github.com/MarcosAlves90/polis/v4/internal/gitutil"
-	"github.com/MarcosAlves90/polis/v4/internal/isolation"
-	"github.com/MarcosAlves90/polis/v4/internal/packageverify"
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/internal/fileutil"
+	"github.com/MarcosAlves90/polis/v5/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v5/internal/isolation"
+	"github.com/MarcosAlves90/polis/v5/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
 
 type Options struct {
@@ -79,12 +79,22 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if policy.SchemaVersion == spec.PolicySchemaVersion && changeContract.SchemaVersion != spec.ChangeContractSchemaVersion {
+		return Result{}, errors.New("policy schema v3 requires Change Contract schema v2 for new builds")
+	}
 	targetTree, patch, err := buildTargetWithTemporaryIndex(ctx, repo, baseCommit)
 	if err != nil {
 		return Result{}, err
 	}
 	if len(patch) == 0 {
 		return Result{}, errors.New("generated patch is empty")
+	}
+	changedPaths, err := gitutil.ChangedTreePaths(ctx, repo, baseCommit, targetTree)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := changeContract.ValidateChangedPaths(changedPaths); err != nil {
+		return Result{}, fmt.Errorf("change scope validation: %w", err)
 	}
 
 	var evidence bytes.Buffer

@@ -7,8 +7,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/MarcosAlves90/polis/v4/internal/commandexec"
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/internal/commandexec"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
 
 func ExecuteBaseline(contract spec.ChangeContract, repoRoot string, evidence io.Writer) error {
@@ -28,9 +28,20 @@ func ExecuteBaseline(contract spec.ChangeContract, repoRoot string, evidence io.
 		return fmt.Errorf("regression baseline exit code %d, want %d", obs.ExitCode, *contract.Regression.BaselineExitCode)
 	}
 	for _, token := range contract.Regression.BaselineOutputContains {
+		if obs.StdoutTruncated || obs.StderrTruncated {
+			return errors.New("regression baseline output exceeded bounded capture; oracle cannot be proven")
+		}
 		if !strings.Contains(combined, token) {
 			return fmt.Errorf("regression baseline output missing token %q", token)
 		}
+		index := 0
+		for i, candidate := range contract.Regression.BaselineOutputContains {
+			if candidate == token {
+				index = i
+				break
+			}
+		}
+		_ = enc.Encode(spec.EvidenceEvent{Event: "oracle_checked", Gate: "regression", Status: spec.StatusPass, Oracle: "baseline_output_contains", OracleIndex: &index})
 	}
 	_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: "regression", Status: spec.StatusPass})
 	return nil
@@ -72,8 +83,20 @@ func runPassGate(enc *json.Encoder, gate string, command spec.CommandSpec, repoR
 }
 
 func writeObservation(enc *json.Encoder, gate string, command spec.CommandSpec, obs commandexec.Observation) {
-	exit, duration, stdout, stderr := obs.ExitCode, obs.DurationMS, obs.Stdout, obs.Stderr
-	_ = enc.Encode(spec.EvidenceEvent{Event: "command_finished", Gate: gate, Status: obs.Status, Argv: append([]string(nil), command.Argv...), Cwd: command.Cwd, ExitCode: &exit, DurationMS: &duration, Stdout: &stdout, Stderr: &stderr})
+	exit, duration := obs.ExitCode, obs.DurationMS
+	stdoutBytes, stderrBytes := obs.StdoutBytes, obs.StderrBytes
+	stdoutTruncated, stderrTruncated := obs.StdoutTruncated, obs.StderrTruncated
+	event := spec.EvidenceEvent{
+		Event: "command_finished", Gate: gate, Status: obs.Status, Argv: append([]string(nil), command.Argv...), Cwd: command.Cwd,
+		ExitCode: &exit, DurationMS: &duration,
+		StdoutBytes: &stdoutBytes, StderrBytes: &stderrBytes, StdoutSHA256: obs.StdoutSHA256, StderrSHA256: obs.StderrSHA256,
+		StdoutTruncated: &stdoutTruncated, StderrTruncated: &stderrTruncated,
+	}
+	if command.Environment != nil {
+		event.EnvironmentMode = command.Environment.Mode
+		event.EnvironmentPass = append([]string(nil), command.Environment.Pass...)
+	}
+	_ = enc.Encode(event)
 }
 
 func blockedReason(status spec.Status) *string {

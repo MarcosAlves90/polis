@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
 
 func git(t *testing.T, repo string, args ...string) string {
@@ -28,14 +28,14 @@ func fixture(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 	git(t, repo, "init", "-q")
-	os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/red\n\ngo 1.23\n"), 0o644)
-	os.WriteFile(filepath.Join(repo, "calc.go"), []byte("package red\nfunc Add(a,b int) int{return a+b}\n"), 0o644)
+	os.WriteFile(filepath.Join(repo, "app.txt"), []byte("baseline\n"), 0o644)
 	git(t, repo, "add", ".")
 	git(t, repo, "-c", "user.name=POLIS", "-c", "user.email=x@y", "commit", "-qm", "base")
-	// Red test only: expects deliberately wrong behavior from unchanged production code.
-	os.WriteFile(filepath.Join(repo, "calc_test.go"), []byte("package red\nimport \"testing\"\nfunc TestBug(t *testing.T){if Add(2,3)!=6{t.Fatal(\"BUG-RED\")}}\n"), 0o644)
+	// Red probe only: the captured patch stages a file whose diff carries a stable oracle token.
+	os.WriteFile(filepath.Join(repo, "regression.txt"), []byte("BUG-RED\n"), 0o644)
 	code := 1
-	c := spec.ChangeContract{SchemaVersion: 1, Kind: spec.ChangeKindDefect, Behavior: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 30}, Affected: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 30}, Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &spec.CommandSpec{Argv: []string{"go", "test", "./...", "-run", "TestBug"}, Cwd: ".", TimeoutSeconds: 30}, BaselineExitCode: &code, BaselineOutputContains: []string{"BUG-RED"}}}
+	pass := spec.CommandSpec{Argv: []string{"git", "rev-parse", "--verify", "HEAD"}, Cwd: ".", TimeoutSeconds: 30}
+	c := spec.ChangeContract{SchemaVersion: 1, Kind: spec.ChangeKindDefect, Behavior: pass, Affected: pass, Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &spec.CommandSpec{Argv: []string{"git", "diff", "--cached", "--exit-code", "HEAD", "--", "regression.txt"}, Cwd: ".", TimeoutSeconds: 30}, BaselineExitCode: &code, BaselineOutputContains: []string{"BUG-RED"}}}
 	b, _ := json.Marshal(c)
 	cp := filepath.Join(t.TempDir(), "change.json")
 	os.WriteFile(cp, b, 0o600)
@@ -54,7 +54,7 @@ func TestCaptureProducesValidatedPatchWithoutMutatingSource(t *testing.T) {
 	if r.SHA256 == "" {
 		t.Fatal("missing hash")
 	}
-	if b, _ := os.ReadFile(out); !strings.Contains(string(b), "calc_test.go") {
+	if b, _ := os.ReadFile(out); !strings.Contains(string(b), "regression.txt") {
 		t.Fatalf("patch=%s", b)
 	}
 	if git(t, repo, "rev-parse", "HEAD") != head || git(t, repo, "write-tree") != idx || git(t, repo, "status", "--porcelain=v1", "--untracked-files=all") != status {
@@ -63,11 +63,11 @@ func TestCaptureProducesValidatedPatchWithoutMutatingSource(t *testing.T) {
 }
 func TestCaptureRejectsStagedAndExistingOutput(t *testing.T) {
 	repo, cp := fixture(t)
-	git(t, repo, "add", "calc_test.go")
+	git(t, repo, "add", "regression.txt")
 	if _, e := Capture(context.Background(), Options{Repo: repo, Contract: cp, Out: filepath.Join(t.TempDir(), "x")}); e == nil {
 		t.Fatal("expected staged rejection")
 	}
-	git(t, repo, "restore", "--staged", "calc_test.go")
+	git(t, repo, "restore", "--staged", "regression.txt")
 	out := filepath.Join(t.TempDir(), "x")
 	os.WriteFile(out, []byte("keep"), 0o600)
 	if _, e := Capture(context.Background(), Options{Repo: repo, Contract: cp, Out: out}); e == nil {
@@ -96,14 +96,14 @@ func TestCaptureRejectsInvalidInputsAndNonDefect(t *testing.T) {
 		t.Fatal("expected non-repo error")
 	}
 	repo, cp := fixture(t)
-	if err := os.Remove(filepath.Join(repo, "calc_test.go")); err != nil {
+	if err := os.Remove(filepath.Join(repo, "regression.txt")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Capture(context.Background(), Options{Repo: repo, Contract: cp, Out: filepath.Join(t.TempDir(), "x")}); err == nil {
 		t.Fatal("expected clean worktree error")
 	}
 
-	cmd := spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 30}
+	cmd := spec.CommandSpec{Argv: []string{"git", "rev-parse", "--verify", "HEAD"}, Cwd: ".", TimeoutSeconds: 30}
 	feature := spec.ChangeContract{SchemaVersion: 1, Kind: spec.ChangeKindFeature, Behavior: cmd, Affected: cmd, Regression: spec.RegressionContract{Mode: spec.RegressionModeNotApplicable, ReasonCode: spec.RegressionReasonNotDefect}}
 	raw, _ := json.Marshal(feature)
 	featurePath := filepath.Join(t.TempDir(), "feature.json")

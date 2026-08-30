@@ -21,7 +21,7 @@ git --version
 The same command installs the current POLIS command on Linux, macOS, and Windows:
 
 ```text
-go install github.com/MarcosAlves90/polis/v4/cmd/polis@latest
+go install github.com/MarcosAlves90/polis/v5/cmd/polis@latest
 ```
 
 `go install ...@latest` installs the executable into `GOBIN`. When `GOBIN` is empty, Go uses the `bin` directory under `GOPATH`.
@@ -33,7 +33,7 @@ After installation, `polis` must be reachable through `PATH`.
 Install POLIS:
 
 ```bash
-go install github.com/MarcosAlves90/polis/v4/cmd/polis@latest
+go install github.com/MarcosAlves90/polis/v5/cmd/polis@latest
 ```
 
 Resolve the directory containing the executable:
@@ -70,7 +70,7 @@ polis doctor
 Install POLIS:
 
 ```zsh
-go install github.com/MarcosAlves90/polis/v4/cmd/polis@latest
+go install github.com/MarcosAlves90/polis/v5/cmd/polis@latest
 ```
 
 Resolve the directory containing the executable:
@@ -107,7 +107,7 @@ polis doctor
 Install POLIS:
 
 ```powershell
-go install github.com/MarcosAlves90/polis/v4/cmd/polis@latest
+go install github.com/MarcosAlves90/polis/v5/cmd/polis@latest
 ```
 
 Resolve the directory containing `polis.exe`:
@@ -164,7 +164,7 @@ The same `GOBIN`/`GOPATH` and `PATH` rules above apply.
 Re-run the versioned installation command:
 
 ```text
-go install github.com/MarcosAlves90/polis/v4/cmd/polis@latest
+go install github.com/MarcosAlves90/polis/v5/cmd/polis@latest
 polis doctor
 ```
 

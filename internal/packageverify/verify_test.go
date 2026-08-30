@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v4/spec"
+	"github.com/MarcosAlves90/polis/v5/spec"
 )
 
 func canonicalPolicyBytes(t *testing.T) []byte {
@@ -29,7 +29,7 @@ func canonicalPolicyBytes(t *testing.T) []byte {
 			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeNotApplicable, Reason: &reason})
 		}
 	}
-	b, err := json.Marshal(spec.Policy{SchemaVersion: spec.PolicySchemaVersion, Gates: gates})
+	b, err := json.Marshal(spec.Policy{SchemaVersion: spec.LegacyPolicySchemaVersion, Gates: gates})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,4 +272,42 @@ func TestVerifyChecksumFileRejectsMalformedAndDuplicate(t *testing.T) {
 	if err := verifyChecksumFile(c); err == nil {
 		t.Fatal("expected duplicate error")
 	}
+}
+
+func TestInspectReturnsCanonicalPackageMetadata(t *testing.T) {
+	artifact := writePackage(t, nil)
+	inspection, err := Inspect(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Project != "gitrex" || inspection.Change != "test-change" || inspection.EvidenceEvents == 0 {
+		t.Fatalf("inspection=%+v", inspection)
+	}
+	if len(inspection.AllowedPaths) != 1 || inspection.AllowedPaths[0] != "." {
+		t.Fatalf("legacy scope=%v", inspection.AllowedPaths)
+	}
+}
+
+func TestVerifyRejectsArchiveAboveMaximumBytesBeforeParsing(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "oversized.polis")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(MaxArchiveBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(p); err == nil || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("expected archive-size rejection, got %v", err)
+	}
+}
+
+func FuzzValidateMemberPath(f *testing.F) {
+	for _, seed := range []string{"polis/polis-manifest.json", "../escape", "polis/../escape", "/absolute", `polis\\evil`} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, name string) { _ = validateMemberPath(name) })
 }

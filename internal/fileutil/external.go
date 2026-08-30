@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/MarcosAlves90/polis/v4/internal/pathguard"
+	"github.com/MarcosAlves90/polis/v5/internal/pathguard"
 )
 
 type OutsideReadOptions struct {
