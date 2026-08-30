@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "gates": [
     {
       "id": "test.complete",
@@ -11,7 +11,22 @@
           "./..."
         ],
         "cwd": ".",
-        "timeout_seconds": 1200
+        "timeout_seconds": 1200,
+        "environment": {
+          "mode": "clean",
+          "pass": [
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+            "SystemRoot",
+            "COMSPEC",
+            "PATHEXT",
+            "USERPROFILE",
+            "LOCALAPPDATA"
+          ]
+        }
       }
     },
     {
@@ -26,7 +41,22 @@
           "-coverprofile=.polis/coverage.out"
         ],
         "cwd": ".",
-        "timeout_seconds": 1200
+        "timeout_seconds": 1200,
+        "environment": {
+          "mode": "clean",
+          "pass": [
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+            "SystemRoot",
+            "COMSPEC",
+            "PATHEXT",
+            "USERPROFILE",
+            "LOCALAPPDATA"
+          ]
+        }
       },
       "adapter": "go-coverprofile-v1",
       "report": ".polis/coverage.out",
@@ -43,7 +73,22 @@
           "./..."
         ],
         "cwd": ".",
-        "timeout_seconds": 600
+        "timeout_seconds": 600,
+        "environment": {
+          "mode": "clean",
+          "pass": [
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+            "SystemRoot",
+            "COMSPEC",
+            "PATHEXT",
+            "USERPROFILE",
+            "LOCALAPPDATA"
+          ]
+        }
       }
     },
     {
@@ -61,7 +106,22 @@
           "./..."
         ],
         "cwd": ".",
-        "timeout_seconds": 1200
+        "timeout_seconds": 1200,
+        "environment": {
+          "mode": "clean",
+          "pass": [
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+            "SystemRoot",
+            "COMSPEC",
+            "PATHEXT",
+            "USERPROFILE",
+            "LOCALAPPDATA"
+          ]
+        }
       }
     },
     {
@@ -84,7 +144,22 @@
           "verify"
         ],
         "cwd": ".",
-        "timeout_seconds": 600
+        "timeout_seconds": 600,
+        "environment": {
+          "mode": "clean",
+          "pass": [
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+            "SystemRoot",
+            "COMSPEC",
+            "PATHEXT",
+            "USERPROFILE",
+            "LOCALAPPDATA"
+          ]
+        }
       }
     },
     {
@@ -95,7 +170,7 @@
     {
       "id": "security",
       "mode": "not_applicable",
-      "reason": "alpha.7 does not assume an external Go vulnerability scanner is installed"
+      "reason": "the canonical Go profile does not assume an external vulnerability scanner is installed"
     },
     {
       "id": "platform",
