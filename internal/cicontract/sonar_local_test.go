@@ -58,8 +58,12 @@ func TestChangelogContract(t *testing.T) {
 		"Keep a Changelog",
 		"Semantic Versioning",
 		"## [Unreleased]",
+		"## [5.0.1] - 2026-08-31",
+		"## [5.0.0] - 2026-08-30",
 		"## [4.0.0] - 2026-08-29",
-		"github.com/MarcosAlves90/polis/compare/v4.0.0...HEAD",
+		"github.com/MarcosAlves90/polis/compare/v5.0.1...HEAD",
+		"github.com/MarcosAlves90/polis/compare/v5.0.0...v5.0.1",
+		"github.com/MarcosAlves90/polis/compare/v4.0.0...v5.0.0",
 	} {
 		if !strings.Contains(changelog, fragment) {
 			t.Errorf("CHANGELOG missing required fragment %q", fragment)
