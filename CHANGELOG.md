@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Add explicit `polis init --profile custom` bootstrap for non-Go Git repositories with repeated direct-argv test/coverage inputs, explicit existing coverage adapters/reports, optional threshold, and mutation-free `--dry-run`.
 - Add `scripts/github-release.sh` for explicit local-direct GitHub Release publication with default/custom `gh`, verified tags, optional frozen assets, SHA-256 manifests, and post-publication verification.
 - Add `docs/releases.md` with the release preflight, publication boundary, GitHub CLI override, release notes, assets, and safety contract.
 - POLIS V5 portable trust-boundary contracts: package format v3, Project Policy v3, Change Contract v2, and Evidence v2 while retaining V4 schema compatibility for migration.
@@ -35,6 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Allow repositories without a root-level `go.mod` to create a schema-v3 POLIS policy through explicit `--profile custom` inputs while keeping `--profile auto` fail-closed and the canonical Go profile unchanged.
 - Removed the remaining V5 Sonar maintainability findings in CLI and coverage-policy code by centralizing repeated labels/help text and decomposing cognitive-complexity hotspots without changing observable behavior.
 - Increased behavioral/error-path coverage margin after a Go 1.27 consumer exposed toolchain-dependent `go-coverprofile-v1` instrumentation drift that could move the same source tree across the strict 80% gate.
 - Added regression coverage for malformed coverage reports, digested evidence, CLI fail-closed paths, and detached-signature boundary failures without weakening the coverage threshold.

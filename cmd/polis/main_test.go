@@ -455,3 +455,56 @@ func writeCLIKeyPair(t *testing.T) (string, string) {
 	}
 	return privatePath, publicPath
 }
+
+func TestRunInitCustomDryRunPreservesRepeatedArgv(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "-C", repo, "init", "-q")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, b)
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{
+		"init", "--repo", repo, "--profile", "custom", "--dry-run",
+		"--test-argv", "npm", "--test-argv", "test with spaces", "--test-argv", "&&",
+		"--coverage-argv", "npm", "--coverage-argv", "run", "--coverage-argv", "coverage with spaces", "--coverage-argv", "&&",
+		"--coverage-adapter", "lcov-v1", "--coverage-report", "coverage/lcov.info",
+	}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, errOut.String())
+	}
+	policy, err := spec.DecodePolicy(out.Bytes())
+	if err != nil {
+		t.Fatalf("stdout is not policy JSON: %v\n%s", err, out.String())
+	}
+	if got := policy.Gates[0].Command.Argv; strings.Join(got, "\x00") != strings.Join([]string{"npm", "test with spaces", "&&"}, "\x00") {
+		t.Fatalf("test argv=%q", got)
+	}
+	if got := policy.Gates[1].Command.Argv; strings.Join(got, "\x00") != strings.Join([]string{"npm", "run", "coverage with spaces", "&&"}, "\x00") {
+		t.Fatalf("coverage argv=%q", got)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".polis")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created .polis: %v", err)
+	}
+}
+
+func TestRunInitRejectsCustomFlagsOutsideCustomProfile(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/cliinit\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "-C", repo, "init", "-q")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, b)
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{"init", "--repo", repo, "--profile", "go", "--test-argv", "go"}, &out, &errOut)
+	if code != exitUsage || !strings.Contains(errOut.String(), "--profile custom") {
+		t.Fatalf("code=%d stderr=%q", code, errOut.String())
+	}
+}

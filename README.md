@@ -26,7 +26,7 @@ Then run `polis doctor`. See the [installation guide](docs/installation.md) for 
 
 ```bash
 polis doctor [--format text|json]
-polis init --repo /path/to/repo
+polis init --repo /path/to/repo [--profile auto|go|custom] [--dry-run]
 polis capture-red --repo /path/to/repo --contract /outside/change.json --out /outside/regression.patch
 polis build --repo /path/to/repo --project project-slug --change change-slug --contract /outside/change.json --regression-patch /outside/regression.patch --out /path/to/output
 polis verify [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
@@ -37,6 +37,25 @@ polis sign --key private.pem --out artifact.polis.sig [--format text|json] artif
 ```
 
 `--regression-patch` is required only for `defect` Change Contracts. `preflight` never applies the payload and a later `apply` always validates again.
+
+### Policy initialization
+
+`polis init` keeps `--profile auto` fail-closed. V5 auto-detection recognizes only a root-level Go module. For other repositories, use the explicit `custom` profile and provide direct argv for both required executable gates:
+
+```bash
+polis init --repo . --profile custom \
+  --test-argv npm \
+  --test-argv test \
+  --coverage-argv npm \
+  --coverage-argv run \
+  --coverage-argv coverage \
+  --coverage-adapter lcov-v1 \
+  --coverage-report coverage/lcov.info
+```
+
+Each repeated argv flag contributes exactly one argument; POLIS does not synthesize shell commands. `--coverage-threshold` is optional and defaults to `80.0` with the existing strict `>` operator. Supported adapters remain `go-coverprofile-v1`, `lcov-v1`, and `cobertura-v1`. All gates other than `test.complete` and `coverage` are generated as `not_applicable` with reasons because `custom` does not infer commands from ecosystem metadata.
+
+Add `--dry-run` to emit the validated policy JSON to stdout without creating or modifying `.polis/policy.json`, the Git index, `HEAD`, or other worktree files. Non-dry-run initialization never overwrites an existing policy.
 
 ## V5 contracts
 

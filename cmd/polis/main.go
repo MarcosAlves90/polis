@@ -165,25 +165,59 @@ func runPreflight(args []string, out, errOut io.Writer) int {
 	return exitPass
 }
 
+type argvFlag []string
+
+func (v *argvFlag) String() string { return strings.Join(*v, " ") }
+
+func (v *argvFlag) Set(value string) error {
+	*v = append(*v, value)
+	return nil
+}
+
 func runInit(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	repo := fs.String("repo", ".", targetRepoHelp)
-	profile := fs.String("profile", "auto", "policy profile: auto or go")
+	profile := fs.String("profile", "auto", "policy profile: auto, go, or custom")
+	var testArgv argvFlag
+	var coverageArgv argvFlag
+	fs.Var(&testArgv, "test-argv", "custom profile test argv element; repeat for each argument")
+	fs.Var(&coverageArgv, "coverage-argv", "custom profile coverage argv element; repeat for each argument")
+	coverageAdapter := fs.String("coverage-adapter", "", "custom profile coverage adapter")
+	coverageReport := fs.String("coverage-report", "", "custom profile coverage report path")
+	coverageThreshold := fs.Float64("coverage-threshold", 80.0, "custom profile coverage threshold percent")
+	dryRun := fs.Bool("dry-run", false, "generate and validate policy without filesystem mutation")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(errOut, "usage: polis init [--repo <path>] [--profile auto|go]")
+		writeInitUsage(errOut)
 		return exitUsage
 	}
-	result, err := policyinit.Init(context.Background(), policyinit.Options{Repo: *repo, Profile: *profile})
+	var threshold *float64
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "coverage-threshold" {
+			threshold = coverageThreshold
+		}
+	})
+	result, err := policyinit.Init(context.Background(), policyinit.Options{
+		Repo: *repo, Profile: *profile, TestArgv: []string(testArgv), CoverageArgv: []string(coverageArgv),
+		CoverageAdapter: *coverageAdapter, CoverageReport: *coverageReport, CoverageThreshold: threshold, DryRun: *dryRun,
+	})
 	if err != nil {
 		fmt.Fprintf(errOut, "POLIS INIT: FAIL: %v\n", err)
 		return exitUsage
 	}
+	if *dryRun {
+		_, _ = out.Write(result.Policy)
+		return exitPass
+	}
 	fmt.Fprintf(out, "POLIS INIT: PASS\nProfile: %s\nPolicy: %s\nNext: review and commit .polis/policy.json before polis build\n", result.Profile, result.PolicyPath)
 	return exitPass
+}
+
+func writeInitUsage(w io.Writer) {
+	fmt.Fprintln(w, "usage: polis init [--repo <path>] [--profile auto|go|custom] [--test-argv <arg> ... --coverage-argv <arg> ... --coverage-adapter <adapter> --coverage-report <path> [--coverage-threshold <percent>]] [--dry-run]")
 }
 
 func runCaptureRed(args []string, out, errOut io.Writer) int {
