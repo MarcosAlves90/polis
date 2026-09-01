@@ -73,8 +73,8 @@ func TestRunDoctor(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "POLIS doctor") {
-		t.Fatalf("stdout=%q", out.String())
+	if !strings.Contains(out.String(), "POLIS doctor 5.0.1") {
+		t.Fatalf("doctor version mismatch: stdout=%q", out.String())
 	}
 }
 

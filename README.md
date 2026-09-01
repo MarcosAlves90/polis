@@ -100,7 +100,7 @@ Repository-owned GitHub Release publication is available through `scripts/github
 Run preflight first:
 
 ```bash
-./scripts/github-release.sh --tag v5.0.0
+./scripts/github-release.sh --tag v5.0.1
 ```
 
 Remote mutation requires an explicit `--publish`. See [the GitHub Release guide](docs/releases.md) for tag safety, release notes, optional assets, SHA-256 verification, and immutable-release attestation checks.

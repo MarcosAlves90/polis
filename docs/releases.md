@@ -26,20 +26,20 @@ The repository must be clean before preflight or publication.
 By default the script resolves `gh` from `PATH`:
 
 ```bash
-./scripts/github-release.sh --tag v5.0.0
+./scripts/github-release.sh --tag v5.0.1
 ```
 
 Set `POLIS_GH` when a specific GitHub CLI should be the default for the shell/session:
 
 ```bash
-POLIS_GH="$HOME/tools/gh" ./scripts/github-release.sh --tag v5.0.0
+POLIS_GH="$HOME/tools/gh" ./scripts/github-release.sh --tag v5.0.1
 ```
 
 Use `--gh` for an explicit per-invocation override. `--gh` takes precedence over `POLIS_GH`:
 
 ```bash
 ./scripts/github-release.sh \
-  --tag v5.0.0 \
+  --tag v5.0.1 \
   --gh /opt/github-cli/bin/gh
 ```
 
@@ -50,7 +50,7 @@ Use `--gh` for an explicit per-invocation override. `--gh` takes precedence over
 `--tag` is required. Without `--publish`, the script performs read-only Git/GitHub checks plus local hashing of optional assets, but does not create a tag, push a tag, or create a GitHub Release:
 
 ```bash
-./scripts/github-release.sh --tag v5.0.0
+./scripts/github-release.sh --tag v5.0.1
 ```
 
 A successful preflight ends with:
@@ -79,7 +79,7 @@ Any ambiguity or conflict is a hard failure.
 After reviewing preflight, repeat the command with `--publish`:
 
 ```bash
-./scripts/github-release.sh --tag v5.0.0 --publish
+./scripts/github-release.sh --tag v5.0.1 --publish
 ```
 
 If the tag does not exist, the script creates an annotated tag at the already-resolved source commit and pushes only that tag. It then calls `gh release create` with `--verify-tag`. This prevents GitHub CLI from silently creating a missing tag from the repository default branch.
@@ -91,14 +91,14 @@ The script never force-pushes, moves a tag, uses `--clobber`, or repairs an exis
 Generated GitHub release notes are the default:
 
 ```bash
-./scripts/github-release.sh --tag v5.0.0 --publish
+./scripts/github-release.sh --tag v5.0.1 --publish
 ```
 
 Use maintained notes instead:
 
 ```bash
 ./scripts/github-release.sh \
-  --tag v5.0.0 \
+  --tag v5.0.1 \
   --notes-file ./RELEASE_NOTES.md \
   --publish
 ```
@@ -107,8 +107,8 @@ Optional release metadata:
 
 ```bash
 ./scripts/github-release.sh \
-  --tag v5.0.0-rc.1 \
-  --title "POLIS V5.0.0-rc.1" \
+  --tag v5.0.1-rc.1 \
+  --title "POLIS V5.0.1-rc.1" \
   --prerelease \
   --latest false \
   --publish
@@ -124,7 +124,7 @@ Pass `--asset` more than once when needed:
 
 ```bash
 ./scripts/github-release.sh \
-  --tag v5.0.0 \
+  --tag v5.0.1 \
   --asset ./release-assets/polis-linux-amd64.tar.gz \
   --asset ./release-assets/polis-darwin-arm64.tar.gz
 ```
@@ -143,7 +143,7 @@ Add `--publish` only after reviewing the preflight output:
 
 ```bash
 ./scripts/github-release.sh \
-  --tag v5.0.0 \
+  --tag v5.0.1 \
   --asset ./release-assets/polis-linux-amd64.tar.gz \
   --publish
 ```
@@ -153,7 +153,7 @@ Add `--publish` only after reviewing the preflight output:
 Use a remote other than `origin` only when that is intentionally the Git remote that owns the release tag:
 
 ```bash
-./scripts/github-release.sh --tag v5.0.0 --remote upstream
+./scripts/github-release.sh --tag v5.0.1 --remote upstream
 ```
 
 Show the complete CLI contract with:

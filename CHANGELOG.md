@@ -6,9 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [5.0.1] - 2026-08-31
+
+### Changed
+
+- Migrated the repository's committed `.polis/policy.json` from schema v2 to schema v3 with explicit clean environment contracts while preserving existing gate commands, timeouts, coverage threshold, and gate semantics.
+- Updated the committed security-gate rationale to the canonical V5 wording and removed the obsolete alpha reference.
+- Set the CLI release metadata to `5.0.1` instead of the lingering `5.0.0-dev` development version.
+
+### Fixed
+
+- Allow repositories without a root-level `go.mod` to create a schema-v3 POLIS policy through explicit `--profile custom` direct-argv test and coverage inputs, supported coverage adapter/report selection, and an optional threshold.
+- Preserve literal argv elements, keep `--profile auto` fail-closed and the canonical Go profile unchanged, reject custom-only inputs outside `custom`, and support mutation-free `--dry-run` initialization.
+
+## [5.0.0] - 2026-08-30
+
 ### Added
 
-- Add explicit `polis init --profile custom` bootstrap for non-Go Git repositories with repeated direct-argv test/coverage inputs, explicit existing coverage adapters/reports, optional threshold, and mutation-free `--dry-run`.
 - Add `scripts/github-release.sh` for explicit local-direct GitHub Release publication with default/custom `gh`, verified tags, optional frozen assets, SHA-256 manifests, and post-publication verification.
 - Add `docs/releases.md` with the release preflight, publication boundary, GitHub CLI override, release notes, assets, and safety contract.
 - POLIS V5 portable trust-boundary contracts: package format v3, Project Policy v3, Change Contract v2, and Evidence v2 while retaining V4 schema compatibility for migration.
@@ -21,12 +35,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Detached `ed25519-sha256-v1` signatures whose trust root is supplied by the consumer.
 - LCOV and Cobertura line-coverage adapters in addition to Go coverprofile.
 - SDD/TDD 0023 and POLIS Specification v2 for the V5 contracts.
+- Versioned `.polis/policy.json` so the repository carries its canonical validation policy, including complete tests, strict project-wide coverage above 80%, vet, build, and module-integrity gates.
+- Local SonarQube configuration through `sonar-project.properties`, importing the same Go coverage profile used by POLIS from `.polis/coverage.out`.
+- `scripts/sonar-local.sh` for local SonarQube Server analysis: it generates the canonical Go coverage profile before running `sonar-scanner`, defaults `SONAR_HOST_URL` to `http://localhost:9000`, and keeps authentication in `SONAR_TOKEN`.
+- SDD/TDD records for the post-V4 maintainability, duplication, and SonarQube remediation work included in V5.
 
 ### Changed
 
 - Migrated the Go module and active installation contract to `github.com/MarcosAlves90/polis/v5`.
 - New `polis init` Go policies emit schema v3 with explicit clean environment contracts.
 - Runtime command output capture is bounded to 1 MiB per stream while full-stream digests and byte counts are retained.
+- Reduced cognitive complexity in package build/apply/verify, red-capture, policy, evidence, change-contract, and coverage code paths by decomposing large routines into focused helpers.
+- Replaced repeated literals reported by SonarQube with shared constants while preserving rendered error messages.
+- Replaced an excessive-parameter isolated-validation function with typed validation input.
+- Consolidated duplicated Git execution, temporary worktree/index handling, tree inspection, isolated validation, external-file reads, and strict JSON EOF validation into shared internal packages.
+- Centralized wrapped Git/isolation error formatting to prevent repeated `go:S1192` findings after the duplication refactor.
+- Ignored disposable local SonarQube/SonarScanner state in `.scannerwork/`, `.sonar/`, and `.sonarlint/`.
 
 ### Security
 
@@ -36,29 +60,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Allow repositories without a root-level `go.mod` to create a schema-v3 POLIS policy through explicit `--profile custom` inputs while keeping `--profile auto` fail-closed and the canonical Go profile unchanged.
 - Removed the remaining V5 Sonar maintainability findings in CLI and coverage-policy code by centralizing repeated labels/help text and decomposing cognitive-complexity hotspots without changing observable behavior.
 - Increased behavioral/error-path coverage margin after a Go 1.27 consumer exposed toolchain-dependent `go-coverprofile-v1` instrumentation drift that could move the same source tree across the strict 80% gate.
 - Added regression coverage for malformed coverage reports, digested evidence, CLI fail-closed paths, and detached-signature boundary failures without weakening the coverage threshold.
-
-### Added
-
-- Versioned `.polis/policy.json` so the repository carries its canonical validation policy, including complete tests, strict project-wide coverage above 80%, vet, build, and module-integrity gates.
-- Local SonarQube configuration through `sonar-project.properties`, importing the same Go coverage profile used by POLIS from `.polis/coverage.out`.
-- `scripts/sonar-local.sh` for local SonarQube Server analysis: it generates the canonical Go coverage profile before running `sonar-scanner`, defaults `SONAR_HOST_URL` to `http://localhost:9000`, and keeps authentication in `SONAR_TOKEN`.
-- SDD/TDD records for the post-release maintainability, duplication, and SonarQube remediation work.
-
-### Changed
-
-- Reduced cognitive complexity in package build/apply/verify, red-capture, policy, evidence, change-contract, and coverage code paths by decomposing large routines into focused helpers.
-- Replaced repeated literals reported by SonarQube with shared constants while preserving rendered error messages.
-- Replaced an excessive-parameter isolated-validation function with typed validation input.
-- Consolidated duplicated Git execution, temporary worktree/index handling, tree inspection, isolated validation, external-file reads, and strict JSON EOF validation into shared internal packages.
-- Centralized wrapped Git/isolation error formatting to prevent repeated `go:S1192` findings after the duplication refactor.
-- Ignored disposable local SonarQube/SonarScanner state in `.scannerwork/`, `.sonar/`, and `.sonarlint/`.
-
-### Fixed
-
 - Removed the SonarQube maintainability findings identified after the V4 release, including cognitive-complexity, duplicated-literal, and excessive-parameter findings.
 - Reduced structural code duplication without using Sonar CPD exclusions.
 - Corrected the residual duplicated policy error literal and the later duplicated wrapped-error format introduced during refactoring.
@@ -91,5 +95,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Aligned the Go module identity with the repository before the V4 semantic import-path migration.
 - Made Git-based CI fixtures deterministic across Windows line-ending behavior.
 
-[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v4.0.0...HEAD
+[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v5.0.1...HEAD
+[5.0.1]: https://github.com/MarcosAlves90/polis/compare/v5.0.0...v5.0.1
+[5.0.0]: https://github.com/MarcosAlves90/polis/compare/v4.0.0...v5.0.0
 [4.0.0]: https://github.com/MarcosAlves90/polis/releases/tag/v4.0.0
