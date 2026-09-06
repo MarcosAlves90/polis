@@ -1,12 +1,12 @@
-# POLIS V5
+# POLIS V6
 
 POLIS is a deterministic software-delivery protocol and Go CLI for evidence-driven validation, packaging, inspection, and transactional application of code changes.
 
-Go module: `github.com/MarcosAlves90/polis/v5`.
+Go module: `github.com/MarcosAlves90/polis/v6`.
 
 ![Banner do POLIS](./polis-banner.png)
 
-V5 keeps the V4 exact-baseline and exact-target-tree model and strengthens the consumer trust boundary. Authority remains separated into:
+V6 keeps the V5 portable trust boundary and makes locked SDD/TDD mandatory for every new producer build. Authority remains separated into:
 
 1. `guide/` — engineering workflow, scope, safety, and evidence obligations.
 2. `spec/` — machine contracts for package bytes, schemas, evidence, status, integrity, and application semantics.
@@ -17,7 +17,7 @@ V5 keeps the V4 exact-baseline and exact-target-tree model and strengthens the c
 With Go 1.23+ and Git installed:
 
 ```text
-go install github.com/MarcosAlves90/polis/v5/cmd/polis@latest
+go install github.com/MarcosAlves90/polis/v6/cmd/polis@latest
 ```
 
 Then run `polis doctor`. See the [installation guide](docs/installation.md) for OS-specific `PATH` instructions.
@@ -27,6 +27,7 @@ Then run `polis doctor`. See the [installation guide](docs/installation.md) for 
 ```bash
 polis doctor [--format text|json]
 polis init --repo /path/to/repo [--profile auto|go|custom] [--dry-run]
+polis start --repo /path/to/repo --contract /outside/draft-v3.json --out /outside/locked-v4.json
 polis capture-red --repo /path/to/repo --contract /outside/change.json --out /outside/regression.patch
 polis build --repo /path/to/repo --project project-slug --change change-slug --contract /outside/change.json --regression-patch /outside/regression.patch --out /path/to/output
 polis verify [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
@@ -36,11 +37,11 @@ polis apply --repo /path/to/repo [--format text|json] [--signature artifact.poli
 polis sign --key private.pem --out artifact.polis.sig [--format text|json] artifact.polis
 ```
 
-`--regression-patch` is required only for `defect` Change Contracts. `preflight` never applies the payload and a later `apply` always validates again.
+`--regression-patch` is required for Change Contracts whose proof mode is Red-to-Green (defects and strict features). `preflight` never applies the payload and a later `apply` always validates again.
 
 ### Policy initialization
 
-`polis init` keeps `--profile auto` fail-closed. V5 auto-detection recognizes only a root-level Go module. For other repositories, use the explicit `custom` profile and provide direct argv for both required executable gates:
+`polis init` keeps `--profile auto` fail-closed. V6 auto-detection recognizes only a root-level Go module. For other repositories, use the explicit `custom` profile and provide direct argv for both required executable gates:
 
 ```bash
 polis init --repo . --profile custom \
@@ -57,11 +58,11 @@ Each repeated argv flag contributes exactly one argument; POLIS does not synthes
 
 Add `--dry-run` to emit the validated policy JSON to stdout without creating or modifying `.polis/policy.json`, the Git index, `HEAD`, or other worktree files. Non-dry-run initialization never overwrites an existing policy.
 
-## V5 contracts
+## V6 contracts
 
 - package format v3, still exactly seven regular members under `polis/`;
 - Project Policy schema v3, with explicit command environments;
-- Change Contract schema v2, with `scope.allowed_paths`;
+- new V6 builds require locked Change Contract schema v4 created by `polis start`; schemas v1-v3 remain read-compatible for migration;
 - Evidence v2 stores bounded-output byte counts and SHA-256 digests rather than raw stdout/stderr;
 - detached Ed25519 signatures authenticate exact `.polis` bytes when the consumer supplies a trusted public key;
 - coverage adapters: `go-coverprofile-v1`, `lcov-v1`, and `cobertura-v1`;
@@ -69,13 +70,21 @@ Add `--dry-run` to emit the validated policy JSON to stdout without creating or 
 - consumer validation remains isolated and `apply` preserves `HEAD` and the real index;
 - project-wide line coverage remains strictly greater than 80% unless project policy requires more.
 
-V5 can read Project Policy v2 and Change Contract v1 to support migration from V4. New `polis init` output uses the stronger V5 schemas.
+V6 can read historical Project Policy/Change Contract schemas supported by V5 for migration. New `polis init` output uses Project Policy v3. New `polis build` operations require locked Change Contract schema v4; schema v2 and unlocked schema v3 are no longer valid producer inputs.
+
+## Strict SDD/TDD workflow
+
+POLIS V6 makes machine enforcement of development order mandatory for new builds. A strict schema-v3 draft contains the Specification, requirement-to-acceptance traceability, test scope, and proof command. Run `polis start` on a clean committed baseline before implementation to produce the required schema-v4 contract with an exact `baseline_lock`.
+
+Strict feature and defect work requires Red-to-Green proof. Strict `behavior_preserving` work uses Green-to-Green characterization: the same explicit command must pass on both baseline and target, without manufacturing a Red state. Captured strict Red paths are immutable between capture and target, preventing tests from being weakened after the failing proof.
+
+Schema-v4 `capture-red`, `build`, `preflight`, and `apply` revalidate the locked Git/policy/Specification identity at the trust boundaries where repository state is available. `verify` checks only lock facts available from artifact bytes and does not claim repository-dependent validation without the repository. `inspect` exposes deterministic `REQ -> AC -> regression` links.
 
 ## Artifact hardening
 
-The verifier treats `.polis` bytes as untrusted input. V5 bounds archive size, total uncompressed content, individual contract/evidence/patch members, and NDJSON event lines. Runtime stdout/stderr retention is limited to 1 MiB per stream while digesting all received bytes.
+The verifier treats `.polis` bytes as untrusted input. V6 retains the V5 bounds for archive size, total uncompressed content, individual contract/evidence/patch members, and NDJSON event lines. Runtime stdout/stderr retention is limited to 1 MiB per stream while digesting all received bytes.
 
-Change Contract v2 scopes are checked from the Git base-to-target path set. `.` authorizes the full repository; directory entries ending in `/` authorize that prefix; other entries authorize an exact path. Rename source and destination are both checked.
+Change Contract v2+ scopes are checked from the Git base-to-target path set. `.` authorizes the full repository; directory entries ending in `/` authorize that prefix; other entries authorize an exact path. Rename source and destination are both checked.
 
 ## Signature trust model
 
@@ -100,7 +109,7 @@ Repository-owned GitHub Release publication is available through `scripts/github
 Run preflight first:
 
 ```bash
-./scripts/github-release.sh --tag v5.0.1
+./scripts/github-release.sh --tag v6.0.0
 ```
 
 Remote mutation requires an explicit `--publish`. See [the GitHub Release guide](docs/releases.md) for tag safety, release notes, optional assets, SHA-256 verification, and immutable-release attestation checks.
@@ -114,4 +123,4 @@ export SONAR_TOKEN='your-token'
 ./scripts/sonar-local.sh
 ```
 
-See [POLIS Specification v2](spec/POLIS-SPEC-v2.md), [SDD-0023](docs/sdd/0023-polis-v5-portable-trust.md), and [CHANGELOG.md](CHANGELOG.md).
+See [POLIS Specification V6](spec/POLIS-SPEC-v6.md), [SDD-0030](docs/sdd/0030-polis-v6-mandatory-strict-development.md), and [CHANGELOG.md](CHANGELOG.md).

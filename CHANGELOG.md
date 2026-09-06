@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [6.0.0] - 2026-09-06
+
+### Added
+
+- Add strict Change Contract schema v3 as the specification draft consumed by mandatory `polis start`, with explicit test scope, requirement-to-acceptance proof traceability, and Red-to-Green semantics for features and defects.
+- Add Green-to-Green characterization proof for strict `behavior_preserving` changes, requiring the same explicit characterization command to pass on baseline and target without a regression patch.
+- Add `polis start` and locked strict Change Contract schema v4 (`strict_sdd_tdd_v2`) to bind the Specification and committed Project Policy to an exact clean Git baseline before implementation.
+- Add versioned Change Contract JSON Schemas for v1-v4 and an aggregate supported-schema entrypoint.
+- Add traceability output to `polis inspect` as deterministic `REQ -> AC -> regression` links.
+
+### Changed
+
+- Make locked Change Contract schema v4 mandatory for every new POLIS V6 build; schema v1-v3 remain read-compatible but cannot produce a new V6 artifact.
+- Require `polis capture-red` to use a schema-v4 contract produced by `polis start`, closing the unlocked schema-v3 producer path.
+- Migrate the Go module and repository-owned imports to `github.com/MarcosAlves90/polis/v6` and set CLI release metadata to `6.0.0`.
+- Generalize baseline proof execution so strict Red-to-Green and Green-to-Green workflows share one explicit proof model while retaining legacy v1/v2 semantics.
+- Revalidate schema-v4 baseline locks during `capture-red`, producer build, consumer preflight, and consumer apply; offline verification checks only lock facts provable from artifact bytes.
+- Generalize strict captured-test immutability to all strict schemas instead of coupling it to schema v3.
+- Update the End-to-End Guide and README to describe the strict SDD/TDD workflow while keeping Change Contract v2 supported.
+
+### Security
+
+- Locked strict development fails closed on Git commit/tree, committed policy, or Specification drift between `polis start` and later proof/build/consumer transitions.
+- Strict Red tests cannot be weakened, replaced, or removed after capture while retaining a valid delivery proof.
+
 ## [5.0.1] - 2026-08-31
 
 ### Changed
@@ -95,7 +120,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Aligned the Go module identity with the repository before the V4 semantic import-path migration.
 - Made Git-based CI fixtures deterministic across Windows line-ending behavior.
 
-[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v5.0.1...HEAD
+[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.0.0...HEAD
+[6.0.0]: https://github.com/MarcosAlves90/polis/compare/v5.0.1...v6.0.0
 [5.0.1]: https://github.com/MarcosAlves90/polis/compare/v5.0.0...v5.0.1
 [5.0.0]: https://github.com/MarcosAlves90/polis/compare/v4.0.0...v5.0.0
 [4.0.0]: https://github.com/MarcosAlves90/polis/releases/tag/v4.0.0

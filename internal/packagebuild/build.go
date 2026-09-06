@@ -16,11 +16,12 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/MarcosAlves90/polis/v5/internal/fileutil"
-	"github.com/MarcosAlves90/polis/v5/internal/gitutil"
-	"github.com/MarcosAlves90/polis/v5/internal/isolation"
-	"github.com/MarcosAlves90/polis/v5/internal/packageverify"
-	"github.com/MarcosAlves90/polis/v5/spec"
+	"github.com/MarcosAlves90/polis/v6/internal/devlock"
+	"github.com/MarcosAlves90/polis/v6/internal/fileutil"
+	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v6/internal/isolation"
+	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 type Options struct {
@@ -75,12 +76,18 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	if err := requireBuildSourceState(ctx, repo); err != nil {
 		return Result{}, err
 	}
+	if err := devlock.Validate(ctx, repo, changeContract); err != nil {
+		return Result{}, fmt.Errorf("locked development baseline: %w", err)
+	}
 	policyRaw, policy, err := loadCommittedPolicy(ctx, repo)
 	if err != nil {
 		return Result{}, err
 	}
-	if policy.SchemaVersion == spec.PolicySchemaVersion && changeContract.SchemaVersion != spec.ChangeContractSchemaVersion {
-		return Result{}, errors.New("policy schema v3 requires Change Contract schema v2 for new builds")
+	if policy.SchemaVersion != spec.PolicySchemaVersion {
+		return Result{}, errors.New("POLIS V6 build requires Project Policy schema v3")
+	}
+	if err := requireV6ProducerContract(changeContract); err != nil {
+		return Result{}, err
 	}
 	targetTree, patch, err := buildTargetWithTemporaryIndex(ctx, repo, baseCommit)
 	if err != nil {
@@ -145,22 +152,32 @@ func loadBuildInputs(repo string, opts Options) ([]byte, spec.ChangeContract, []
 	if err != nil {
 		return nil, spec.ChangeContract{}, nil, fmt.Errorf("invalid change contract: %w", err)
 	}
-	regressionPatch, err := loadRegressionPatch(repo, opts.RegressionPatch, changeContract.Kind)
+	regressionPatch, err := loadRegressionPatch(repo, opts.RegressionPatch, changeContract)
 	if err != nil {
 		return nil, spec.ChangeContract{}, nil, err
 	}
 	return changeRaw, changeContract, regressionPatch, nil
 }
 
-func loadRegressionPatch(repo, filename, changeKind string) ([]byte, error) {
-	if changeKind != spec.ChangeKindDefect {
+func requireV6ProducerContract(change spec.ChangeContract) error {
+	if change.SchemaVersion != spec.LockedChangeContractSchemaVersion || change.DevelopmentMethod != spec.DevelopmentMethodStrictSDDTDDV2 || change.BaselineLock == nil {
+		return errors.New("POLIS V6 build requires locked Change Contract schema v4 produced by polis start")
+	}
+	return nil
+}
+
+func loadRegressionPatch(repo, filename string, change spec.ChangeContract) ([]byte, error) {
+	if !change.RequiresRedGreen() {
 		if filename != "" {
-			return nil, errors.New("non-defect build must not provide regression-patch")
+			return nil, errors.New("change contract without red_green must not provide regression-patch")
 		}
 		return nil, nil
 	}
 	if filename == "" {
-		return nil, errors.New("defect build requires regression-patch")
+		if change.Kind == spec.ChangeKindDefect {
+			return nil, errors.New("defect build requires regression-patch")
+		}
+		return nil, errors.New("red_green feature build requires regression-patch")
 	}
 	patch, err := readExternalInput(repo, filename, 16<<20)
 	if err != nil {

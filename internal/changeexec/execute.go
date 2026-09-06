@@ -7,19 +7,22 @@ import (
 	"io"
 	"strings"
 
-	"github.com/MarcosAlves90/polis/v5/internal/commandexec"
-	"github.com/MarcosAlves90/polis/v5/spec"
+	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 func ExecuteBaseline(contract spec.ChangeContract, repoRoot string, evidence io.Writer) error {
 	if err := contract.Validate(); err != nil {
 		return err
 	}
-	if contract.Kind != spec.ChangeKindDefect {
-		return errors.New("baseline regression execution is only valid for defects")
+	if !contract.RequiresBaselineProof() {
+		return errors.New("baseline regression execution requires a baseline proof contract")
 	}
 	enc := json.NewEncoder(evidence)
 	enc.SetEscapeHTML(false)
+	if contract.RequiresGreenGreen() {
+		return runPassGate(enc, "regression", *contract.Regression.Command, repoRoot)
+	}
 	_ = enc.Encode(spec.EvidenceEvent{Event: "gate_started", Gate: "regression"})
 	obs := commandexec.Run(repoRoot, *contract.Regression.Command)
 	writeObservation(enc, "regression", *contract.Regression.Command, obs)
@@ -53,7 +56,7 @@ func ExecuteTarget(contract spec.ChangeContract, repoRoot string, evidence io.Wr
 	}
 	enc := json.NewEncoder(evidence)
 	enc.SetEscapeHTML(false)
-	if contract.Kind == spec.ChangeKindDefect {
+	if contract.RequiresRedGreen() || contract.RequiresGreenGreen() {
 		if err := runPassGate(enc, "regression", *contract.Regression.Command, repoRoot); err != nil {
 			return err
 		}

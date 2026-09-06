@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v5/internal/packagebuild"
-	"github.com/MarcosAlves90/polis/v5/spec"
+	"github.com/MarcosAlves90/polis/v6/internal/devstart"
+	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 func fixturePassCommand() []string {
@@ -20,18 +21,19 @@ func fixturePassCommand() []string {
 func policyBytes(t *testing.T) []byte {
 	t.Helper()
 	reason := "not applicable in package apply fixture"
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
 	gates := make([]spec.GatePolicy, 0, len(spec.ProjectGateOrder))
 	for _, id := range spec.ProjectGateOrder {
 		if id == "test.complete" {
-			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCommand, Command: &spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}})
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCommand, Command: &spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}})
 		} else if id == "coverage" {
 			threshold := 80.0
-			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCoverage, Command: &spec.CommandSpec{Argv: []string{"git", "checkout", "--", ".polis/coverage.out"}, Cwd: ".", TimeoutSeconds: 60}, Adapter: spec.CoverageAdapterGoCoverProfileV1, Report: ".polis/coverage.out", Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: &threshold})
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCoverage, Command: &spec.CommandSpec{Argv: []string{"git", "checkout", "--", ".polis/coverage.out"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}, Adapter: spec.CoverageAdapterGoCoverProfileV1, Report: ".polis/coverage.out", Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: &threshold})
 		} else {
 			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeNotApplicable, Reason: &reason})
 		}
 	}
-	b, err := json.Marshal(spec.Policy{SchemaVersion: spec.LegacyPolicySchemaVersion, Gates: gates})
+	b, err := json.Marshal(spec.Policy{SchemaVersion: spec.PolicySchemaVersion, Gates: gates})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +48,44 @@ func git(t *testing.T, repo string, args ...string) string {
 		t.Fatalf("git %v: %v\n%s", args, err, b)
 	}
 	return strings.TrimSpace(string(b))
+}
+
+func lockedApplyFixtureContract(t *testing.T, repo string) string {
+	t.Helper()
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	pass := spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	regression := spec.CommandSpec{Argv: []string{"go", "test", "-p=1", "./...", "-run", "TestAdd"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	clause := func(id, statement string) spec.SpecificationClause {
+		return spec.SpecificationClause{ID: id, Statement: statement}
+	}
+	draft := spec.ChangeContract{
+		SchemaVersion: spec.StrictChangeContractSchemaVersion, Kind: spec.ChangeKindBehaviorPreserving,
+		Scope: &spec.ChangeScope{AllowedPaths: []string{"."}}, TestScope: &spec.ChangeScope{AllowedPaths: []string{"calc_test.go"}},
+		DevelopmentMethod: spec.DevelopmentMethodStrictSDDTDDV1,
+		Specification: &spec.DevelopmentSpecification{
+			Objective:          "produce apply fixture under V6 locked workflow",
+			Requirements:       []spec.SpecificationClause{clause("REQ-001", "existing Add behavior remains Green")},
+			AcceptanceCriteria: []spec.AcceptanceCriterion{{ID: "AC-001", Statement: "Add passes on baseline and target", Requirements: []string{"REQ-001"}, Proof: spec.ProofGateRegression}},
+			Invariants:         []spec.SpecificationClause{clause("INV-001", "consumer HEAD and index are preserved")},
+			ForbiddenStates:    []spec.SpecificationClause{clause("FORBID-001", "apply bypasses validation")},
+			Inputs:             []spec.SpecificationClause{clause("IN-001", "clean baseline")}, Outputs: []spec.SpecificationClause{clause("OUT-001", "validated target")},
+			FailureSemantics: []spec.SpecificationClause{clause("FAIL-001", "baseline or validation mismatch blocks apply")},
+		},
+		Behavior: pass, Affected: pass, Regression: spec.RegressionContract{Mode: spec.RegressionModeGreenGreen, Command: &regression},
+	}
+	raw, err := json.Marshal(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draftPath := filepath.Join(t.TempDir(), "apply-draft-v3.json")
+	if err := os.WriteFile(draftPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(t.TempDir(), "apply-locked-v4.json")
+	if _, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Contract: draftPath, Out: locked}); err != nil {
+		t.Fatalf("polis start apply fixture: %v", err)
+	}
+	return locked
 }
 
 func repoWithArtifact(t *testing.T) (repo, artifact, target string) {
@@ -75,19 +115,11 @@ func repoWithArtifact(t *testing.T) (repo, artifact, target string) {
 	}
 	git(t, repo, "add", ".")
 	git(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "base")
+	contractPath := lockedApplyFixtureContract(t, repo)
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("new\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	contract := spec.ChangeContract{SchemaVersion: spec.LegacyChangeContractSchemaVersion, Kind: spec.ChangeKindFeature, Behavior: spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}, Affected: spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}, Regression: spec.RegressionContract{Mode: spec.RegressionModeNotApplicable, ReasonCode: spec.RegressionReasonNotDefect}}
-	contractRaw, err := json.Marshal(contract)
-	if err != nil {
-		t.Fatal(err)
-	}
-	contractPath := filepath.Join(t.TempDir(), "change.json")
-	if err := os.WriteFile(contractPath, contractRaw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	built, err := packagebuild.Build(context.Background(), packagebuild.Options{Repo: repo, Project: "gitrex", Change: "apply-test", Out: t.TempDir(), Contract: contractPath})

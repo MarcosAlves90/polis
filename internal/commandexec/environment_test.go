@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v5/spec"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 func TestCleanEnvironmentPassesOnlyAllowlistedValues(t *testing.T) {

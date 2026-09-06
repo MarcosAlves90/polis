@@ -118,7 +118,13 @@ func validateFinishReason(e EvidenceEvent, reason *string, index int, gate strin
 }
 
 func (v *evidenceValidator) validateRegression(change ChangeContract) error {
-	if change.Kind != ChangeKindDefect {
+	if change.RequiresGreenGreen() {
+		if err := v.expectPassCommandGate("regression", *change.Regression.Command); err != nil {
+			return err
+		}
+		return v.expectPassCommandGate("regression", *change.Regression.Command)
+	}
+	if !change.RequiresRedGreen() {
 		return v.validateNonDefectRegression()
 	}
 	if err := v.expectStart("regression"); err != nil {

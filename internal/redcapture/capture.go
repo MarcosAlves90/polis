@@ -11,12 +11,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 
-	"github.com/MarcosAlves90/polis/v5/internal/changeexec"
-	"github.com/MarcosAlves90/polis/v5/internal/fileutil"
-	"github.com/MarcosAlves90/polis/v5/internal/gitutil"
-	"github.com/MarcosAlves90/polis/v5/internal/pathguard"
-	"github.com/MarcosAlves90/polis/v5/spec"
+	"github.com/MarcosAlves90/polis/v6/internal/changeexec"
+	"github.com/MarcosAlves90/polis/v6/internal/devlock"
+	"github.com/MarcosAlves90/polis/v6/internal/fileutil"
+	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v6/internal/pathguard"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 type Options struct {
@@ -46,9 +48,12 @@ func Capture(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	contract, err := loadDefectContract(repo, opts.Contract)
+	contract, err := loadRedGreenContract(repo, opts.Contract)
 	if err != nil {
 		return Result{}, err
+	}
+	if err := devlock.Validate(ctx, repo, contract); err != nil {
+		return Result{}, fmt.Errorf("locked development baseline: %w", err)
 	}
 	outAbs, err := resolveOutputPath(repo, opts.Out)
 	if err != nil {
@@ -86,7 +91,7 @@ func validateOptions(opts Options) error {
 	return nil
 }
 
-func loadDefectContract(repo, filename string) (spec.ChangeContract, error) {
+func loadRedGreenContract(repo, filename string) (spec.ChangeContract, error) {
 	contractRaw, err := readExternal(repo, filename, 1<<20)
 	if err != nil {
 		return spec.ChangeContract{}, fmt.Errorf("load change contract: %w", err)
@@ -95,8 +100,11 @@ func loadDefectContract(repo, filename string) (spec.ChangeContract, error) {
 	if err != nil {
 		return spec.ChangeContract{}, fmt.Errorf("invalid change contract: %w", err)
 	}
-	if contract.Kind != spec.ChangeKindDefect {
-		return spec.ChangeContract{}, errors.New("capture-red requires a defect change contract")
+	if contract.SchemaVersion != spec.LockedChangeContractSchemaVersion || contract.DevelopmentMethod != spec.DevelopmentMethodStrictSDDTDDV2 || contract.BaselineLock == nil {
+		return spec.ChangeContract{}, errors.New("POLIS V6 capture-red requires locked Change Contract schema v4 produced by polis start")
+	}
+	if !contract.RequiresRedGreen() {
+		return spec.ChangeContract{}, errors.New("capture-red requires a red_green change contract")
 	}
 	return contract, nil
 }
@@ -230,6 +238,15 @@ func capturePatch(ctx context.Context, repo, head string) ([]byte, error) {
 	return gitutil.Bytes(ctx, repo, env, nil, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--find-renames", head, "--")
 }
 
+func sortedPathKeys(paths map[string]struct{}) []string {
+	keys := make([]string, 0, len(paths))
+	for path := range paths {
+		keys = append(keys, path)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func validateProbe(ctx context.Context, repo, head string, patch []byte, contract spec.ChangeContract) error {
 	worktree, cleanup, err := gitutil.DetachedWorktree(ctx, repo, head, "polis-capture-red-*", "", "")
 	if err != nil {
@@ -241,6 +258,14 @@ func validateProbe(ctx context.Context, repo, head string, patch []byte, contrac
 	}
 	if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(patch), "apply", "--index", "-"); err != nil {
 		return fmt.Errorf("regression probe apply failed: %w", err)
+	}
+	changed, err := gitutil.ChangedIndexPaths(ctx, worktree, "--cached")
+	if err != nil {
+		return err
+	}
+	paths := sortedPathKeys(changed)
+	if err := contract.ValidateTestPaths(paths); err != nil {
+		return fmt.Errorf("Red probe scope validation: %w", err)
 	}
 	if err := changeexec.ExecuteBaseline(contract, worktree, io.Discard); err != nil {
 		return fmt.Errorf("regression Red oracle not satisfied: %w", err)

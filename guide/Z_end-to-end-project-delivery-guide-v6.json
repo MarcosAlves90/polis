@@ -1,0 +1,132 @@
+{
+  "title": "End-to-End Software Project Delivery Guide",
+  "version": "6.0.0",
+  "language": "en",
+  "theme": "Mandatory Strict Development",
+  "architecture": {
+    "modules": [
+      {
+        "name": "End-to-End Guide",
+        "authority": "engineering workflow, evidence obligations, scope, safety, SDD/TDD orchestration"
+      },
+      {
+        "name": "POLIS Specification",
+        "authority": "package bytes, schemas, limits, evidence, signatures, status semantics, path rules, hashing grammar, build/apply protocol"
+      },
+      {
+        "name": "POLIS CLI",
+        "authority": "deterministic reference implementation of the POLIS Specification"
+      }
+    ],
+    "non_duplication_rule": "The Guide references machine contracts from the POLIS Specification and does not define competing package layouts or apply semantics."
+  },
+  "development_method": {
+    "sdd": [
+      "Define observable behavior, invariants, trust boundaries, scope, non-goals, and failure semantics before implementation.",
+      "Revise the versioned specification before changing a machine contract.",
+      "Treat accepted specifications as normative until explicitly superseded."
+    ],
+    "tdd": [
+      "Select the next smallest behavior.",
+      "Observe a behavior-specific Red result before the production change when the behavior is testable that way.",
+      "Implement the smallest sufficient change.",
+      "Run the new test, affected tests, and complete policy gates.",
+      "Refactor only while protected behavior remains green."
+    ]
+  },
+  "portable_trust_boundary": {
+    "bounded_input": "Treat .polis bytes as untrusted and reject archives, members, evidence lines, and command output exceeding normative bounds.",
+    "scope": "Change Contract v2+ declares scope.allowed_paths; strict v3/v4 additionally declare test_scope, and producer plus consumer validate authorized paths.",
+    "environment": "Every executable schema-v3 command declares inherit or clean environment semantics; clean passes only named variables and never serializes values.",
+    "evidence": "V6 command evidence persists byte counts, SHA-256 digests, truncation state, command identity, environment names, and semantic oracle results instead of raw stdout/stderr.",
+    "authentication": "Detached Ed25519 signatures authenticate SHA-256 of exact .polis bytes when the consumer supplies a trusted public key; package contents never define trust roots.",
+    "preflight": "Consumer preflight repeats package, baseline, isolated validation, target-tree, scope, policy, and git apply --check without applying the payload. Apply never reuses a previous preflight result.",
+    "development": "V6 requires a strict schema-v3 Specification draft to be locked by polis start into schema v4 before implementation. New builds accept only schema v4. Feature/defect use Red-to-Green; behavior-preserving uses Green-to-Green; REQ-to-AC proof traceability and captured-test immutability are mandatory."
+  },
+  "resource_limits": {
+    "archive_bytes": 67108864,
+    "total_uncompressed_bytes": 67108864,
+    "contract_member_bytes": 1048576,
+    "evidence_member_bytes": 16777216,
+    "evidence_line_bytes": 1048576,
+    "patch_member_bytes": 33554432,
+    "checksums_member_bytes": 65536,
+    "retained_stdout_or_stderr_bytes_per_stream": 1048576
+  },
+  "coverage": {
+    "metric": "line_coverage_percent",
+    "operator": ">",
+    "minimum_threshold_percent": 80.0,
+    "adapters": [
+      "go-coverprofile-v1",
+      "lcov-v1",
+      "cobertura-v1"
+    ]
+  },
+  "delivery_workflow": [
+    "Orient and resolve repository identity, permissions, objective, changed behavior, protected behavior, compatibility surface, and non-goals.",
+    "Inspect committed Project Policy, tests, architecture, contracts, CI, release tooling, and relevant runtime evidence.",
+    "Ensure Project Policy schema v3 is committed before delivery work; use polis init when bootstrapping a supported repository and review/commit the generated policy separately.",
+    "Write or revise the versioned behavior Specification and external strict Change Contract schema-v3 draft before production implementation.",
+    "Run polis start on the clean committed baseline to produce the mandatory locked schema-v4 contract. Do not implement before this state transition.",
+    "For feature/defect work, add the test-only Red delta and run polis capture-red with the locked v4 contract before production implementation. For behavior-preserving work, keep the characterization command Green on the locked baseline.",
+    "Implement bounded Red-Green-Refactor slices while preserving captured strict test bytes, declared test_scope, and scope.",
+    "Run repository-required affected and complete validation using the committed Project Policy without weakening gates or thresholds.",
+    "Invoke polis build only with the locked schema-v4 contract and regression patch exactly when Red-to-Green requires it.",
+    "Accept an artifact only after canonical polis verify; use polis inspect for validated metadata and REQ-to-AC proof traceability.",
+    "Before mutation, run polis preflight against the exact consumer baseline. Then use polis apply, which repeats validation and preserves HEAD/index.",
+    "Treat GitHub Release publication as a separate explicit operation after source validation and commit; run publisher preflight without --publish first."
+  ],
+  "non_goals": [
+    "dirty-worktree apply",
+    "automatic conflict resolution",
+    "cached PASS reuse",
+    "parallel or DAG gates without measured need",
+    "arbitrary executable plugins",
+    "cloud registry or service",
+    "claiming hermetic builds from environment filtering",
+    "inventing language-specific init commands without repository evidence"
+  ],
+  "v6_contracts": {
+    "package_format": 3,
+    "policy_schema": 3,
+    "change_contract_schema": "schema v4 locked is mandatory for new V6 builds; schemas v1-v3 are read-compatible migration inputs only",
+    "evidence_contract": 2,
+    "signature_schema": 1,
+    "canonical_member_count": 7,
+    "migration_read_compatibility": [
+      "package format v2",
+      "Project Policy v2",
+      "Change Contract v1",
+      "Change Contract v2",
+      "strict Change Contract v3"
+    ],
+    "invariants": [
+      "exact Git baseline",
+      "exact target tree",
+      "clean consumer worktree and index",
+      "HEAD preservation",
+      "real-index preservation",
+      "isolated validation before apply",
+      "Red-to-Green evidence for reproducible defects",
+      "strict coverage greater than the declared threshold",
+      "fail closed on unproven mandatory conditions",
+      "strict feature/defect Red-to-Green proof",
+      "strict behavior-preserving Green-to-Green proof",
+      "schema-v4 locked development baseline",
+      "requirement-to-acceptance proof traceability"
+    ],
+    "change_contract_supported_schemas": {
+      "producer": [
+        "4"
+      ],
+      "reader": [
+        "1",
+        "2",
+        "3",
+        "4"
+      ],
+      "rule": "Reader compatibility MUST NOT authorize a new legacy producer build."
+    }
+  }
+}

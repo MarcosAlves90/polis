@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v5/spec"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 func canonicalPolicyBytes(t *testing.T) []byte {
@@ -310,4 +310,101 @@ func FuzzValidateMemberPath(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, name string) { _ = validateMemberPath(name) })
+}
+
+func TestValidateRegressionPatchAllowsStrictFeatureProof(t *testing.T) {
+	exit := 1
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	regression := spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	clause := func(id, statement string) spec.SpecificationClause {
+		return spec.SpecificationClause{ID: id, Statement: statement}
+	}
+	change := spec.ChangeContract{
+		SchemaVersion:     spec.StrictChangeContractSchemaVersion,
+		Kind:              spec.ChangeKindFeature,
+		Scope:             &spec.ChangeScope{AllowedPaths: []string{"."}},
+		TestScope:         &spec.ChangeScope{AllowedPaths: []string{"test.go"}},
+		DevelopmentMethod: spec.DevelopmentMethodStrictSDDTDDV1,
+		Specification: &spec.DevelopmentSpecification{
+			Objective:          "verify strict feature package proof",
+			Requirements:       []spec.SpecificationClause{clause("REQ-001", "strict feature package contains Red proof")},
+			AcceptanceCriteria: []spec.AcceptanceCriterion{{ID: "AC-001", Statement: "strict feature package contains Red proof", Requirements: []string{"REQ-001"}, Proof: spec.ProofGateRegression}},
+			Invariants:         []spec.SpecificationClause{clause("INV-001", "legacy package semantics remain valid")},
+			ForbiddenStates:    []spec.SpecificationClause{clause("FORBID-001", "strict feature proof is empty")},
+			Inputs:             []spec.SpecificationClause{clause("IN-001", "regression patch")},
+			Outputs:            []spec.SpecificationClause{clause("OUT-001", "verified package")},
+			FailureSemantics:   []spec.SpecificationClause{clause("FAIL-001", "missing proof fails")},
+		},
+		Behavior: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60, Environment: env},
+		Affected: spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 60, Environment: env},
+		Regression: spec.RegressionContract{
+			Mode:                   spec.RegressionModeRedGreen,
+			Command:                &regression,
+			BaselineExitCode:       &exit,
+			BaselineOutputContains: []string{"STRICT-RED"},
+		},
+	}
+	if err := validateRegressionPatch(change, []byte("red patch")); err != nil {
+		t.Fatalf("strict feature proof rejected: %v", err)
+	}
+	if err := validateRegressionPatch(change, nil); err == nil {
+		t.Fatal("strict feature without proof accepted")
+	}
+}
+
+func TestTraceabilityForChangeDerivesStrictSpecificationLinks(t *testing.T) {
+	requirement := spec.SpecificationClause{ID: "REQ-001", Statement: "proof is explicit"}
+	criterion := spec.AcceptanceCriterion{ID: "AC-001", Statement: "regression proves requirement", Requirements: []string{"REQ-001"}, Proof: spec.ProofGateRegression}
+	change := spec.ChangeContract{SchemaVersion: spec.StrictChangeContractSchemaVersion, Specification: &spec.DevelopmentSpecification{Requirements: []spec.SpecificationClause{requirement}, AcceptanceCriteria: []spec.AcceptanceCriterion{criterion}}}
+	links := traceabilityForChange(change)
+	if len(links) != 1 || links[0].RequirementID != "REQ-001" || links[0].AcceptanceCriterionID != "AC-001" || links[0].Proof != spec.ProofGateRegression {
+		t.Fatalf("unexpected traceability: %+v", links)
+	}
+}
+
+func TestVerifyLockedDevelopmentBaselineChecksOfflineFacts(t *testing.T) {
+	specification := &spec.DevelopmentSpecification{
+		Objective:          "locked verification",
+		Requirements:       []spec.SpecificationClause{{ID: "REQ-001", Statement: "offline facts match"}},
+		AcceptanceCriteria: []spec.AcceptanceCriterion{{ID: "AC-001", Statement: "verify matches", Requirements: []string{"REQ-001"}, Proof: spec.ProofGateRegression}},
+		Invariants:         []spec.SpecificationClause{{ID: "INV-001", Statement: "manifest agrees"}},
+		ForbiddenStates:    []spec.SpecificationClause{{ID: "FORBID-001", Statement: "mismatch accepted"}},
+		Inputs:             []spec.SpecificationClause{{ID: "IN-001", Statement: "artifact bytes"}},
+		Outputs:            []spec.SpecificationClause{{ID: "OUT-001", Statement: "offline verdict"}},
+		FailureSemantics:   []spec.SpecificationClause{{ID: "FAIL-001", Statement: "mismatch fails"}},
+	}
+	specDigest, err := specification.SHA256()
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyRaw := []byte("policy-bytes")
+	policySum := sha256.Sum256(policyRaw)
+	change := spec.ChangeContract{SchemaVersion: spec.LockedChangeContractSchemaVersion, Specification: specification, BaselineLock: &spec.BaselineLock{GitObjectFormat: "sha1", BaseCommit: strings.Repeat("1", 40), BaseTree: strings.Repeat("2", 40), PolicySHA256: hex.EncodeToString(policySum[:]), SpecificationSHA256: specDigest}}
+	manifest := spec.Manifest{GitObjectFormat: "sha1", BaseCommit: strings.Repeat("1", 40)}
+	contents := map[string][]byte{memberPolicy: policyRaw}
+	if err := verifyLockedDevelopmentBaseline(manifest, change, contents); err != nil {
+		t.Fatalf("valid offline lock: %v", err)
+	}
+	manifest.BaseCommit = strings.Repeat("3", 40)
+	if err := verifyLockedDevelopmentBaseline(manifest, change, contents); err == nil {
+		t.Fatal("base commit mismatch accepted")
+	}
+}
+
+func TestVerifyV6RetainsHistoricalArtifactReadCompatibility(t *testing.T) {
+	artifact := writePackage(t, nil)
+	result, err := Verify(artifact)
+	if err != nil {
+		t.Fatalf("historical artifact rejected: %v", err)
+	}
+	if result.Project != "gitrex" || result.Change != "test-change" {
+		t.Fatalf("unexpected historical verification result: %+v", result)
+	}
+	inspection, err := Inspect(artifact)
+	if err != nil {
+		t.Fatalf("historical inspect rejected: %v", err)
+	}
+	if inspection.ChangeContractSchemaVersion != spec.LegacyChangeContractSchemaVersion {
+		t.Fatalf("historical change schema=%d", inspection.ChangeContractSchemaVersion)
+	}
 }

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MarcosAlves90/polis/v5/spec"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 func TestPolicyExecHelper(t *testing.T) {

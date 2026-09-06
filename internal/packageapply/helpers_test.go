@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v5/internal/gitutil"
-	"github.com/MarcosAlves90/polis/v5/spec"
+	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 func simpleRepo(t *testing.T) string {

@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/MarcosAlves90/polis/v5/internal/changeexec"
-	"github.com/MarcosAlves90/polis/v5/internal/gitutil"
-	"github.com/MarcosAlves90/polis/v5/internal/policyexec"
-	"github.com/MarcosAlves90/polis/v5/spec"
+	"github.com/MarcosAlves90/polis/v6/internal/changeexec"
+	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 type Validation struct {
@@ -37,8 +37,8 @@ func Validate(ctx context.Context, validation Validation) error {
 	return validateTarget(ctx, validation, redPaths)
 }
 
-func validateRegression(ctx context.Context, validation Validation) (map[string]struct{}, error) {
-	if validation.Change.Kind != spec.ChangeKindDefect {
+func validateRegression(ctx context.Context, validation Validation) (map[string]string, error) {
+	if !validation.Change.RequiresBaselineProof() {
 		return nil, nil
 	}
 	worktree, cleanup, err := gitutil.DetachedWorktree(
@@ -53,23 +53,38 @@ func validateRegression(ctx context.Context, validation Validation) (map[string]
 		return nil, err
 	}
 	defer cleanup()
-	if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(validation.RegressionPatch), "apply", "--check", "-"); err != nil {
-		return nil, fmt.Errorf("regression probe apply check failed: %w", err)
-	}
-	if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(validation.RegressionPatch), "apply", "--index", "-"); err != nil {
-		return nil, fmt.Errorf("regression probe apply failed: %w", err)
-	}
-	redPaths, err := gitutil.ChangedIndexPaths(ctx, worktree, "--cached")
-	if err != nil {
-		return nil, err
+
+	var redProof map[string]string
+	if validation.Change.RequiresRegressionPatch() {
+		if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(validation.RegressionPatch), "apply", "--check", "-"); err != nil {
+			return nil, fmt.Errorf("regression probe apply check failed: %w", err)
+		}
+		if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(validation.RegressionPatch), "apply", "--index", "-"); err != nil {
+			return nil, fmt.Errorf("regression probe apply failed: %w", err)
+		}
+		changedPaths, err := gitutil.ChangedIndexPaths(ctx, worktree, "--cached")
+		if err != nil {
+			return nil, err
+		}
+		redProof = make(map[string]string, len(changedPaths))
+		for path := range changedPaths {
+			redProof[path] = ""
+			if validation.Change.IsStrictDevelopment() {
+				blob, err := indexBlobID(ctx, worktree, path)
+				if err != nil {
+					return nil, fmt.Errorf("capture strict Red proof path %q: %w", path, err)
+				}
+				redProof[path] = blob
+			}
+		}
 	}
 	if err := changeexec.ExecuteBaseline(validation.Change, worktree, validation.Evidence); err != nil {
 		return nil, fmt.Errorf("regression baseline validation: %w", err)
 	}
-	return redPaths, nil
+	return redProof, nil
 }
 
-func validateTarget(ctx context.Context, validation Validation, redPaths map[string]struct{}) error {
+func validateTarget(ctx context.Context, validation Validation, redProof map[string]string) error {
 	worktree, cleanup, err := gitutil.DetachedWorktree(
 		ctx,
 		validation.Repo,
@@ -88,7 +103,7 @@ func validateTarget(ctx context.Context, validation Validation, redPaths map[str
 	if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(validation.Patch), "apply", "--index", "-"); err != nil {
 		return gitutil.Wrap(validation.TargetApplyError, err)
 	}
-	if err := requireRegressionPaths(ctx, worktree, redPaths); err != nil {
+	if err := requireRegressionPaths(ctx, worktree, redProof); err != nil {
 		return err
 	}
 	if err := gitutil.RequireTargetTree(ctx, worktree, validation.TargetTree); err != nil {
@@ -111,15 +126,36 @@ func validateTarget(ctx context.Context, validation Validation, redPaths map[str
 	return nil
 }
 
-func requireRegressionPaths(ctx context.Context, worktree string, redPaths map[string]struct{}) error {
+func requireRegressionPaths(ctx context.Context, worktree string, redProof map[string]string) error {
 	targetPaths, err := gitutil.ChangedIndexPaths(ctx, worktree, "--cached")
 	if err != nil {
 		return err
 	}
-	for path := range redPaths {
+	for path, capturedBlob := range redProof {
 		if _, ok := targetPaths[path]; !ok {
 			return fmt.Errorf("regression probe path %q is absent from final payload", path)
 		}
+		if capturedBlob == "" {
+			continue
+		}
+		targetBlob, err := indexBlobID(ctx, worktree, path)
+		if err != nil {
+			return fmt.Errorf("read final Red proof path %q: %w", path, err)
+		}
+		if targetBlob != capturedBlob {
+			return fmt.Errorf("regression probe path %q differs from captured Red proof", path)
+		}
 	}
 	return nil
+}
+
+func indexBlobID(ctx context.Context, worktree, path string) (string, error) {
+	blob, err := gitutil.Output(ctx, worktree, nil, nil, "rev-parse", "--verify", ":"+path)
+	if err != nil {
+		return "", err
+	}
+	if blob == "" {
+		return "", fmt.Errorf("empty index blob id")
+	}
+	return blob, nil
 }

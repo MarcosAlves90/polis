@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/MarcosAlves90/polis/v5/spec"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 const (
@@ -161,7 +161,7 @@ func resolveProfile(root, requested string) (string, error) {
 		if regularFile(filepath.Join(root, "go.mod")) {
 			return ProfileGo, nil
 		}
-		return "", errors.New("no supported POLIS init profile detected; V5 auto-detection supports only root-level go.mod; use --profile custom with explicit test and coverage commands")
+		return "", errors.New("no supported POLIS init profile detected; V6 auto-detection supports only root-level go.mod; use --profile custom with explicit test and coverage commands")
 	default:
 		return "", fmt.Errorf("unknown init profile %q; supported profiles: auto, go, custom", requested)
 	}

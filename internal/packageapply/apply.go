@@ -12,10 +12,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/MarcosAlves90/polis/v5/internal/gitutil"
-	"github.com/MarcosAlves90/polis/v5/internal/isolation"
-	"github.com/MarcosAlves90/polis/v5/internal/packageverify"
-	"github.com/MarcosAlves90/polis/v5/spec"
+	"github.com/MarcosAlves90/polis/v6/internal/devlock"
+	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v6/internal/isolation"
+	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 var (
@@ -46,6 +47,9 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 		return Result{}, err
 	}
 	if err := verifyBaseline(ctx, repo, pkg.Manifest); err != nil {
+		return Result{}, err
+	}
+	if err := verifyLockedBaseline(ctx, repo, pkg.Change); err != nil {
 		return Result{}, err
 	}
 
@@ -79,6 +83,9 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 
 	// Close the TOCTOU window as much as possible before touching consumer files.
 	if err := verifyBaseline(ctx, repo, pkg.Manifest); err != nil {
+		return Result{}, fmt.Errorf("baseline changed after isolated validation: %w", err)
+	}
+	if err := verifyLockedBaseline(ctx, repo, pkg.Change); err != nil {
 		return Result{}, fmt.Errorf("baseline changed after isolated validation: %w", err)
 	}
 	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", gitApplyCheck, "-"); err != nil {
@@ -117,6 +124,9 @@ func Preflight(ctx context.Context, artifact, repoPath string) (Result, error) {
 	if err := verifyBaseline(ctx, repo, pkg.Manifest); err != nil {
 		return Result{}, err
 	}
+	if err := verifyLockedBaseline(ctx, repo, pkg.Change); err != nil {
+		return Result{}, err
+	}
 	if err := isolation.Validate(ctx, isolation.Validation{
 		Repo:                  repo,
 		BaseCommit:            pkg.Manifest.BaseCommit,
@@ -136,6 +146,9 @@ func Preflight(ctx context.Context, artifact, repoPath string) (Result, error) {
 		return Result{}, fmt.Errorf("%w: %v", ErrValidationFailed, err)
 	}
 	if err := verifyBaseline(ctx, repo, pkg.Manifest); err != nil {
+		return Result{}, fmt.Errorf("baseline changed after preflight validation: %w", err)
+	}
+	if err := verifyLockedBaseline(ctx, repo, pkg.Change); err != nil {
 		return Result{}, fmt.Errorf("baseline changed after preflight validation: %w", err)
 	}
 	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", gitApplyCheck, "-"); err != nil {
@@ -169,6 +182,13 @@ func verifyBaseline(ctx context.Context, repo string, manifest spec.Manifest) er
 	}
 	if status != "" {
 		return fmt.Errorf("%w: consumer working tree/index is not clean", ErrBaselineMismatch)
+	}
+	return nil
+}
+
+func verifyLockedBaseline(ctx context.Context, repo string, change spec.ChangeContract) error {
+	if err := devlock.Validate(ctx, repo, change); err != nil {
+		return fmt.Errorf("%w: locked development baseline: %v", ErrBaselineMismatch, err)
 	}
 	return nil
 }

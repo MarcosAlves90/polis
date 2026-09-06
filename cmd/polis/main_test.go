@@ -14,8 +14,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v5/internal/packagebuild"
-	"github.com/MarcosAlves90/polis/v5/spec"
+	"github.com/MarcosAlves90/polis/v6/internal/devstart"
+	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
+	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 func cliFixturePassCommand() []string {
@@ -25,42 +27,69 @@ func cliFixturePassCommand() []string {
 func canonicalPolicyBytes(t *testing.T) []byte {
 	t.Helper()
 	reason := "not applicable in cli verification fixture"
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
 	gates := make([]spec.GatePolicy, 0, len(spec.ProjectGateOrder))
 	for _, id := range spec.ProjectGateOrder {
 		if id == "test.complete" {
-			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCommand, Command: &spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}})
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCommand, Command: &spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}})
 		} else if id == "coverage" {
 			threshold := 80.0
-			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCoverage, Command: &spec.CommandSpec{Argv: []string{"git", "checkout", "--", ".polis/coverage.out"}, Cwd: ".", TimeoutSeconds: 60}, Adapter: spec.CoverageAdapterGoCoverProfileV1, Report: ".polis/coverage.out", Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: &threshold})
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCoverage, Command: &spec.CommandSpec{Argv: []string{"git", "checkout", "--", ".polis/coverage.out"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}, Adapter: spec.CoverageAdapterGoCoverProfileV1, Report: ".polis/coverage.out", Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: &threshold})
 		} else {
 			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeNotApplicable, Reason: &reason})
 		}
 	}
-	b, err := json.Marshal(spec.Policy{SchemaVersion: spec.LegacyPolicySchemaVersion, Gates: gates})
+	b, err := json.Marshal(spec.Policy{SchemaVersion: spec.PolicySchemaVersion, Gates: gates})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return b
 }
 
-func featureContractFile(t *testing.T) string {
+func lockedCLIContract(t *testing.T, repo string) string {
 	t.Helper()
-	c := spec.ChangeContract{SchemaVersion: spec.LegacyChangeContractSchemaVersion, Kind: spec.ChangeKindFeature, Behavior: spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}, Affected: spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 60}, Regression: spec.RegressionContract{Mode: spec.RegressionModeNotApplicable, ReasonCode: spec.RegressionReasonNotDefect}}
-	b, err := json.Marshal(c)
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	pass := spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	regression := spec.CommandSpec{Argv: []string{"go", "test", "-p=1", "./...", "-run", "TestAdd"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	clause := func(id, statement string) spec.SpecificationClause {
+		return spec.SpecificationClause{ID: id, Statement: statement}
+	}
+	draft := spec.ChangeContract{
+		SchemaVersion: spec.StrictChangeContractSchemaVersion, Kind: spec.ChangeKindBehaviorPreserving,
+		Scope: &spec.ChangeScope{AllowedPaths: []string{"."}}, TestScope: &spec.ChangeScope{AllowedPaths: []string{"calc_test.go"}},
+		DevelopmentMethod: spec.DevelopmentMethodStrictSDDTDDV1,
+		Specification: &spec.DevelopmentSpecification{
+			Objective:          "exercise V6 CLI with locked development",
+			Requirements:       []spec.SpecificationClause{clause("REQ-001", "existing Add behavior remains Green")},
+			AcceptanceCriteria: []spec.AcceptanceCriterion{{ID: "AC-001", Statement: "Add remains Green", Requirements: []string{"REQ-001"}, Proof: spec.ProofGateRegression}},
+			Invariants:         []spec.SpecificationClause{clause("INV-001", "CLI operations preserve baseline contracts")}, ForbiddenStates: []spec.SpecificationClause{clause("FORBID-001", "build bypasses polis start")},
+			Inputs: []spec.SpecificationClause{clause("IN-001", "clean committed baseline")}, Outputs: []spec.SpecificationClause{clause("OUT-001", "verified artifact")}, FailureSemantics: []spec.SpecificationClause{clause("FAIL-001", "validation mismatch blocks delivery")},
+		},
+		Behavior: pass, Affected: pass, Regression: spec.RegressionContract{Mode: spec.RegressionModeGreenGreen, Command: &regression},
+	}
+	raw, err := json.Marshal(draft)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := filepath.Join(t.TempDir(), "change.json")
-	if err := os.WriteFile(p, b, 0o600); err != nil {
+	draftPath := filepath.Join(t.TempDir(), "cli-draft-v3.json")
+	if err := os.WriteFile(draftPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return p
+	locked := filepath.Join(t.TempDir(), "cli-locked-v4.json")
+	if _, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Contract: draftPath, Out: locked}); err != nil {
+		t.Fatalf("polis start CLI fixture: %v", err)
+	}
+	return locked
 }
 
 func makeValidPackage(t *testing.T) string {
 	t.Helper()
 	repo := makeBuildRepo(t)
-	result, err := packagebuild.Build(context.Background(), packagebuild.Options{Repo: repo, Project: "gitrex", Change: "verify-test", Out: t.TempDir(), Contract: featureContractFile(t)})
+	contract := lockedCLIContract(t, repo)
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := packagebuild.Build(context.Background(), packagebuild.Options{Repo: repo, Project: "gitrex", Change: "verify-test", Out: t.TempDir(), Contract: contract})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +102,7 @@ func TestRunDoctor(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "POLIS doctor 5.0.1") {
+	if !strings.Contains(out.String(), "POLIS doctor 6.0.0") {
 		t.Fatalf("doctor version mismatch: stdout=%q", out.String())
 	}
 }
@@ -156,17 +185,17 @@ func makeBuildRepo(t *testing.T) string {
 			t.Fatalf("git %v: %v\n%s", args, err, b)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	return repo
 }
 
 func TestRunBuildCreatesPackage(t *testing.T) {
 	repo := makeBuildRepo(t)
+	contract := lockedCLIContract(t, repo)
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	outDir := filepath.Join(t.TempDir(), "out")
 	var out, errOut bytes.Buffer
-	contract := featureContractFile(t)
 	code := run([]string{"build", "--repo", repo, "--project", "gitrex", "--change", "cli-build", "--contract", contract, "--out", outDir}, &out, &errOut)
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
@@ -189,9 +218,12 @@ func TestRunBuildRequiresFlags(t *testing.T) {
 
 func TestRunApplyAppliesBuiltPackage(t *testing.T) {
 	repo := makeBuildRepo(t)
+	contract := lockedCLIContract(t, repo)
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	outDir := filepath.Join(t.TempDir(), "out")
 	var buildOut, buildErr bytes.Buffer
-	contract := featureContractFile(t)
 	if code := run([]string{"build", "--repo", repo, "--project", "gitrex", "--change", "cli-apply", "--contract", contract, "--out", outDir}, &buildOut, &buildErr); code != 0 {
 		t.Fatalf("build code=%d stderr=%s", code, buildErr.String())
 	}
@@ -278,35 +310,60 @@ func TestRunInitRejectsExtraArgsAndUnknownProfile(t *testing.T) {
 
 func TestRunCaptureRedCreatesPatch(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(repo, ".polis"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"init", "-q"}} {
-		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
-		if b, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git: %v %s", err, b)
-		}
+	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), canonicalPolicyBytes(t), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("baseline\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"add", "."}, {"-c", "user.name=POLIS", "-c", "user.email=x@y", "commit", "-qm", "base"}} {
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"-c", "user.name=POLIS", "-c", "user.email=x@y", "commit", "-qm", "base"}} {
 		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
 		if b, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v %s", args, err, b)
 		}
 	}
+	exit := 1
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	pass := spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 30, Environment: env}
+	regression := spec.CommandSpec{Argv: []string{"git", "diff", "--cached", "--exit-code", "HEAD", "--", "regression.txt"}, Cwd: ".", TimeoutSeconds: 30, Environment: env}
+	clause := func(id, statement string) spec.SpecificationClause {
+		return spec.SpecificationClause{ID: id, Statement: statement}
+	}
+	draft := spec.ChangeContract{
+		SchemaVersion: spec.StrictChangeContractSchemaVersion, Kind: spec.ChangeKindDefect,
+		Scope: &spec.ChangeScope{AllowedPaths: []string{"."}}, TestScope: &spec.ChangeScope{AllowedPaths: []string{"regression.txt"}},
+		DevelopmentMethod: spec.DevelopmentMethodStrictSDDTDDV1,
+		Specification: &spec.DevelopmentSpecification{
+			Objective: "exercise CLI start then capture-red", Requirements: []spec.SpecificationClause{clause("REQ-001", "Red is captured after baseline lock")},
+			AcceptanceCriteria: []spec.AcceptanceCriterion{{ID: "AC-001", Statement: "capture-red succeeds on locked baseline", Requirements: []string{"REQ-001"}, Proof: spec.ProofGateRegression}},
+			Invariants:         []spec.SpecificationClause{clause("INV-001", "HEAD is not mutated")}, ForbiddenStates: []spec.SpecificationClause{clause("FORBID-001", "capture from unlocked contract")},
+			Inputs: []spec.SpecificationClause{clause("IN-001", "regression delta")}, Outputs: []spec.SpecificationClause{clause("OUT-001", "Red patch")}, FailureSemantics: []spec.SpecificationClause{clause("FAIL-001", "wrong oracle blocks capture")},
+		},
+		Behavior: pass, Affected: pass,
+		Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &regression, BaselineExitCode: &exit, BaselineOutputContains: []string{"CLI-RED"}},
+	}
+	raw, err := json.Marshal(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draftPath := filepath.Join(t.TempDir(), "cli-capture-draft-v3.json")
+	if err := os.WriteFile(draftPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(t.TempDir(), "cli-capture-locked-v4.json")
+	var startOut, startErr bytes.Buffer
+	if code := run([]string{"start", "--repo", repo, "--contract", draftPath, "--out", locked}, &startOut, &startErr); code != 0 {
+		t.Fatalf("start code=%d stderr=%s", code, startErr.String())
+	}
 	if err := os.WriteFile(filepath.Join(repo, "regression.txt"), []byte("CLI-RED\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	exit := 1
-	c := spec.ChangeContract{SchemaVersion: 1, Kind: spec.ChangeKindDefect, Behavior: spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 30}, Affected: spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 30}, Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &spec.CommandSpec{Argv: []string{"git", "diff", "--cached", "--exit-code", "HEAD", "--", "regression.txt"}, Cwd: ".", TimeoutSeconds: 30}, BaselineExitCode: &exit, BaselineOutputContains: []string{"CLI-RED"}}}
-	raw, _ := json.Marshal(c)
-	contract := filepath.Join(t.TempDir(), "change.json")
-	os.WriteFile(contract, raw, 0o600)
 	outPath := filepath.Join(t.TempDir(), "red.patch")
 	var out, errOut bytes.Buffer
-	code := run([]string{"capture-red", "--repo", repo, "--contract", contract, "--out", outPath}, &out, &errOut)
+	code := run([]string{"capture-red", "--repo", repo, "--contract", locked, "--out", outPath}, &out, &errOut)
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
@@ -329,8 +386,8 @@ func TestRunDoctorJSON(t *testing.T) {
 	}
 }
 
-func TestRunV5TrustBoundaryCommands(t *testing.T) {
-	repo, built := buildV5CLIArtifact(t)
+func TestRunV6TrustBoundaryCommands(t *testing.T) {
+	repo, built := buildV6CLIArtifact(t)
 
 	assertCLITextContains(t, []string{"inspect", built.Path}, "POLIS INSPECT: PASS", built.TargetTree)
 	assertJSONFields(t, runCLIJSON(t, "inspect", "--format", "json", built.Path), map[string]string{
@@ -353,12 +410,14 @@ func TestRunV5TrustBoundaryCommands(t *testing.T) {
 	assertCLITextContains(t, []string{"verify", "--signature", signaturePath, "--trusted-key", publicPath, built.Path}, "POLIS VERIFY: PASS")
 }
 
-func buildV5CLIArtifact(t *testing.T) (string, packagebuild.Result) {
+func buildV6CLIArtifact(t *testing.T) (string, packagebuild.Result) {
 	t.Helper()
 	repo := makeBuildRepo(t)
-	built, err := packagebuild.Build(context.Background(), packagebuild.Options{
-		Repo: repo, Project: "polis", Change: "v5-cli-contracts", Out: t.TempDir(), Contract: featureContractFile(t),
-	})
+	contract := lockedCLIContract(t, repo)
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	built, err := packagebuild.Build(context.Background(), packagebuild.Options{Repo: repo, Project: "polis", Change: "v6-cli-contracts", Out: t.TempDir(), Contract: contract})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,5 +565,91 @@ func TestRunInitRejectsCustomFlagsOutsideCustomProfile(t *testing.T) {
 	code := run([]string{"init", "--repo", repo, "--profile", "go", "--test-argv", "go"}, &out, &errOut)
 	if code != exitUsage || !strings.Contains(errOut.String(), "--profile custom") {
 		t.Fatalf("code=%d stderr=%q", code, errOut.String())
+	}
+}
+
+func TestInspectionTextIncludesTraceability(t *testing.T) {
+	inspection := packageverify.Inspection{
+		Project: "polis", Change: "strict", FormatVersion: 3, PolicySchemaVersion: 3, ChangeContractSchemaVersion: 3,
+		Kind: spec.ChangeKindFeature, BaseCommit: "base", TargetTree: "target", AllowedPaths: []string{"spec/"}, EvidenceEvents: 1,
+		Traceability: []spec.TraceabilityLink{{RequirementID: "REQ-001", AcceptanceCriterionID: "AC-001", Proof: spec.ProofGateRegression}},
+	}
+	var out bytes.Buffer
+	writeInspectionText(&out, inspection)
+	if !strings.Contains(out.String(), "Trace: REQ-001 -> AC-001 -> regression") {
+		t.Fatalf("stdout=%q", out.String())
+	}
+}
+
+func TestRunStartProducesLockedContract(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/startfixture\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "-C", repo, "init", "-q")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, b)
+	}
+	var initOut, initErr bytes.Buffer
+	if code := run([]string{"init", "--repo", repo}, &initOut, &initErr); code != 0 {
+		t.Fatalf("init code=%d stderr=%s", code, initErr.String())
+	}
+	for _, args := range [][]string{{"add", "."}, {"-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "base"}} {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, b)
+		}
+	}
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	pass := spec.CommandSpec{Argv: []string{"true"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	exit := 1
+	reg := spec.CommandSpec{Argv: []string{"false"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	clause := func(id, statement string) spec.SpecificationClause {
+		return spec.SpecificationClause{ID: id, Statement: statement}
+	}
+	draft := spec.ChangeContract{
+		SchemaVersion: spec.StrictChangeContractSchemaVersion, Kind: spec.ChangeKindFeature,
+		Scope: &spec.ChangeScope{AllowedPaths: []string{"."}}, TestScope: &spec.ChangeScope{AllowedPaths: []string{"feature_test.go"}},
+		DevelopmentMethod: spec.DevelopmentMethodStrictSDDTDDV1,
+		Specification: &spec.DevelopmentSpecification{
+			Objective: "lock before implementation", Requirements: []spec.SpecificationClause{clause("REQ-001", "feature is test-first")},
+			AcceptanceCriteria: []spec.AcceptanceCriterion{{ID: "AC-001", Statement: "red then green", Requirements: []string{"REQ-001"}, Proof: spec.ProofGateRegression}},
+			Invariants:         []spec.SpecificationClause{clause("INV-001", "baseline remains exact")}, ForbiddenStates: []spec.SpecificationClause{clause("FORBID-001", "implementation predates lock")},
+			Inputs: []spec.SpecificationClause{clause("IN-001", "draft")}, Outputs: []spec.SpecificationClause{clause("OUT-001", "locked contract")}, FailureSemantics: []spec.SpecificationClause{clause("FAIL-001", "drift fails")},
+		},
+		Behavior: pass, Affected: pass,
+		Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &reg, BaselineExitCode: &exit, BaselineOutputContains: []string{"RED"}},
+	}
+	raw, err := json.Marshal(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ext := t.TempDir()
+	draftPath := filepath.Join(ext, "draft.json")
+	outPath := filepath.Join(ext, "locked.json")
+	if err := os.WriteFile(draftPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{"start", "--repo", repo, "--contract", draftPath, "--out", outPath}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "POLIS START: PASS") {
+		t.Fatalf("stdout=%q", out.String())
+	}
+	lockedRaw, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, err := spec.DecodeChangeContract(lockedRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if locked.SchemaVersion != spec.LockedChangeContractSchemaVersion {
+		t.Fatalf("schema=%d", locked.SchemaVersion)
 	}
 }

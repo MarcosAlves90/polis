@@ -5,9 +5,18 @@
   "theme": "Portable Trust Boundary",
   "architecture": {
     "modules": [
-      {"name":"End-to-End Guide","authority":"engineering workflow, evidence obligations, scope, safety, SDD/TDD orchestration"},
-      {"name":"POLIS Specification","authority":"package bytes, schemas, limits, evidence, signatures, status semantics, path rules, hashing grammar, build/apply protocol"},
-      {"name":"POLIS CLI","authority":"deterministic reference implementation of the POLIS Specification"}
+      {
+        "name": "End-to-End Guide",
+        "authority": "engineering workflow, evidence obligations, scope, safety, SDD/TDD orchestration"
+      },
+      {
+        "name": "POLIS Specification",
+        "authority": "package bytes, schemas, limits, evidence, signatures, status semantics, path rules, hashing grammar, build/apply protocol"
+      },
+      {
+        "name": "POLIS CLI",
+        "authority": "deterministic reference implementation of the POLIS Specification"
+      }
     ],
     "non_duplication_rule": "The Guide references machine contracts from the POLIS Specification and does not define competing package layouts or apply semantics."
   },
@@ -28,11 +37,17 @@
   "v5_contracts": {
     "package_format": 3,
     "policy_schema": 3,
-    "change_contract_schema": 2,
+    "change_contract_schema": 4,
     "evidence_contract": 2,
     "signature_schema": 1,
     "canonical_member_count": 7,
-    "migration_read_compatibility": ["package format v2", "Project Policy v2", "Change Contract v1"],
+    "migration_read_compatibility": [
+      "package format v2",
+      "Project Policy v2",
+      "Change Contract v1",
+      "Change Contract v2",
+      "strict Change Contract v3"
+    ],
     "invariants": [
       "exact Git baseline",
       "exact target tree",
@@ -42,16 +57,26 @@
       "isolated validation before apply",
       "Red-to-Green evidence for reproducible defects",
       "strict coverage greater than the declared threshold",
-      "fail closed on unproven mandatory conditions"
+      "fail closed on unproven mandatory conditions",
+      "strict feature/defect Red-to-Green proof",
+      "strict behavior-preserving Green-to-Green proof",
+      "schema-v4 locked development baseline",
+      "requirement-to-acceptance proof traceability"
+    ],
+    "change_contract_supported_schemas": [
+      2,
+      3,
+      4
     ]
   },
   "portable_trust_boundary": {
     "bounded_input": "Treat .polis bytes as untrusted and reject archives, members, evidence lines, and command output exceeding normative bounds.",
-    "scope": "Change Contract v2 declares scope.allowed_paths and producer plus consumer validate the base-to-target changed path set against it.",
+    "scope": "Change Contract v2+ declares scope.allowed_paths; strict v3/v4 additionally declare test_scope, and producer plus consumer validate authorized paths.",
     "environment": "Every executable schema-v3 command declares inherit or clean environment semantics; clean passes only named variables and never serializes values.",
     "evidence": "V5 command evidence persists byte counts, SHA-256 digests, truncation state, command identity, environment names, and semantic oracle results instead of raw stdout/stderr.",
     "authentication": "Detached Ed25519 signatures authenticate SHA-256 of exact .polis bytes when the consumer supplies a trusted public key; package contents never define trust roots.",
-    "preflight": "Consumer preflight repeats package, baseline, isolated validation, target-tree, scope, policy, and git apply --check without applying the payload. Apply never reuses a previous preflight result."
+    "preflight": "Consumer preflight repeats package, baseline, isolated validation, target-tree, scope, policy, and git apply --check without applying the payload. Apply never reuses a previous preflight result.",
+    "development": "Strict schema v3 makes Specification, REQ-to-AC traceability, test scope, and Red/Green or Green/Green proof explicit. polis start upgrades an accepted v3 draft to locked schema v4 against a clean Git baseline and committed Project Policy."
   },
   "resource_limits": {
     "archive_bytes": 67108864,
@@ -67,20 +92,25 @@
     "metric": "line_coverage_percent",
     "operator": ">",
     "minimum_threshold_percent": 80.0,
-    "adapters": ["go-coverprofile-v1", "lcov-v1", "cobertura-v1"]
+    "adapters": [
+      "go-coverprofile-v1",
+      "lcov-v1",
+      "cobertura-v1"
+    ]
   },
   "delivery_workflow": [
     "Resolve repository identity, immutable baseline, permissions, changed/protected behavior, scope, and non-goals.",
     "Inspect repository policy, current behavior, tests, CI, architecture, and material runtime evidence.",
-    "Create the Change Contract outside the worktree; V5 contracts explicitly authorize changed paths and command environments.",
-    "For defects, capture Red before the production fix through the canonical regression flow.",
-    "Implement bounded Red-Green-Refactor slices.",
+    "Create the Change Contract outside the worktree. Standard deliveries may use schema v2; strict development starts from an accepted schema-v3 draft.",
+    "For strict work, run polis start on the clean committed baseline before implementation to produce a locked schema-v4 contract.",
+    "For defects and strict features, capture Red before the production fix through the canonical regression flow. For strict behavior-preserving work, use baseline Green-to-target Green characterization instead of an artificial Red.",
+    "Implement bounded Red-Green-Refactor slices while preserving captured strict Red test bytes and declared scope.",
     "Run affected and complete repository policy validation.",
-    "Build with a clean index and exact baseline; producer scope validation must pass.",
-    "Verify the exact generated artifact bytes.",
+    "Build with a clean index and exact baseline; producer scope and locked-baseline validation must pass when applicable.",
+    "Verify the exact generated artifact bytes; offline verification checks only facts available from the artifact.",
     "Optionally sign the frozen artifact with a detached signature; the consumer independently selects trusted keys.",
-    "Use inspect or preflight for non-mutating consumer evaluation.",
-    "Use apply only on the exact clean baseline; apply repeats validation and scope checks before transactional mutation."
+    "Use inspect or preflight for non-mutating consumer evaluation; inspect exposes strict requirement-to-proof traceability.",
+    "Use apply only on the exact clean baseline; apply repeats validation, locked-baseline checks, and scope checks before transactional mutation."
   ],
   "non_goals": [
     "dirty-worktree apply",

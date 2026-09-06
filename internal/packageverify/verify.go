@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/MarcosAlves90/polis/v5/spec"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 const (
@@ -56,17 +56,18 @@ type Result struct {
 }
 
 type Inspection struct {
-	Project                     string   `json:"project"`
-	Change                      string   `json:"change"`
-	FormatVersion               int      `json:"format_version"`
-	PolicySchemaVersion         int      `json:"policy_schema_version"`
-	ChangeContractSchemaVersion int      `json:"change_contract_schema_version"`
-	Kind                        string   `json:"kind"`
-	BaseCommit                  string   `json:"base_commit"`
-	TargetTree                  string   `json:"target_tree"`
-	AllowedPaths                []string `json:"allowed_paths"`
-	Gates                       []string `json:"gates"`
-	EvidenceEvents              int      `json:"evidence_events"`
+	Project                     string                  `json:"project"`
+	Change                      string                  `json:"change"`
+	FormatVersion               int                     `json:"format_version"`
+	PolicySchemaVersion         int                     `json:"policy_schema_version"`
+	ChangeContractSchemaVersion int                     `json:"change_contract_schema_version"`
+	Kind                        string                  `json:"kind"`
+	BaseCommit                  string                  `json:"base_commit"`
+	TargetTree                  string                  `json:"target_tree"`
+	AllowedPaths                []string                `json:"allowed_paths"`
+	Gates                       []string                `json:"gates"`
+	EvidenceEvents              int                     `json:"evidence_events"`
+	Traceability                []spec.TraceabilityLink `json:"traceability,omitempty"`
 }
 
 type Package struct {
@@ -113,11 +114,19 @@ func Inspect(filename string) (Inspection, error) {
 	} else {
 		inspection.AllowedPaths = []string{"."}
 	}
+	inspection.Traceability = traceabilityForChange(pkg.Change)
 	inspection.Gates = make([]string, 0, len(pkg.Policy.Gates))
 	for _, gate := range pkg.Policy.Gates {
 		inspection.Gates = append(inspection.Gates, gate.ID)
 	}
 	return inspection, nil
+}
+
+func traceabilityForChange(change spec.ChangeContract) []spec.TraceabilityLink {
+	if change.Specification == nil {
+		return nil
+	}
+	return change.Specification.TraceabilityLinks()
 }
 
 func Load(filename string) (Package, error) {
@@ -134,6 +143,9 @@ func Load(filename string) (Package, error) {
 		return Package{}, err
 	}
 	if err := validateEvidenceAndIntegrity(contents, contracts); err != nil {
+		return Package{}, err
+	}
+	if err := verifyLockedDevelopmentBaseline(contracts.manifest, contracts.change, contents); err != nil {
 		return Package{}, err
 	}
 	return packageFromContents(contents, contracts, regressionPatch), nil
@@ -247,12 +259,43 @@ func decodeContracts(contents map[string][]byte) (decodedContracts, error) {
 	return decodedContracts{manifest: manifest, policy: policy, change: change}, nil
 }
 
-func validateRegressionPatch(change spec.ChangeContract, regressionPatch []byte) error {
-	if change.Kind == spec.ChangeKindDefect && len(regressionPatch) == 0 {
-		return errors.New("defect package requires non-empty regression patch")
+func verifyLockedDevelopmentBaseline(manifest spec.Manifest, change spec.ChangeContract, contents map[string][]byte) error {
+	if change.SchemaVersion != spec.LockedChangeContractSchemaVersion {
+		return nil
 	}
-	if change.Kind != spec.ChangeKindDefect && len(regressionPatch) != 0 {
-		return errors.New("non-defect package requires empty regression patch")
+	if change.BaselineLock == nil || change.Specification == nil {
+		return errors.New("locked change contract is missing baseline lock or specification")
+	}
+	lock := change.BaselineLock
+	if lock.GitObjectFormat != manifest.GitObjectFormat {
+		return errors.New("baseline_lock git_object_format does not match manifest")
+	}
+	if lock.BaseCommit != manifest.BaseCommit {
+		return errors.New("baseline_lock base_commit does not match manifest")
+	}
+	policySum := sha256.Sum256(contents[memberPolicy])
+	if hex.EncodeToString(policySum[:]) != lock.PolicySHA256 {
+		return errors.New("baseline_lock policy_sha256 does not match packaged policy")
+	}
+	specificationSum, err := change.Specification.SHA256()
+	if err != nil {
+		return fmt.Errorf("hash packaged specification: %w", err)
+	}
+	if specificationSum != lock.SpecificationSHA256 {
+		return errors.New("baseline_lock specification_sha256 does not match packaged specification")
+	}
+	return nil
+}
+
+func validateRegressionPatch(change spec.ChangeContract, regressionPatch []byte) error {
+	if change.RequiresRedGreen() && len(regressionPatch) == 0 {
+		if change.Kind == spec.ChangeKindDefect {
+			return errors.New("defect package requires non-empty regression patch")
+		}
+		return errors.New("red_green feature package requires non-empty regression patch")
+	}
+	if !change.RequiresRedGreen() && len(regressionPatch) != 0 {
+		return errors.New("package without red_green requires empty regression patch")
 	}
 	return nil
 }

@@ -8,10 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcosAlves90/polis/v5/internal/packagebuild"
-	"github.com/MarcosAlves90/polis/v5/internal/packageverify"
-	"github.com/MarcosAlves90/polis/v5/internal/redcapture"
-	"github.com/MarcosAlves90/polis/v5/spec"
+	"github.com/MarcosAlves90/polis/v6/internal/devstart"
+	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
+	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v6/internal/redcapture"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 type defectFixture struct {
@@ -31,7 +32,7 @@ func TestDefectRedGreenBuildVerifyApply(t *testing.T) {
 func buildDefectFixture(t *testing.T) defectFixture {
 	t.Helper()
 	repo := createDefectRepository(t)
-	contractPath := writeDefectContract(t)
+	contractPath := writeDefectContract(t, repo)
 	writeDefectRegressionTest(t, repo)
 	redPath := filepath.Join(t.TempDir(), "red.patch")
 	if _, err := redcapture.Capture(context.Background(), redcapture.Options{Repo: repo, Contract: contractPath, Out: redPath}); err != nil {
@@ -63,21 +64,40 @@ func createDefectRepository(t *testing.T) string {
 	return repo
 }
 
-func writeDefectContract(t *testing.T) string {
+func writeDefectContract(t *testing.T, repo string) string {
 	t.Helper()
 	exit := 1
-	contract := spec.ChangeContract{SchemaVersion: spec.LegacyChangeContractSchemaVersion, Kind: spec.ChangeKindDefect,
-		Behavior:   spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60},
-		Affected:   spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60},
-		Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &spec.CommandSpec{Argv: []string{"go", "test", "-p=1", "./...", "-run", "TestDouble"}, Cwd: ".", TimeoutSeconds: 60}, BaselineExitCode: &exit, BaselineOutputContains: []string{"DOUBLE-REGRESSION"}},
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	pass := spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	regression := spec.CommandSpec{Argv: []string{"go", "test", "-p=1", "./...", "-run", "TestDouble"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	clause := func(id, statement string) spec.SpecificationClause {
+		return spec.SpecificationClause{ID: id, Statement: statement}
 	}
-	raw, err := json.Marshal(contract)
+	draft := spec.ChangeContract{
+		SchemaVersion: spec.StrictChangeContractSchemaVersion, Kind: spec.ChangeKindDefect,
+		Scope: &spec.ChangeScope{AllowedPaths: []string{"."}}, TestScope: &spec.ChangeScope{AllowedPaths: []string{"calc_test.go"}},
+		DevelopmentMethod: spec.DevelopmentMethodStrictSDDTDDV1,
+		Specification: &spec.DevelopmentSpecification{
+			Objective:          "fix Double through locked V6 Red-to-Green",
+			Requirements:       []spec.SpecificationClause{clause("REQ-001", "Double returns twice its input")},
+			AcceptanceCriteria: []spec.AcceptanceCriterion{{ID: "AC-001", Statement: "Double(2) equals 4", Requirements: []string{"REQ-001"}, Proof: spec.ProofGateRegression}},
+			Invariants:         []spec.SpecificationClause{clause("INV-001", "captured test remains immutable")}, ForbiddenStates: []spec.SpecificationClause{clause("FORBID-001", "defect bypasses Red")},
+			Inputs: []spec.SpecificationClause{clause("IN-001", "integer input")}, Outputs: []spec.SpecificationClause{clause("OUT-001", "doubled output")}, FailureSemantics: []spec.SpecificationClause{clause("FAIL-001", "wrong result fails regression")},
+		},
+		Behavior: pass, Affected: pass,
+		Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &regression, BaselineExitCode: &exit, BaselineOutputContains: []string{"DOUBLE-REGRESSION"}},
+	}
+	raw, err := json.Marshal(draft)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "change.json")
-	writeFixtureFile(t, path, raw)
-	return path
+	draftPath := filepath.Join(t.TempDir(), "defect-draft-v3.json")
+	writeFixtureFile(t, draftPath, raw)
+	locked := filepath.Join(t.TempDir(), "defect-locked-v4.json")
+	if _, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Contract: draftPath, Out: locked}); err != nil {
+		t.Fatalf("polis start defect fixture: %v", err)
+	}
+	return locked
 }
 
 func writeDefectRegressionTest(t *testing.T, repo string) {

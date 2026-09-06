@@ -270,3 +270,78 @@ func TestValidatePassEvidenceRejectsProjectPolicyTraceVariants(t *testing.T) {
 		})
 	}
 }
+
+func validStrictFeatureEvidence(t *testing.T) ([]EvidenceEvent, ChangeContract, Policy) {
+	t.Helper()
+	c := strictFeatureContractFixture()
+	p := policyForEvidence(t)
+	events := []EvidenceEvent{
+		{Event: "gate_started", Gate: "regression"},
+		passCommandEvent("regression", *c.Regression.Command, StatusFail, *c.Regression.BaselineExitCode, "STRICT-FEATURE-RED"),
+		{Event: "gate_finished", Gate: "regression", Status: StatusPass},
+		{Event: "gate_started", Gate: "regression"},
+		passCommandEvent("regression", *c.Regression.Command, StatusPass, 0, ""),
+		{Event: "gate_finished", Gate: "regression", Status: StatusPass},
+	}
+	for _, x := range []struct {
+		gate string
+		cmd  CommandSpec
+	}{{"behavior", c.Behavior}, {"affected", c.Affected}} {
+		events = append(events,
+			EvidenceEvent{Event: "gate_started", Gate: x.gate},
+			passCommandEvent(x.gate, x.cmd, StatusPass, 0, ""),
+			EvidenceEvent{Event: "gate_finished", Gate: x.gate, Status: StatusPass},
+		)
+	}
+	for _, g := range p.Gates {
+		events = append(events, EvidenceEvent{Event: "gate_started", Gate: g.ID})
+		switch g.Mode {
+		case GateModeNotApplicable:
+			events = append(events, EvidenceEvent{Event: "gate_finished", Gate: g.ID, Status: StatusNotApplicable, Reason: g.Reason})
+		case GateModeCommand:
+			events = append(events, passCommandEvent(g.ID, *g.Command, StatusPass, 0, ""), EvidenceEvent{Event: "gate_finished", Gate: g.ID, Status: StatusPass})
+		case GateModeCoverage:
+			events = append(events, passCommandEvent(g.ID, *g.Command, StatusPass, 0, ""))
+			covered, total := 81, 100
+			value := 81.0
+			events = append(events,
+				EvidenceEvent{Event: "coverage_measured", Gate: "coverage", Status: StatusPass, Adapter: g.Adapter, Report: g.Report, Metric: CoverageMetricLinePercent, CoveredLines: &covered, TotalLines: &total, ValuePercent: &value, Operator: g.Operator, ThresholdPercent: g.ThresholdPercent},
+				EvidenceEvent{Event: "gate_finished", Gate: g.ID, Status: StatusPass},
+			)
+		}
+	}
+	return events, c, p
+}
+
+func TestValidatePassEvidenceRequiresStrictFeatureRedGreen(t *testing.T) {
+	events, c, p := validStrictFeatureEvidence(t)
+	if err := ValidatePassEvidence(events, c, p); err != nil {
+		t.Fatalf("strict feature evidence rejected: %v", err)
+	}
+
+	withoutRed := append([]EvidenceEvent{}, events[3:]...)
+	if err := ValidatePassEvidence(withoutRed, c, p); err == nil {
+		t.Fatal("strict feature evidence without Red accepted")
+	}
+}
+
+func TestValidatePassEvidenceRequiresStrictBehaviorPreservingGreenGreen(t *testing.T) {
+	events, c, p := validStrictFeatureEvidence(t)
+	c.Kind = ChangeKindBehaviorPreserving
+	c.Regression = RegressionContract{Mode: RegressionModeGreenGreen, Command: c.Regression.Command}
+	prefix := []EvidenceEvent{
+		{Event: "gate_started", Gate: "regression"},
+		passCommandEvent("regression", *c.Regression.Command, StatusPass, 0, ""),
+		{Event: "gate_finished", Gate: "regression", Status: StatusPass},
+		{Event: "gate_started", Gate: "regression"},
+		passCommandEvent("regression", *c.Regression.Command, StatusPass, 0, ""),
+		{Event: "gate_finished", Gate: "regression", Status: StatusPass},
+	}
+	events = append(prefix, events[6:]...)
+	if err := ValidatePassEvidence(events, c, p); err != nil {
+		t.Fatalf("strict Green-to-Green evidence rejected: %v", err)
+	}
+	if err := ValidatePassEvidence(events[3:], c, p); err == nil {
+		t.Fatal("strict Green-to-Green evidence without baseline Green accepted")
+	}
+}

@@ -58,10 +58,12 @@ func TestChangelogContract(t *testing.T) {
 		"Keep a Changelog",
 		"Semantic Versioning",
 		"## [Unreleased]",
+		"## [6.0.0] - 2026-09-06",
 		"## [5.0.1] - 2026-08-31",
 		"## [5.0.0] - 2026-08-30",
 		"## [4.0.0] - 2026-08-29",
-		"github.com/MarcosAlves90/polis/compare/v5.0.1...HEAD",
+		"github.com/MarcosAlves90/polis/compare/v6.0.0...HEAD",
+		"github.com/MarcosAlves90/polis/compare/v5.0.1...v6.0.0",
 		"github.com/MarcosAlves90/polis/compare/v5.0.0...v5.0.1",
 		"github.com/MarcosAlves90/polis/compare/v4.0.0...v5.0.0",
 	} {

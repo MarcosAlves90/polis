@@ -12,15 +12,16 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/MarcosAlves90/polis/v5/internal/packageapply"
-	"github.com/MarcosAlves90/polis/v5/internal/packagebuild"
-	"github.com/MarcosAlves90/polis/v5/internal/packageverify"
-	"github.com/MarcosAlves90/polis/v5/internal/policyinit"
-	"github.com/MarcosAlves90/polis/v5/internal/redcapture"
-	artifactsig "github.com/MarcosAlves90/polis/v5/internal/signature"
+	"github.com/MarcosAlves90/polis/v6/internal/devstart"
+	"github.com/MarcosAlves90/polis/v6/internal/packageapply"
+	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
+	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v6/internal/policyinit"
+	"github.com/MarcosAlves90/polis/v6/internal/redcapture"
+	artifactsig "github.com/MarcosAlves90/polis/v6/internal/signature"
 )
 
-const version = "5.0.1"
+const version = "6.0.0"
 
 const (
 	outputFormatHelp = "output format: text or json"
@@ -43,7 +44,7 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 func run(args []string, out, errOut io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errOut, "usage: polis <doctor|init|capture-red|verify|inspect|preflight|build|apply|sign>")
+		fmt.Fprintln(errOut, "usage: polis <doctor|init|start|capture-red|verify|inspect|preflight|build|apply|sign>")
 		return exitUsage
 	}
 	switch args[0] {
@@ -51,6 +52,8 @@ func run(args []string, out, errOut io.Writer) int {
 		return runDoctor(args[1:], out, errOut)
 	case "init":
 		return runInit(args[1:], out, errOut)
+	case "start":
+		return runStart(args[1:], out, errOut)
 	case "capture-red":
 		return runCaptureRed(args[1:], out, errOut)
 	case "verify":
@@ -122,11 +125,18 @@ func runInspect(args []string, out, errOut io.Writer) int {
 	if *format == "json" {
 		writeJSON(out, inspection)
 	} else {
-		fmt.Fprintf(out, "POLIS INSPECT: PASS\nProject: %s\nChange: %s\nFormat: %d\nPolicy schema: %d\nChange schema: %d\nKind: %s\nBase: %s\nTarget: %s\nScope: %s\nEvidence events: %d\n",
-			inspection.Project, inspection.Change, inspection.FormatVersion, inspection.PolicySchemaVersion, inspection.ChangeContractSchemaVersion,
-			inspection.Kind, inspection.BaseCommit, inspection.TargetTree, strings.Join(inspection.AllowedPaths, ", "), inspection.EvidenceEvents)
+		writeInspectionText(out, inspection)
 	}
 	return exitPass
+}
+
+func writeInspectionText(out io.Writer, inspection packageverify.Inspection) {
+	fmt.Fprintf(out, "POLIS INSPECT: PASS\nProject: %s\nChange: %s\nFormat: %d\nPolicy schema: %d\nChange schema: %d\nKind: %s\nBase: %s\nTarget: %s\nScope: %s\nEvidence events: %d\n",
+		inspection.Project, inspection.Change, inspection.FormatVersion, inspection.PolicySchemaVersion, inspection.ChangeContractSchemaVersion,
+		inspection.Kind, inspection.BaseCommit, inspection.TargetTree, strings.Join(inspection.AllowedPaths, ", "), inspection.EvidenceEvents)
+	for _, link := range inspection.Traceability {
+		fmt.Fprintf(out, "Trace: %s -> %s -> %s\n", link.RequirementID, link.AcceptanceCriterionID, link.Proof)
+	}
 }
 
 func runPreflight(args []string, out, errOut io.Writer) int {
@@ -218,6 +228,28 @@ func runInit(args []string, out, errOut io.Writer) int {
 
 func writeInitUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: polis init [--repo <path>] [--profile auto|go|custom] [--test-argv <arg> ... --coverage-argv <arg> ... --coverage-adapter <adapter> --coverage-report <path> [--coverage-threshold <percent>]] [--dry-run]")
+}
+
+func runStart(args []string, out, errOut io.Writer) int {
+	fs := flag.NewFlagSet("start", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	repo := fs.String("repo", "", "Git worktree path")
+	contract := fs.String("contract", "", "strict schema-v3 draft Change Contract outside the worktree")
+	outPath := fs.String("out", "", "locked schema-v4 Change Contract output outside the worktree")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 0 || *repo == "" || *contract == "" || *outPath == "" {
+		fmt.Fprintln(errOut, "usage: polis start --repo <path> --contract <draft-v3.json> --out <locked-v4.json>")
+		return exitUsage
+	}
+	result, err := devstart.Start(context.Background(), devstart.Options{Repo: *repo, Contract: *contract, Out: *outPath})
+	if err != nil {
+		fmt.Fprintf(errOut, "POLIS START: FAIL: %v\n", err)
+		return exitUsage
+	}
+	fmt.Fprintf(out, "POLIS START: PASS\nContract: %s\nSHA256: %s\n", result.Path, result.SHA256)
+	return exitPass
 }
 
 func runCaptureRed(args []string, out, errOut io.Writer) int {
