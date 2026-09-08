@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Allow V6 producer `build` to package descendant post-`start` commits from the locked baseline while preserving exact `capture-red` and consumer baseline rejection; non-descendant producer history still fails closed.
+
 ## [6.0.0] - 2026-09-06
 
 ### Added

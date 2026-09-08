@@ -112,6 +112,18 @@ Canonical V6 `build` uses `--policy <external-policy>` and requires:
 - regression patch exactly when the change requires Red-to-Green;
 - all existing behavior, affected, policy, scope, coverage, target-tree, evidence, and package-integrity checks.
 
+For V6 producer `build`, the immutable baseline and the current producer `HEAD` are distinct after development begins. This section supersedes the V4 rule that treated every producer HEAD change as baseline drift:
+
+- `baseline_lock.base_commit` remains the exact artifact base commit;
+- the tree resolved from `baseline_lock.base_commit` MUST equal `baseline_lock.base_tree`;
+- current producer `HEAD` MAY equal the locked base commit or be a descendant of it;
+- if the locked base commit is not an ancestor of current producer `HEAD`, build MUST fail closed before target construction;
+- the real index MUST equal current `HEAD`; staged changes remain invalid;
+- target-tree and payload construction MUST start from `baseline_lock.base_commit` and capture the complete current worktree state, thereby including both descendant committed changes and permitted unstaged/untracked target changes;
+- a clean worktree is valid when descendant commits already contain the target, but an empty locked-base-to-target payload remains invalid.
+
+`capture-red` is not relaxed by this producer-build rule and continues to require the exact locked baseline before Red proof.
+
 A policy hash mismatch MUST fail before an artifact is accepted. The canonical policy bytes are embedded in the existing `polis/polis-policy.json` package member; package format and member names do not change.
 
 When `--policy` is omitted, committed-policy compatibility MAY remain as defined in section 4.2.
@@ -126,7 +138,7 @@ Temporary target-tree construction MUST keep temporary index object writes outsi
 
 For schema-v4 artifacts, package verification MUST prove that the packaged Project Policy SHA-256 equals `baseline_lock.policy_sha256`. Consumer `preflight` and `apply` therefore MUST NOT require `.polis/policy.json` in the target repository.
 
-At consumer boundaries, `preflight` and `apply` revalidate repository-dependent baseline facts, execute validation with the packaged effective policy, validate the exact target tree and scope, and perform the existing fail-closed patch checks.
+At consumer boundaries, `preflight` and `apply` revalidate repository-dependent baseline facts, execute validation with the packaged effective policy, validate the exact target tree and scope, and perform the existing fail-closed patch checks. Consumer `HEAD` MUST still equal the artifact/locked base commit exactly; descendant producer-HEAD admission does not apply to consumers.
 
 Consumer isolation MUST NOT create persistent linked-worktree administration or tool-created Git objects in the target repository. Isolated validation may use temporary external/shared clones or equivalent isolation whose cleanup is outside the target repository.
 

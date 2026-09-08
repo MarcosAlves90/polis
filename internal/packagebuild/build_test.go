@@ -998,3 +998,78 @@ func TestBuildExternalPolicyRejectsLockedPolicyHashMismatch(t *testing.T) {
 		t.Fatalf("artifact emitted on mismatch: %v", entries)
 	}
 }
+
+func TestBuildLockedFeatureAcceptsDescendantHeadAfterRedCapture(t *testing.T) {
+	repo, contractPath, redPatch := lockedDoubleFeatureFixture(t)
+	contractRaw, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract, err := spec.DecodeChangeContract(contractRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockedBase := contract.BaselineLock.BaseCommit
+
+	runGit(t, repo, "add", "strict_feature_test.go")
+	runGit(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "capture red test")
+	if got := runGit(t, repo, "merge-base", "--is-ancestor", lockedBase, "HEAD"); got != "" {
+		t.Fatalf("unexpected merge-base output: %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "double.go"), []byte("package polisfixture\nfunc Double(n int) int { return n * 2 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Build(context.Background(), Options{Repo: repo, Project: "polis", Change: "descendant-head", Out: t.TempDir(), Contract: contractPath, RegressionPatch: redPatch})
+	if err != nil {
+		t.Fatalf("build descendant target: %v", err)
+	}
+	if result.BaseCommit != lockedBase {
+		t.Fatalf("artifact base=%s want locked baseline=%s", result.BaseCommit, lockedBase)
+	}
+}
+
+func TestBuildLockedFeatureAcceptsFullyCommittedDescendantTarget(t *testing.T) {
+	repo, contractPath, redPatch := lockedDoubleFeatureFixture(t)
+	contractRaw, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract, err := spec.DecodeChangeContract(contractRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockedBase := contract.BaselineLock.BaseCommit
+
+	if err := os.WriteFile(filepath.Join(repo, "double.go"), []byte("package polisfixture\nfunc Double(n int) int { return n * 2 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "strict_feature_test.go", "double.go")
+	runGit(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "implement strict feature")
+	if status := runGit(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); status != "" {
+		t.Fatalf("fixture worktree not clean: %q", status)
+	}
+
+	result, err := Build(context.Background(), Options{Repo: repo, Project: "polis", Change: "committed-descendant", Out: t.TempDir(), Contract: contractPath, RegressionPatch: redPatch})
+	if err != nil {
+		t.Fatalf("build fully committed descendant target: %v", err)
+	}
+	if result.BaseCommit != lockedBase {
+		t.Fatalf("artifact base=%s want locked baseline=%s", result.BaseCommit, lockedBase)
+	}
+}
+
+func TestBuildLockedFeatureRejectsNonDescendantProducerHead(t *testing.T) {
+	repo, contractPath, redPatch := lockedDoubleFeatureFixture(t)
+	tree := runGit(t, repo, "write-tree")
+	unrelated := runGit(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit-tree", tree, "-m", "unrelated")
+	runGit(t, repo, "reset", "--hard", unrelated)
+	if err := os.WriteFile(filepath.Join(repo, "double.go"), []byte("package polisfixture\nfunc Double(n int) int { return n * 2 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Build(context.Background(), Options{Repo: repo, Project: "polis", Change: "non-descendant-head", Out: t.TempDir(), Contract: contractPath, RegressionPatch: redPatch})
+	if err == nil || !strings.Contains(err.Error(), "not an ancestor") {
+		t.Fatalf("expected non-descendant locked-baseline rejection, got %v", err)
+	}
+}

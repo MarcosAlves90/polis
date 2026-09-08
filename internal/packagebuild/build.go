@@ -71,14 +71,14 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	objectFormat, baseCommit, err := resolveSourceIdentity(ctx, repo)
+	objectFormat, _, err := resolveSourceIdentity(ctx, repo)
 	if err != nil {
 		return Result{}, err
 	}
 	if err := requireBuildSourceState(ctx, repo); err != nil {
 		return Result{}, err
 	}
-	if err := devlock.ValidateRepository(ctx, repo, changeContract); err != nil {
+	if err := devlock.ValidateBuildRepository(ctx, repo, changeContract); err != nil {
 		return Result{}, fmt.Errorf("locked development baseline: %w", err)
 	}
 	var policyRaw []byte
@@ -100,6 +100,7 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	if err := requireV6ProducerContract(changeContract); err != nil {
 		return Result{}, err
 	}
+	baseCommit := changeContract.BaselineLock.BaseCommit
 	targetTree, patch, changedPaths, err := buildTargetWithTemporaryIndex(ctx, repo, baseCommit)
 	if err != nil {
 		return Result{}, err
@@ -212,17 +213,7 @@ func resolveSourceIdentity(ctx context.Context, repo string) (string, string, er
 }
 
 func requireBuildSourceState(ctx context.Context, repo string) error {
-	if err := requireCleanIndex(ctx, repo); err != nil {
-		return err
-	}
-	status, err := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
-	if err != nil {
-		return fmt.Errorf("inspect working tree: %w", err)
-	}
-	if status == "" {
-		return errors.New("working tree has no non-ignored changes")
-	}
-	return nil
+	return requireCleanIndex(ctx, repo)
 }
 
 func encodeManifest(artifact buildArtifact) ([]byte, error) {
