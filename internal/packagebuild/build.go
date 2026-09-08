@@ -21,11 +21,13 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/isolation"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v6/internal/policyload"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 type Options struct {
 	Repo            string
+	Policy          string
 	Project         string
 	Change          string
 	Out             string
@@ -76,12 +78,21 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	if err := requireBuildSourceState(ctx, repo); err != nil {
 		return Result{}, err
 	}
-	if err := devlock.Validate(ctx, repo, changeContract); err != nil {
+	if err := devlock.ValidateRepository(ctx, repo, changeContract); err != nil {
 		return Result{}, fmt.Errorf("locked development baseline: %w", err)
 	}
-	policyRaw, policy, err := loadCommittedPolicy(ctx, repo)
+	var policyRaw []byte
+	var policy spec.Policy
+	if opts.Policy != "" {
+		policyRaw, policy, err = policyload.LoadExternal(repo, opts.Policy)
+	} else {
+		policyRaw, policy, err = policyload.LoadCommitted(ctx, repo)
+	}
 	if err != nil {
 		return Result{}, err
+	}
+	if err := devlock.ValidatePolicy(changeContract, policyRaw); err != nil {
+		return Result{}, fmt.Errorf("locked development baseline: %w", err)
 	}
 	if policy.SchemaVersion != spec.PolicySchemaVersion {
 		return Result{}, errors.New("POLIS V6 build requires Project Policy schema v3")
@@ -89,16 +100,12 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	if err := requireV6ProducerContract(changeContract); err != nil {
 		return Result{}, err
 	}
-	targetTree, patch, err := buildTargetWithTemporaryIndex(ctx, repo, baseCommit)
+	targetTree, patch, changedPaths, err := buildTargetWithTemporaryIndex(ctx, repo, baseCommit)
 	if err != nil {
 		return Result{}, err
 	}
 	if len(patch) == 0 {
 		return Result{}, errors.New("generated patch is empty")
-	}
-	changedPaths, err := gitutil.ChangedTreePaths(ctx, repo, baseCommit, targetTree)
-	if err != nil {
-		return Result{}, err
 	}
 	if err := changeContract.ValidateChangedPaths(changedPaths); err != nil {
 		return Result{}, fmt.Errorf("change scope validation: %w", err)
@@ -283,48 +290,43 @@ func requireCleanIndex(ctx context.Context, repo string) error {
 	return fmt.Errorf("inspect source index: %w", err)
 }
 
-func loadCommittedPolicy(ctx context.Context, repo string) ([]byte, spec.Policy, error) {
-	workingPath := filepath.Join(repo, ".polis", "policy.json")
-	working, err := os.ReadFile(workingPath)
+func buildTargetWithTemporaryIndex(ctx context.Context, repo, baseCommit string) (string, []byte, []string, error) {
+	indexPath, cleanupIndex, err := gitutil.TemporaryIndex("polis-index-*")
 	if err != nil {
-		return nil, spec.Policy{}, fmt.Errorf("read .polis/policy.json: %w", err)
+		return "", nil, nil, fmt.Errorf("allocate temporary index path: %w", err)
 	}
-	committed, err := gitutil.Bytes(ctx, repo, nil, nil, "show", "HEAD:.polis/policy.json")
+	defer cleanupIndex()
+	objectEnv, cleanupObjects, err := gitutil.TemporaryObjectEnv(ctx, repo, "polis-build-objects-*")
 	if err != nil {
-		return nil, spec.Policy{}, errors.New(".polis/policy.json must exist in HEAD")
+		return "", nil, nil, fmt.Errorf("allocate temporary object directory: %w", err)
 	}
-	if !bytes.Equal(working, committed) {
-		return nil, spec.Policy{}, errors.New(".polis/policy.json working copy differs from HEAD")
-	}
-	policy, err := spec.DecodePolicy(working)
-	if err != nil {
-		return nil, spec.Policy{}, fmt.Errorf("invalid .polis/policy.json: %w", err)
-	}
-	return working, policy, nil
-}
-
-func buildTargetWithTemporaryIndex(ctx context.Context, repo, baseCommit string) (string, []byte, error) {
-	indexPath, cleanup, err := gitutil.TemporaryIndex("polis-index-*")
-	if err != nil {
-		return "", nil, fmt.Errorf("allocate temporary index path: %w", err)
-	}
-	defer cleanup()
-	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
+	defer cleanupObjects()
+	env := append(objectEnv, "GIT_INDEX_FILE="+indexPath)
 	if _, err := gitutil.Bytes(ctx, repo, env, nil, "read-tree", baseCommit); err != nil {
-		return "", nil, fmt.Errorf("initialize temporary index: %w", err)
+		return "", nil, nil, fmt.Errorf("initialize temporary index: %w", err)
 	}
 	if _, err := gitutil.Bytes(ctx, repo, env, nil, "add", "-A", "--", "."); err != nil {
-		return "", nil, fmt.Errorf("capture working tree in temporary index: %w", err)
+		return "", nil, nil, fmt.Errorf("capture working tree in temporary index: %w", err)
 	}
 	targetTree, err := gitutil.Output(ctx, repo, env, nil, "write-tree")
 	if err != nil {
-		return "", nil, fmt.Errorf("write target tree: %w", err)
+		return "", nil, nil, fmt.Errorf("write target tree: %w", err)
 	}
 	patch, err := gitutil.Bytes(ctx, repo, env, nil, "diff", gitCached, "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--find-renames", baseCommit, "--")
 	if err != nil {
-		return "", nil, fmt.Errorf("generate patch: %w", err)
+		return "", nil, nil, fmt.Errorf("generate patch: %w", err)
 	}
-	return targetTree, patch, nil
+	changedRaw, err := gitutil.Bytes(ctx, repo, env, nil, "diff", "--no-renames", "--name-only", "-z", baseCommit, targetTree, "--")
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("list base-to-target changed paths: %w", err)
+	}
+	var changedPaths []string
+	for _, raw := range bytes.Split(changedRaw, []byte{0}) {
+		if len(raw) > 0 {
+			changedPaths = append(changedPaths, string(raw))
+		}
+	}
+	return targetTree, patch, changedPaths, nil
 }
 
 func writeCandidateArchive(out string, manifest, policy, change, regression, payload, evidence []byte) (string, error) {

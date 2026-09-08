@@ -234,16 +234,17 @@ func runStart(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	repo := fs.String("repo", "", "Git worktree path")
+	policy := fs.String("policy", "", "external Project Policy schema-v3 JSON outside the worktree")
 	contract := fs.String("contract", "", "strict schema-v3 draft Change Contract outside the worktree")
 	outPath := fs.String("out", "", "locked schema-v4 Change Contract output outside the worktree")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() != 0 || *repo == "" || *contract == "" || *outPath == "" {
-		fmt.Fprintln(errOut, "usage: polis start --repo <path> --contract <draft-v3.json> --out <locked-v4.json>")
+		fmt.Fprintln(errOut, "usage: polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3.json> --out <locked-v4.json>")
 		return exitUsage
 	}
-	result, err := devstart.Start(context.Background(), devstart.Options{Repo: *repo, Contract: *contract, Out: *outPath})
+	result, err := devstart.Start(context.Background(), devstart.Options{Repo: *repo, Policy: *policy, Contract: *contract, Out: *outPath})
 	if err != nil {
 		fmt.Fprintf(errOut, "POLIS START: FAIL: %v\n", err)
 		return exitUsage
@@ -278,6 +279,7 @@ func runBuild(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("build", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	repo := fs.String("repo", "", "Git worktree path")
+	policy := fs.String("policy", "", "external Project Policy schema-v3 JSON outside the worktree")
 	project := fs.String("project", "", "canonical project slug")
 	change := fs.String("change", "", "canonical change slug")
 	outDir := fs.String("out", "", "output directory")
@@ -287,11 +289,11 @@ func runBuild(args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 	if fs.NArg() != 0 || *repo == "" || *project == "" || *change == "" || *outDir == "" || *contract == "" {
-		fmt.Fprintln(errOut, "usage: polis build --repo <path> --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] --out <directory>")
+		fmt.Fprintln(errOut, "usage: polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] --out <directory>")
 		return exitUsage
 	}
 	result, err := packagebuild.Build(context.Background(), packagebuild.Options{
-		Repo: *repo, Project: *project, Change: *change, Out: *outDir, Contract: *contract, RegressionPatch: *regressionPatch,
+		Repo: *repo, Policy: *policy, Project: *project, Change: *change, Out: *outDir, Contract: *contract, RegressionPatch: *regressionPatch,
 	})
 	if err != nil {
 		fmt.Fprintf(errOut, "POLIS BUILD: FAIL: %v\n", err)
@@ -333,9 +335,16 @@ func runApply(args []string, out, errOut io.Writer) int {
 		return writeFailure(errOut, *format, applyLabel, code, err)
 	}
 	if *format == "json" {
-		writeJSON(out, map[string]any{"status": "PASS", "project": result.Project, "change": result.Change, "target_tree": result.TargetTree, "evidence": result.EvidencePath})
+		payload := map[string]any{"status": "PASS", "project": result.Project, "change": result.Change, "target_tree": result.TargetTree}
+		if result.EvidencePath != "" {
+			payload["evidence"] = result.EvidencePath
+		}
+		writeJSON(out, payload)
 	} else {
-		fmt.Fprintf(out, applyLabel+": PASS\nProject: %s\nChange: %s\nTarget: %s\nEvidence: %s\n", result.Project, result.Change, result.TargetTree, result.EvidencePath)
+		fmt.Fprintf(out, applyLabel+": PASS\nProject: %s\nChange: %s\nTarget: %s\n", result.Project, result.Change, result.TargetTree)
+		if result.EvidencePath != "" {
+			fmt.Fprintf(out, "Evidence: %s\n", result.EvidencePath)
+		}
 	}
 	return exitPass
 }

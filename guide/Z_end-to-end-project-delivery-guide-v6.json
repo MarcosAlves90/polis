@@ -40,8 +40,9 @@
     "environment": "Every executable schema-v3 command declares inherit or clean environment semantics; clean passes only named variables and never serializes values.",
     "evidence": "V6 command evidence persists byte counts, SHA-256 digests, truncation state, command identity, environment names, and semantic oracle results instead of raw stdout/stderr.",
     "authentication": "Detached Ed25519 signatures authenticate SHA-256 of exact .polis bytes when the consumer supplies a trusted public key; package contents never define trust roots.",
-    "preflight": "Consumer preflight repeats package, baseline, isolated validation, target-tree, scope, policy, and git apply --check without applying the payload. Apply never reuses a previous preflight result.",
-    "development": "V6 requires a strict schema-v3 Specification draft to be locked by polis start into schema v4 before implementation. New builds accept only schema v4. Feature/defect use Red-to-Green; behavior-preserving uses Green-to-Green; REQ-to-AC proof traceability and captured-test immutability are mandatory."
+    "preflight": "Consumer preflight repeats package, repository baseline, isolated validation, target-tree, scope, packaged policy, and git apply --check without applying the payload. Apply never reuses a previous preflight result.",
+    "development": "V6 requires a strict schema-v3 Specification draft to be locked by polis start into schema v4 before implementation. The canonical zero-residue path supplies Project Policy schema v3 explicitly from outside the target repository and locks its canonical SHA-256. New builds accept only schema v4. Feature/defect use Red-to-Green; behavior-preserving uses Green-to-Green; REQ-to-AC proof traceability and captured-test immutability are mandatory.",
+    "target_residue": "Canonical external-policy execution leaves no tool-owned files, configuration, linked-worktree administration, persistent temporary Git objects, or evidence metadata in the target repository. Temporary validation state and default apply evidence live outside the target and are removed before successful return."
   },
   "resource_limits": {
     "archive_bytes": 67108864,
@@ -65,16 +66,16 @@
   },
   "delivery_workflow": [
     "Orient and resolve repository identity, permissions, objective, changed behavior, protected behavior, compatibility surface, and non-goals.",
-    "Inspect committed Project Policy, tests, architecture, contracts, CI, release tooling, and relevant runtime evidence.",
-    "Ensure Project Policy schema v3 is committed before delivery work; use polis init when bootstrapping a supported repository and review/commit the generated policy separately.",
+    "Inspect tests, architecture, contracts, CI, release tooling, current policy requirements, and relevant runtime evidence.",
+    "Resolve an effective Project Policy schema v3 before delivery work. For the canonical zero-residue path, keep it outside the target repository; polis init --dry-run may generate validated policy JSON without creating .polis. A committed .polis/policy.json remains a compatibility option, not a requirement.",
     "Write or revise the versioned behavior Specification and external strict Change Contract schema-v3 draft before production implementation.",
-    "Run polis start on the clean committed baseline to produce the mandatory locked schema-v4 contract. Do not implement before this state transition.",
+    "Run polis start --policy <external-policy> on the clean committed baseline to produce the mandatory locked schema-v4 contract. The lock binds canonical effective-policy bytes by SHA-256; do not implement before this state transition.",
     "For feature/defect work, add the test-only Red delta and run polis capture-red with the locked v4 contract before production implementation. For behavior-preserving work, keep the characterization command Green on the locked baseline.",
     "Implement bounded Red-Green-Refactor slices while preserving captured strict test bytes, declared test_scope, and scope.",
-    "Run repository-required affected and complete validation using the committed Project Policy without weakening gates or thresholds.",
-    "Invoke polis build only with the locked schema-v4 contract and regression patch exactly when Red-to-Green requires it.",
+    "Run repository-required affected and complete validation using the same effective Project Policy without weakening gates or thresholds.",
+    "Invoke polis build --policy <same-effective-policy> only with the locked schema-v4 contract and regression patch exactly when Red-to-Green requires it. Reject policy hash drift before accepting the artifact.",
     "Accept an artifact only after canonical polis verify; use polis inspect for validated metadata and REQ-to-AC proof traceability.",
-    "Before mutation, run polis preflight against the exact consumer baseline. Then use polis apply, which repeats validation and preserves HEAD/index.",
+    "Before mutation, run polis preflight against the exact consumer baseline. Then use polis apply, which repeats validation, consumes the packaged policy, preserves HEAD/index, and leaves no default tool-owned target-repository state.",
     "Treat GitHub Release publication as a separate explicit operation after source validation and commit; run publisher preflight without --publish first."
   ],
   "non_goals": [
@@ -114,7 +115,9 @@
       "strict feature/defect Red-to-Green proof",
       "strict behavior-preserving Green-to-Green proof",
       "schema-v4 locked development baseline",
-      "requirement-to-acceptance proof traceability"
+      "requirement-to-acceptance proof traceability",
+      "effective policy hash bound independently of repository pathname",
+      "zero tool-specific target residue after successful canonical external-policy execution"
     ],
     "change_contract_supported_schemas": {
       "producer": [

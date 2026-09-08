@@ -46,7 +46,7 @@ func canonicalPolicyBytes(t *testing.T) []byte {
 	return b
 }
 
-func lockedCLIContract(t *testing.T, repo string) string {
+func lockedCLIContract(t *testing.T, repo string, externalPolicy ...string) string {
 	t.Helper()
 	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
 	pass := spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}
@@ -76,7 +76,11 @@ func lockedCLIContract(t *testing.T, repo string) string {
 		t.Fatal(err)
 	}
 	locked := filepath.Join(t.TempDir(), "cli-locked-v4.json")
-	if _, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Contract: draftPath, Out: locked}); err != nil {
+	startOptions := devstart.Options{Repo: repo, Contract: draftPath, Out: locked}
+	if len(externalPolicy) > 0 {
+		startOptions.Policy = externalPolicy[0]
+	}
+	if _, err := devstart.Start(context.Background(), startOptions); err != nil {
 		t.Fatalf("polis start CLI fixture: %v", err)
 	}
 	return locked
@@ -190,13 +194,30 @@ func makeBuildRepo(t *testing.T) string {
 
 func TestRunBuildCreatesPackage(t *testing.T) {
 	repo := makeBuildRepo(t)
-	contract := lockedCLIContract(t, repo)
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	policyRaw, err := os.ReadFile(filepath.Join(repo, ".polis", "policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded spec.Policy
+	if err := json.Unmarshal(policyRaw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical = append(canonical, '\n')
+	if err := os.WriteFile(policyPath, canonical, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	contract := lockedCLIContract(t, repo, policyPath)
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(t.TempDir(), "out")
 	var out, errOut bytes.Buffer
-	code := run([]string{"build", "--repo", repo, "--project", "gitrex", "--change", "cli-build", "--contract", contract, "--out", outDir}, &out, &errOut)
+	code := run([]string{"build", "--repo", repo, "--policy", policyPath, "--project", "gitrex", "--change", "cli-build", "--contract", contract, "--out", outDir}, &out, &errOut)
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
@@ -241,7 +262,7 @@ func TestRunApplyAppliesBuiltPackage(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "POLIS APPLY: PASS") || !strings.Contains(out.String(), "Evidence:") {
+	if !strings.Contains(out.String(), "POLIS APPLY: PASS") || strings.Contains(out.String(), "Evidence:") {
 		t.Fatalf("stdout=%q", out.String())
 	}
 	if b, _ := os.ReadFile(filepath.Join(repo, "app.txt")); string(b) != "changed\n" {
@@ -630,11 +651,19 @@ func TestRunStartProducesLockedContract(t *testing.T) {
 	ext := t.TempDir()
 	draftPath := filepath.Join(ext, "draft.json")
 	outPath := filepath.Join(ext, "locked.json")
+	policyPath := filepath.Join(ext, "policy.json")
 	if err := os.WriteFile(draftPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	policyRaw, err := os.ReadFile(filepath.Join(repo, ".polis", "policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policyPath, policyRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var out, errOut bytes.Buffer
-	code := run([]string{"start", "--repo", repo, "--contract", draftPath, "--out", outPath}, &out, &errOut)
+	code := run([]string{"start", "--repo", repo, "--policy", policyPath, "--contract", draftPath, "--out", outPath}, &out, &errOut)
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}

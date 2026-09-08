@@ -40,17 +40,21 @@ func DetachedWorktree(ctx context.Context, repo, baseCommit, pattern, stagingErr
 		return "", nil, fmt.Errorf(wrappedErrorFormat, stagingError, err)
 	}
 	worktree := filepath.Join(parent, "repo")
-	if _, err := Bytes(ctx, repo, nil, nil, "worktree", "add", "--detach", worktree, baseCommit); err != nil {
+	if _, err := Bytes(ctx, repo, nil, nil, "clone", "--quiet", "--no-checkout", "--shared", ".", worktree); err != nil {
 		_ = os.RemoveAll(parent)
 		if createError == "" {
 			return "", nil, err
 		}
 		return "", nil, fmt.Errorf(wrappedErrorFormat, createError, err)
 	}
-	cleanup := func() {
-		_, _ = Bytes(context.Background(), repo, nil, nil, "worktree", "remove", "--force", worktree)
+	if _, err := Bytes(ctx, worktree, nil, nil, "checkout", "--quiet", "--detach", baseCommit); err != nil {
 		_ = os.RemoveAll(parent)
+		if createError == "" {
+			return "", nil, err
+		}
+		return "", nil, fmt.Errorf(wrappedErrorFormat, createError, err)
 	}
+	cleanup := func() { _ = os.RemoveAll(parent) }
 	return worktree, cleanup, nil
 }
 
@@ -102,6 +106,51 @@ func TemporaryIndex(prefix string) (string, func(), error) {
 	_ = f.Close()
 	_ = os.Remove(indexPath)
 	return indexPath, func() { _ = os.Remove(indexPath) }, nil
+}
+
+func TemporaryObjectEnv(ctx context.Context, repo, prefix string) ([]string, func(), error) {
+	objectDir, err := os.MkdirTemp("", prefix)
+	if err != nil {
+		return nil, nil, err
+	}
+	commonDir, err := Output(ctx, repo, nil, nil, "rev-parse", "--git-common-dir")
+	if err != nil {
+		_ = os.RemoveAll(objectDir)
+		return nil, nil, fmt.Errorf("resolve Git common directory: %w", err)
+	}
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(repo, commonDir)
+	}
+	commonDir, err = filepath.Abs(commonDir)
+	if err != nil {
+		_ = os.RemoveAll(objectDir)
+		return nil, nil, err
+	}
+	alternate := filepath.Join(commonDir, "objects")
+	env := filteredEnvironment("GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
+	env = append(env,
+		"GIT_OBJECT_DIRECTORY="+objectDir,
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES="+alternate,
+	)
+	return env, func() { _ = os.RemoveAll(objectDir) }, nil
+}
+
+func filteredEnvironment(keys ...string) []string {
+	blocked := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		blocked[key] = struct{}{}
+	}
+	result := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			if _, drop := blocked[key]; drop {
+				continue
+			}
+		}
+		result = append(result, entry)
+	}
+	return result
 }
 
 type ResolveRootOptions struct {

@@ -66,7 +66,7 @@ This measurement is conservative relative to `-coverpkg=./...` because it does n
 
 Linux amd64 is the producer runtime environment fully executed. Native macOS runtime evidence is also established on the exact host that successfully applies the POLIS V3.1 evidence-closing delivery for this checkpoint. That launcher is fail-closed: this documentation patch is applied only after native Darwin detection, exact baseline and target-tree checks, complete Go tests, race detection, authoritative project-wide coverage strictly greater than 80%, formatting/static/dependency checks, JSON validation, native build, and `polis doctor` all PASS in isolation.
 
-The complete native macOS run log is preserved under Git metadata at `.git/polis/results/` and the launcher prints the exact results path. Architecture and runtime/tool versions are recorded in that run log. The macOS claim is evidence-scoped to the native host and architecture that produced the successful run; it does not imply runtime validation of every macOS architecture.
+For that historical V3.1 checkpoint, the complete native macOS run log was preserved under Git metadata at `.git/polis/results/` and the launcher printed the exact results path. Current V6 canonical external-policy apply semantics supersede that persistence behavior: default apply evidence is ephemeral and must not leave `.git/polis` in the target repository. Architecture and runtime/tool versions for the historical claim were recorded in that run log. The macOS claim remains evidence-scoped to the native host and architecture that produced the successful run; it does not imply runtime validation of every macOS architecture.
 
 Windows native runtime validation remains outstanding. Cross-compilation alone is not treated as runtime evidence.
 
@@ -75,3 +75,32 @@ Windows native runtime validation remains outstanding. Cross-compilation alone i
 A native macOS consumer execution of the V013 POLIS V3.1 delivery (Go 1.27) passed bundle integrity, baseline, isolated patch identity, changed-behavior tests, and affected tests, then correctly stopped before real application because project-wide line coverage was `1723 / 2177 = 79.145613229215%`, below the unchanged strict `>80.0` requirement.
 
 The follow-up did not weaken the gate. Deterministic tests were added for previously uncovered production failure paths in package construction, package application, and policy validation. The evidence-closing delivery reruns the canonical project-wide coverage producer natively on macOS and refuses to apply this documentation update unless the computed line coverage is strictly greater than 80.0%.
+
+
+## POLIS V6 zero-residue target validation — 2026-09-08
+
+This section records the validation contract for the V6 external-policy zero-residue change. The implementation adds explicit external Project Policy input for `start`/`build`, separates repository baseline validation from policy-byte validation, consumes the packaged policy at consumer boundaries, makes default apply evidence ephemeral outside the target, and isolates temporary Git object/index/worktree activity from the target repository. Package format v3, Project Policy schema v3, Change Contract schema v4, and Evidence v2 remain unchanged.
+
+The end-to-end regression test `TestZeroResidueExternalPolicyWorkflow` exercises:
+
+```text
+start --policy -> capture-red -> build --policy -> verify -> inspect -> preflight -> apply
+```
+
+Its target fixture never contains `.polis`. The test compares HEAD, real index tree, refs, `.git/config`, linked-worktree administration, persistent `.git/objects` files, final status, and payload contents. It permits only the intended product payload and rejects tool-owned residue or payload references introduced merely by the delivery mechanism.
+
+Observed V6 zero-residue gate results on Linux amd64 with Go 1.23.2 and Git 2.47.3:
+
+- `go test ./cmd/polis -run TestZeroResidueExternalPolicyWorkflow -count=1 -v` — PASS.
+- `go test ./...` — PASS.
+- `go test -race ./...` — PASS.
+- `go vet ./...` — PASS.
+- `go build ./cmd/polis` — PASS; the local ignored build output was removed after validation.
+- `go mod verify` — PASS.
+- `gofmt -l .` — PASS, no files reported.
+- `git diff --check` — PASS.
+- Guide JSON parsing with Go-compatible JSON syntax — PASS.
+- authoritative policy coverage command `go test -coverpkg=./... ./... -coverprofile=.polis/coverage.out` — PASS.
+- normative `go-coverprofile-v1` line metric: `3599 / 4354 = 82.659623334864%`, strictly greater than the unchanged `80.0%` threshold — PASS.
+
+`go tool cover -func` reported 85.9% statements for the same profile; that value is not used as the normative POLIS line-coverage gate.

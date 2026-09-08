@@ -422,3 +422,61 @@ func TestCaptureV6RejectsUnlockedSchemaV3Contract(t *testing.T) {
 		t.Fatalf("expected V6 locked schema-v4 capture rejection, got %v", err)
 	}
 }
+
+func TestCaptureRedExternalPolicyBaselineWithoutRepositoryPolicy(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "external-red-repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/redexternal\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "feature.go"), []byte("package redexternal\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "init", "-q")
+	git(t, repo, "add", ".")
+	git(t, repo, "-c", "user.name=POLIS", "-c", "user.email=x@y", "commit", "-qm", "base")
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(policyPath, capturePolicyV3(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exit := 1
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	pass := spec.CommandSpec{Argv: []string{"true"}, Cwd: ".", TimeoutSeconds: 30, Environment: env}
+	reg := spec.CommandSpec{Argv: []string{"go", "test", "./..."}, Cwd: ".", TimeoutSeconds: 30, Environment: env}
+	clause := func(id, statement string) spec.SpecificationClause {
+		return spec.SpecificationClause{ID: id, Statement: statement}
+	}
+	draft := spec.ChangeContract{
+		SchemaVersion: spec.StrictChangeContractSchemaVersion, Kind: spec.ChangeKindFeature,
+		Scope: &spec.ChangeScope{AllowedPaths: []string{"feature.go", "feature_test.go"}}, TestScope: &spec.ChangeScope{AllowedPaths: []string{"feature_test.go"}}, DevelopmentMethod: spec.DevelopmentMethodStrictSDDTDDV1,
+		Specification: &spec.DevelopmentSpecification{Objective: "capture external-policy Red", Requirements: []spec.SpecificationClause{clause("REQ-001", "Red is captured without repository policy")}, AcceptanceCriteria: []spec.AcceptanceCriterion{{ID: "AC-001", Statement: "captured test fails on baseline", Requirements: []string{"REQ-001"}, Proof: spec.ProofGateRegression}}, Invariants: []spec.SpecificationClause{clause("INV-001", "baseline remains exact")}, ForbiddenStates: []spec.SpecificationClause{clause("FORBID-001", "repository policy is required")}, Inputs: []spec.SpecificationClause{clause("IN-001", "test-only delta")}, Outputs: []spec.SpecificationClause{clause("OUT-001", "red patch")}, FailureSemantics: []spec.SpecificationClause{clause("FAIL-001", "invalid red fails")}},
+		Behavior:      pass, Affected: pass, Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &reg, BaselineExitCode: &exit, BaselineOutputContains: []string{"undefined: Feature"}},
+	}
+	raw, err := json.Marshal(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draftPath := filepath.Join(t.TempDir(), "draft.json")
+	lockedPath := filepath.Join(t.TempDir(), "locked.json")
+	if err := os.WriteFile(draftPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Policy: policyPath, Contract: draftPath, Out: lockedPath}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "feature_test.go"), []byte("package redexternal\n\nimport \"testing\"\n\nfunc TestFeature(t *testing.T) { _ = Feature() }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "red.patch")
+	if _, err := Capture(context.Background(), Options{Repo: repo, Contract: lockedPath, Out: out}); err != nil {
+		t.Fatalf("capture external red: %v", err)
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Fatalf("missing red patch: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".polis")); !os.IsNotExist(err) {
+		t.Fatalf(".polis residue: %v", err)
+	}
+}

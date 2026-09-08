@@ -71,7 +71,7 @@ func TestArtifactHelpers(t *testing.T) {
 func TestTemporaryTargetAndWorktreeRejectInvalidBase(t *testing.T) {
 	ctx := context.Background()
 	repo := newBoundaryRepo(t)
-	if _, _, err := buildTargetWithTemporaryIndex(ctx, repo, "not-a-commit"); err == nil {
+	if _, _, _, err := buildTargetWithTemporaryIndex(ctx, repo, "not-a-commit"); err == nil {
 		t.Fatal("expected invalid base rejection")
 	}
 	if _, cleanup, err := gitutil.DetachedWorktree(ctx, repo, "not-a-commit", "polis-invalid-worktree-*", "create isolated worktree staging", "create isolated worktree"); err == nil {

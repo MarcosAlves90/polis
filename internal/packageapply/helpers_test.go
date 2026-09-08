@@ -40,24 +40,6 @@ func TestVerifyBaselineRejectsObjectFormatMismatch(t *testing.T) {
 	}
 }
 
-func TestFileSHA256SuccessAndMissing(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "a.txt")
-	if err := os.WriteFile(p, []byte("abc"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err := fileSHA256(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const want = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-	if got != want {
-		t.Fatalf("sha=%s want=%s", got, want)
-	}
-	if _, err := fileSHA256(filepath.Join(t.TempDir(), "missing")); err == nil {
-		t.Fatal("expected missing-file error")
-	}
-}
-
 func TestReversePatchRestoresAppliedChange(t *testing.T) {
 	repo := simpleRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("changed\n"), 0o644); err != nil {
@@ -112,17 +94,22 @@ func TestChangedIndexPathsReportsStagedPath(t *testing.T) {
 	}
 }
 
-func TestCreateEvidenceFileRejectsMissingArtifact(t *testing.T) {
-	repo := simpleRepo(t)
-	_, f, err := createEvidenceFile(context.Background(), repo, filepath.Join(t.TempDir(), "missing.polis"))
-	if f != nil {
-		_ = f.Close()
+func TestDiscardTemporaryEvidenceRemovesFile(t *testing.T) {
+	f, err := os.CreateTemp("", "polis-apply-test-evidence-*.ndjson")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err == nil {
-		t.Fatal("expected missing artifact error")
+	path := f.Name()
+	if _, err := f.WriteString("evidence\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := discardTemporaryEvidence(f, path, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("temporary evidence remains: %v", err)
 	}
 }
-
 func TestWorkingTreeIDIncludesUnstagedAndUntrackedChanges(t *testing.T) {
 	repo := simpleRepo(t)
 	base := git(t, repo, "rev-parse", "HEAD")

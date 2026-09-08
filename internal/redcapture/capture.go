@@ -52,7 +52,7 @@ func Capture(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if err := devlock.Validate(ctx, repo, contract); err != nil {
+	if err := devlock.ValidateRepository(ctx, repo, contract); err != nil {
 		return Result{}, fmt.Errorf("locked development baseline: %w", err)
 	}
 	outAbs, err := resolveOutputPath(repo, opts.Out)
@@ -223,19 +223,28 @@ func requireCleanIndex(ctx context.Context, repo string) error {
 }
 
 func capturePatch(ctx context.Context, repo, head string) ([]byte, error) {
-	indexPath, cleanup, err := gitutil.TemporaryIndex("polis-red-index-*")
+	indexPath, cleanupIndex, err := gitutil.TemporaryIndex("polis-red-index-*")
 	if err != nil {
 		return nil, err
 	}
-	defer cleanup()
-	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
-	if _, err := gitutil.Bytes(ctx, repo, env, nil, "read-tree", head); err != nil {
+	defer cleanupIndex()
+	objectEnv, cleanupObjects, err := gitutil.TemporaryObjectEnv(ctx, repo, "polis-red-objects-*")
+	if err != nil {
 		return nil, err
+	}
+	defer cleanupObjects()
+	env := append(objectEnv, "GIT_INDEX_FILE="+indexPath)
+	if _, err := gitutil.Bytes(ctx, repo, env, nil, "read-tree", head); err != nil {
+		return nil, fmt.Errorf("initialize temporary capture index: %w", err)
 	}
 	if _, err := gitutil.Bytes(ctx, repo, env, nil, "add", "-A", "--", "."); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("capture working tree in temporary index: %w", err)
 	}
-	return gitutil.Bytes(ctx, repo, env, nil, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--find-renames", head, "--")
+	patch, err := gitutil.Bytes(ctx, repo, env, nil, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--find-renames", head, "--")
+	if err != nil {
+		return nil, fmt.Errorf("generate regression patch: %w", err)
+	}
+	return patch, nil
 }
 
 func sortedPathKeys(paths map[string]struct{}) []string {

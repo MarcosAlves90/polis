@@ -2,16 +2,17 @@
 
 ## 1. Authority and compatibility model
 
-POLIS V6 retains the existing package-format-v3, Project-Policy-v3, Evidence-v2, exact-tree, signature, bounded-input, environment, and transactional-apply contracts unless this specification explicitly supersedes them.
+POLIS V6 retains package-format-v3, Project-Policy-v3, Evidence-v2, exact-tree, signature, bounded-input, environment, and transactional-apply contracts unless this specification explicitly supersedes them.
 
-For new V6 producer operations, this specification supersedes the V5 producer-admission rules defined by POLIS Specification v2/v3/v4.
+For new V6 producer operations, this specification supersedes the V5 producer-admission rules and the committed-policy-only baseline-lock semantics defined by earlier POLIS specifications.
 
-V6 distinguishes two compatibility directions:
+V6 distinguishes three compatibility directions:
 
-- **producer compatibility:** intentionally breaking; new `polis build` operations accept only locked Change Contract schema v4;
-- **reader compatibility:** preserved; `verify` and `inspect` continue to decode valid historical schemas supported by V5, and `preflight`/`apply` may consume historical valid artifacts for migration.
+- **canonical V6 producer:** uses an explicit external Project Policy schema v3 and a locked Change Contract schema v4;
+- **legacy producer compatibility:** when no explicit policy is supplied, `start` and `build` may continue to use an exact committed `.polis/policy.json` for existing/self-hosting repositories;
+- **reader compatibility:** `verify` and `inspect` continue to decode valid historical schemas supported by V5, and `preflight`/`apply` may consume historical valid artifacts for migration.
 
-Reader compatibility MUST NOT be used to authorize creation of a new legacy artifact.
+Compatibility MUST NOT weaken the canonical zero-residue producer path or authorize creation of new legacy Change Contract schemas.
 
 ## 2. Runtime identity
 
@@ -25,38 +26,53 @@ github.com/MarcosAlves90/polis/v6
 
 ## 3. Required producer state machine
 
-Every new V6 delivery follows this state sequence:
+The canonical V6 delivery state sequence is:
 
 ```text
-committed Project Policy v3 + clean Git baseline
+external Project Policy v3 + clean Git baseline
   -> accepted strict Change Contract schema-v3 draft
-  -> polis start
+  -> polis start --policy <external-policy>
   -> locked Change Contract schema v4 / strict_sdd_tdd_v2
   -> development proof appropriate to change kind
-  -> polis build
+  -> polis build --policy <same-effective-policy>
   -> polis verify
   -> optional signature
   -> consumer preflight
   -> consumer apply
 ```
 
+The external Project Policy is a caller-owned input outside the target worktree. Its pathname is execution context only and MUST NOT be serialized into the Change Contract, package, evidence, payload, or target repository.
+
 `polis build` MUST reject Change Contract schemas v1, v2, and v3 as producer input. The rejection occurs before target construction and before execution of Project Policy gates.
 
-A valid producer contract MUST satisfy all schema-v4 semantics defined by POLIS Specification v4, including a valid `baseline_lock`.
+A valid producer contract MUST satisfy all schema-v4 semantics defined by POLIS Specification v4 except where this V6 specification supersedes the source of `baseline_lock.policy_sha256`.
 
-## 4. `polis start`
+## 4. Effective Project Policy and `polis start`
 
-`polis start` is the canonical transition from strict schema v3 to locked schema v4.
+### 4.1 Canonical external policy
+
+For the canonical zero-residue path, `polis start` receives `--policy <external-policy>`.
 
 It MUST:
 
 - operate on a clean committed Git baseline;
-- require the committed Project Policy to be schema v3;
+- require the supplied effective Project Policy to validate as schema v3;
+- require the external policy path to be outside the target worktree;
+- canonicalize the validated external policy before hashing it;
 - accept an external strict schema-v3 draft using `strict_sdd_tdd_v1`;
 - emit an external schema-v4 contract using `strict_sdd_tdd_v2`;
-- bind Git object format, base commit, base tree, committed Project Policy SHA-256, and canonical Specification SHA-256;
-- never mutate HEAD, index, existing worktree files, or committed Project Policy;
+- bind Git object format, base commit, base tree, SHA-256 of the canonical effective Project Policy, and canonical Specification SHA-256;
+- never serialize the external policy pathname;
+- never create `.polis`, modify HEAD, modify the real index, modify existing worktree files, or write tool-specific Git metadata;
 - never overwrite its output.
+
+`baseline_lock.policy_sha256` therefore identifies policy bytes, not a repository pathname.
+
+### 4.2 Committed-policy compatibility
+
+When `--policy` is omitted, V6 MAY retain the historical producer behavior that reads exact committed `.polis/policy.json` bytes. This exists for compatibility and self-hosting; it is not the canonical zero-residue workflow.
+
+Committed-policy compatibility MUST NOT cause the explicit external-policy path to read, create, update, or require `.polis/policy.json`.
 
 ## 5. Change-kind development proof
 
@@ -78,30 +94,64 @@ V6 `capture-red` accepts only a locked schema-v4 contract whose semantics requir
 
 An unlocked schema-v3 draft MUST be rejected with guidance to run `polis start` first.
 
+For a schema-v4 contract, `capture-red` revalidates repository-dependent baseline facts available from the target repository: Git object format, base commit, base tree, and Specification identity. It does not require a repository policy file; the effective policy hash was already locked by `start` and is revalidated when policy bytes are available to producer/package verification boundaries.
+
+Temporary Git indexes or object writes used to calculate or validate the Red patch MUST be isolated from the target repository's persistent Git object database.
+
 All existing test-scope, source-mutation, oracle, path, bounded-input, and captured-test immutability rules remain in force.
 
 ## 7. Producer `build`
 
-V6 `build` requires:
+Canonical V6 `build` uses `--policy <external-policy>` and requires:
 
-- Project Policy schema v3;
+- effective Project Policy schema v3;
+- the same canonical effective policy bytes whose SHA-256 is locked in `baseline_lock.policy_sha256`;
 - locked Change Contract schema v4;
 - `development_method: strict_sdd_tdd_v2`;
-- valid `baseline_lock` against the producer repository;
+- valid repository-dependent `baseline_lock` facts against the producer repository;
 - regression patch exactly when the change requires Red-to-Green;
 - all existing behavior, affected, policy, scope, coverage, target-tree, evidence, and package-integrity checks.
 
+A policy hash mismatch MUST fail before an artifact is accepted. The canonical policy bytes are embedded in the existing `polis/polis-policy.json` package member; package format and member names do not change.
+
+When `--policy` is omitted, committed-policy compatibility MAY remain as defined in section 4.2.
+
 Schemas v1-v3 are decode-compatible but invalid producer input.
+
+Temporary target-tree construction MUST keep temporary index object writes outside the target repository's persistent Git object database.
 
 ## 8. Reader and consumer compatibility
 
 `verify` and `inspect` remain capable of validating historical package/contract schemas already supported by V5 when those artifacts are otherwise valid.
 
-`preflight` and `apply` may consume valid historical artifacts to preserve migration compatibility. This compatibility does not weaken the V6 producer rule.
+For schema-v4 artifacts, package verification MUST prove that the packaged Project Policy SHA-256 equals `baseline_lock.policy_sha256`. Consumer `preflight` and `apply` therefore MUST NOT require `.polis/policy.json` in the target repository.
 
-For schema-v4 artifacts, consumer boundaries continue to revalidate repository-dependent baseline-lock facts before mutation.
+At consumer boundaries, `preflight` and `apply` revalidate repository-dependent baseline facts, execute validation with the packaged effective policy, validate the exact target tree and scope, and perform the existing fail-closed patch checks.
 
-## 9. Traceability
+Consumer isolation MUST NOT create persistent linked-worktree administration or tool-created Git objects in the target repository. Isolated validation may use temporary external/shared clones or equivalent isolation whose cleanup is outside the target repository.
+
+`preflight` remains read-only with respect to the target. `apply` repeats validation and MUST NOT reuse a cached preflight PASS.
+
+## 9. Zero-residue target invariant
+
+Successful canonical external-policy execution MUST leave no tool-owned state in the target repository after command completion.
+
+For `start`, `capture-red`, `build`, `preflight`, and `apply`, this includes, where applicable:
+
+- no `.polis` directory or policy/configuration file created by the workflow;
+- no `.git/polis` directory or persistent result/evidence file;
+- no linked-worktree administration created under the target Git metadata;
+- no temporary indexes, lock files, or tool-owned configuration entries;
+- no tool-created persistent Git objects caused solely by temporary tree/index construction;
+- no generated payload reference to the tool name merely because the payload was produced by the tool.
+
+Temporary files, clones, object databases, and evidence may exist outside the target repository while a command is running. A successful command MUST remove its temporary external state before returning when that state is owned by the command. Cleanup failure that can leave tool-owned residue MUST fail closed.
+
+`apply` evidence is ephemeral by default: it is written outside the target repository, validated before real mutation, and removed before successful return. The default successful result does not expose a persistent evidence path.
+
+The zero-residue invariant does not rename or remove canonical members inside the external `.polis` delivery artifact itself; the artifact is not target-repository state.
+
+## 10. Traceability
 
 Strict schema-v4 Specification traceability remains authoritative:
 
@@ -111,13 +161,14 @@ REQ -> AC -> regression proof
 
 Every requirement MUST be covered by at least one acceptance criterion, every acceptance criterion MUST reference existing requirements, and the proof binding remains deterministic.
 
-## 10. Unchanged contracts
+## 11. Unchanged contracts
 
 V6 does not change:
 
 - package format v3 and its seven canonical members;
 - Project Policy schema v3 gate registry;
-- Evidence v2 format;
+- Change Contract schema v4 structure;
+- Evidence v2 format for packaged validation evidence;
 - coverage adapters and strict `>` threshold semantics;
 - bounded stdout/stderr retention and full-stream digests;
 - direct argv execution and declared environments;
@@ -126,6 +177,8 @@ V6 does not change:
 - transactional apply preserving HEAD and the real index;
 - package/member resource limits.
 
-## 11. Major-version rationale
+## 12. Major-version rationale
 
-V6 is a semantic major because producer operations that were valid in V5 become invalid: a caller can no longer create a new artifact directly from Change Contract schema v2 or unlocked strict schema v3. The required `polis start` lock and development proof are now part of the producer contract.
+V6 remains a semantic major because producer operations that were valid in V5 become invalid: a caller cannot create a new artifact directly from Change Contract schema v2 or unlocked strict schema v3. The required `polis start` lock and development proof are part of the producer contract.
+
+This zero-residue refinement changes where effective policy and temporary validation state live; it does not introduce a new package format or schema version.

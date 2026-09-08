@@ -137,7 +137,7 @@ func repoWithArtifact(t *testing.T) (repo, artifact, target string) {
 	return repo, artifact, target
 }
 
-func TestApplyExactBaselinePreservesIndexAndWritesEvidenceOutsideWorktree(t *testing.T) {
+func TestApplyExactBaselinePreservesIndexAndUsesEphemeralEvidence(t *testing.T) {
 	repo, artifact, target := repoWithArtifact(t)
 	beforeHead := git(t, repo, "rev-parse", "HEAD")
 	beforeIndex := git(t, repo, "write-tree")
@@ -160,8 +160,11 @@ func TestApplyExactBaselinePreservesIndexAndWritesEvidenceOutsideWorktree(t *tes
 	if b, _ := os.ReadFile(filepath.Join(repo, "new.txt")); string(b) != "new\n" {
 		t.Fatalf("new.txt=%q", b)
 	}
-	if _, err := os.Stat(result.EvidencePath); err != nil {
-		t.Fatalf("evidence missing: %v", err)
+	if result.EvidencePath != "" {
+		t.Fatalf("persistent evidence path=%q", result.EvidencePath)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git", "polis")); !os.IsNotExist(err) {
+		t.Fatalf("git evidence residue: %v", err)
 	}
 	status := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
 	if !strings.Contains(status, "M app.txt") || !strings.Contains(status, "?? new.txt") {
@@ -276,5 +279,195 @@ func TestPreflightValidatesWithoutMutatingConsumerFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(repo, "new.txt")); !os.IsNotExist(err) {
 		t.Fatalf("preflight created new.txt: %v", err)
+	}
+}
+
+func externalApplyPolicyBytes(t *testing.T) []byte {
+	t.Helper()
+	reason := "not applicable in zero-residue apply fixture"
+	threshold := 80.0
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	gates := make([]spec.GatePolicy, 0, len(spec.ProjectGateOrder))
+	for _, id := range spec.ProjectGateOrder {
+		switch id {
+		case "test.complete":
+			cmd := spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCommand, Command: &cmd})
+		case "coverage":
+			cmd := spec.CommandSpec{Argv: []string{"cp", "coverage.fixture", "coverage.out"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCoverage, Command: &cmd, Adapter: spec.CoverageAdapterGoCoverProfileV1, Report: "coverage.out", Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: &threshold})
+		default:
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeNotApplicable, Reason: &reason})
+		}
+	}
+	raw, err := json.MarshalIndent(spec.Policy{SchemaVersion: spec.PolicySchemaVersion, Gates: gates}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(raw, '\n')
+}
+
+func lockedExternalApplyContract(t *testing.T, repo, policyPath string) string {
+	t.Helper()
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	pass := spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	regression := spec.CommandSpec{Argv: []string{"go", "test", "-p=1", "./...", "-run", "TestAdd"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	clause := func(id, statement string) spec.SpecificationClause {
+		return spec.SpecificationClause{ID: id, Statement: statement}
+	}
+	draft := spec.ChangeContract{
+		SchemaVersion: spec.StrictChangeContractSchemaVersion, Kind: spec.ChangeKindBehaviorPreserving,
+		Scope: &spec.ChangeScope{AllowedPaths: []string{"app.txt", "new.txt", "calc_test.go"}}, TestScope: &spec.ChangeScope{AllowedPaths: []string{"calc_test.go"}}, DevelopmentMethod: spec.DevelopmentMethodStrictSDDTDDV1,
+		Specification: &spec.DevelopmentSpecification{
+			Objective: "apply without target residue", Requirements: []spec.SpecificationClause{clause("REQ-001", "consumer applies package-contained policy without repository policy state")},
+			AcceptanceCriteria: []spec.AcceptanceCriterion{{ID: "AC-001", Statement: "apply changes only payload paths", Requirements: []string{"REQ-001"}, Proof: spec.ProofGateRegression}},
+			Invariants:         []spec.SpecificationClause{clause("INV-001", "HEAD and index are preserved")}, ForbiddenStates: []spec.SpecificationClause{clause("FORBID-001", "tool metadata remains in target Git directory")},
+			Inputs: []spec.SpecificationClause{clause("IN-001", "external-policy artifact")}, Outputs: []spec.SpecificationClause{clause("OUT-001", "payload-only working tree")}, FailureSemantics: []spec.SpecificationClause{clause("FAIL-001", "baseline or validation mismatch blocks mutation")},
+		},
+		Behavior: pass, Affected: pass, Regression: spec.RegressionContract{Mode: spec.RegressionModeGreenGreen, Command: &regression},
+	}
+	raw, err := json.Marshal(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draftPath := filepath.Join(t.TempDir(), "apply-external-draft.json")
+	lockedPath := filepath.Join(t.TempDir(), "apply-external-locked.json")
+	if err := os.WriteFile(draftPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Policy: policyPath, Contract: draftPath, Out: lockedPath}); err != nil {
+		t.Fatalf("start external apply fixture: %v", err)
+	}
+	return lockedPath
+}
+
+func repoWithExternalArtifact(t *testing.T) (repo, artifact, target string) {
+	t.Helper()
+	repo = filepath.Join(t.TempDir(), "external-consumer")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "init", "-q")
+	files := map[string]string{
+		"app.txt":          "base\n",
+		"go.mod":           "module example.com/applyexternal\n\ngo 1.23\n",
+		"calc.go":          "package applyexternal\n\nfunc Add(a, b int) int { return a + b }\n",
+		"calc_test.go":     "package applyexternal\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) { if Add(2, 3) != 5 { t.Fatal(\"bad add\") } }\n",
+		"coverage.out":     "mode: set\nexample.com/applyexternal/calc.go:3.24,3.38 1 1\n",
+		"coverage.fixture": "mode: set\nexample.com/applyexternal/calc.go:3.24,3.38 1 1\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "base")
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(policyPath, externalApplyPolicyBytes(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	contract := lockedExternalApplyContract(t, repo, policyPath)
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	built, err := packagebuild.Build(context.Background(), packagebuild.Options{Repo: repo, Policy: policyPath, Project: "external", Change: "apply-zero-residue", Out: t.TempDir(), Contract: contract})
+	if err != nil {
+		t.Fatalf("build external fixture: %v", err)
+	}
+	artifact, target = built.Path, built.TargetTree
+	git(t, repo, "restore", "--", "app.txt")
+	if err := os.Remove(filepath.Join(repo, "new.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if status := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); status != "" {
+		t.Fatalf("fixture not clean: %q", status)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".polis")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected .polis baseline state: %v", err)
+	}
+	return repo, artifact, target
+}
+
+func TestPreflightExternalPolicyNeedsNoRepositoryPolicyState(t *testing.T) {
+	repo, artifact, target := repoWithExternalArtifact(t)
+	beforeHead := git(t, repo, "rev-parse", "HEAD")
+	beforeIndex := git(t, repo, "write-tree")
+	beforeConfig, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Preflight(context.Background(), artifact, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TargetTree != target {
+		t.Fatalf("target=%s want=%s", result.TargetTree, target)
+	}
+	if got := git(t, repo, "rev-parse", "HEAD"); got != beforeHead {
+		t.Fatalf("HEAD changed")
+	}
+	if got := git(t, repo, "write-tree"); got != beforeIndex {
+		t.Fatalf("index changed")
+	}
+	afterConfig, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(beforeConfig) != string(afterConfig) {
+		t.Fatal("git config changed")
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git", "polis")); !os.IsNotExist(err) {
+		t.Fatalf("preflight git residue: %v", err)
+	}
+}
+
+func TestApplyExternalPolicyLeavesNoToolGitMetadata(t *testing.T) {
+	repo, artifact, target := repoWithExternalArtifact(t)
+	beforeHead := git(t, repo, "rev-parse", "HEAD")
+	beforeIndex := git(t, repo, "write-tree")
+	beforeRefs := git(t, repo, "for-each-ref", "--format=%(refname) %(objectname)")
+	beforeConfig, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Apply(context.Background(), artifact, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TargetTree != target {
+		t.Fatalf("target=%s want=%s", result.TargetTree, target)
+	}
+	if result.EvidencePath != "" {
+		t.Fatalf("persistent evidence path=%q", result.EvidencePath)
+	}
+	if got := git(t, repo, "rev-parse", "HEAD"); got != beforeHead {
+		t.Fatalf("HEAD changed")
+	}
+	if got := git(t, repo, "write-tree"); got != beforeIndex {
+		t.Fatalf("index changed")
+	}
+	if got := git(t, repo, "for-each-ref", "--format=%(refname) %(objectname)"); got != beforeRefs {
+		t.Fatalf("refs changed\nbefore=%s\nafter=%s", beforeRefs, got)
+	}
+	afterConfig, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(beforeConfig) != string(afterConfig) {
+		t.Fatal("git config changed")
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git", "polis")); !os.IsNotExist(err) {
+		t.Fatalf("git metadata residue: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".polis")); !os.IsNotExist(err) {
+		t.Fatalf("worktree residue: %v", err)
+	}
+	status := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
+	if !strings.Contains(status, "M app.txt") || !strings.Contains(status, "?? new.txt") {
+		t.Fatalf("unexpected payload status: %q", status)
 	}
 }

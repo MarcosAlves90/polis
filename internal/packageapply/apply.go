@@ -3,14 +3,10 @@ package packageapply
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
-	"time"
 
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
@@ -53,11 +49,11 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 		return Result{}, err
 	}
 
-	evidencePath, evidenceFile, err := createEvidenceFile(ctx, repo, artifact)
+	evidenceFile, err := os.CreateTemp("", "polis-apply-evidence-*.ndjson")
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("create temporary evidence: %w", err)
 	}
-	defer evidenceFile.Close()
+	evidencePath := evidenceFile.Name()
 
 	if err := isolation.Validate(ctx, isolation.Validation{
 		Repo:                  repo,
@@ -75,10 +71,14 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 		TargetApplyError:      "isolated apply failed",
 		PolicyFailureLabel:    "consumer policy validation",
 	}); err != nil {
+		cleanupErr := discardTemporaryEvidence(evidenceFile, evidencePath, false)
+		if cleanupErr != nil {
+			return Result{}, fmt.Errorf("%w: %v; cleanup temporary evidence: %v", ErrValidationFailed, err, cleanupErr)
+		}
 		return Result{}, fmt.Errorf("%w: %v", ErrValidationFailed, err)
 	}
-	if err := evidenceFile.Sync(); err != nil {
-		return Result{}, fmt.Errorf("sync evidence: %w", err)
+	if err := discardTemporaryEvidence(evidenceFile, evidencePath, true); err != nil {
+		return Result{}, fmt.Errorf("cleanup temporary evidence: %w", err)
 	}
 
 	// Close the TOCTOU window as much as possible before touching consumer files.
@@ -109,7 +109,7 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 		}
 		return Result{}, fmt.Errorf("post-apply target_tree mismatch: got %s want %s; patch reversed", gotTree, pkg.Manifest.TargetTree)
 	}
-	return Result{Project: pkg.Manifest.Project, Change: pkg.Manifest.Change, TargetTree: gotTree, EvidencePath: evidencePath}, nil
+	return Result{Project: pkg.Manifest.Project, Change: pkg.Manifest.Change, TargetTree: gotTree}, nil
 }
 
 func Preflight(ctx context.Context, artifact, repoPath string) (Result, error) {
@@ -187,43 +187,39 @@ func verifyBaseline(ctx context.Context, repo string, manifest spec.Manifest) er
 }
 
 func verifyLockedBaseline(ctx context.Context, repo string, change spec.ChangeContract) error {
-	if err := devlock.Validate(ctx, repo, change); err != nil {
+	if err := devlock.ValidateRepository(ctx, repo, change); err != nil {
 		return fmt.Errorf("%w: locked development baseline: %v", ErrBaselineMismatch, err)
 	}
 	return nil
 }
 
-func createEvidenceFile(ctx context.Context, repo, artifact string) (string, *os.File, error) {
-	gitPath, err := gitutil.Output(ctx, repo, nil, nil, gitRevParse, "--git-path", "polis/results")
-	if err != nil {
-		return "", nil, fmt.Errorf("resolve evidence directory: %w", err)
+func discardTemporaryEvidence(file *os.File, path string, sync bool) error {
+	var cleanupErrs []error
+	if sync {
+		if err := file.Sync(); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("sync: %w", err))
+		}
 	}
-	if !filepath.IsAbs(gitPath) {
-		gitPath = filepath.Join(repo, gitPath)
+	if err := file.Close(); err != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("close: %w", err))
 	}
-	if err := os.MkdirAll(gitPath, 0o755); err != nil {
-		return "", nil, fmt.Errorf("create evidence directory: %w", err)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("remove: %w", err))
 	}
-	digest, err := fileSHA256(artifact)
-	if err != nil {
-		return "", nil, err
-	}
-	stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
-	filename := filepath.Join(gitPath, fmt.Sprintf("polis-apply-%s-%s.ndjson", digest[:12], stamp))
-	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return "", nil, fmt.Errorf("create evidence file: %w", err)
-	}
-	return filename, f, nil
+	return errors.Join(cleanupErrs...)
 }
-
 func workingTreeID(ctx context.Context, repo, baseCommit string) (string, error) {
-	indexPath, cleanup, err := gitutil.TemporaryIndex("polis-apply-index-*")
+	indexPath, cleanupIndex, err := gitutil.TemporaryIndex("polis-apply-index-*")
 	if err != nil {
 		return "", err
 	}
-	defer cleanup()
-	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
+	defer cleanupIndex()
+	objectEnv, cleanupObjects, err := gitutil.TemporaryObjectEnv(ctx, repo, "polis-apply-objects-*")
+	if err != nil {
+		return "", err
+	}
+	defer cleanupObjects()
+	env := append(objectEnv, "GIT_INDEX_FILE="+indexPath)
 	if _, err := gitutil.Bytes(ctx, repo, env, nil, "read-tree", baseCommit); err != nil {
 		return "", err
 	}
@@ -236,17 +232,4 @@ func workingTreeID(ctx context.Context, repo, baseCommit string) (string, error)
 func reversePatch(ctx context.Context, repo string, patch []byte) error {
 	_, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(patch), "apply", "--reverse", "-")
 	return err
-}
-
-func fileSHA256(filename string) (string, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }

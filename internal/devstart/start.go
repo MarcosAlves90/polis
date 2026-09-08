@@ -14,11 +14,13 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/fileutil"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/pathguard"
+	"github.com/MarcosAlves90/polis/v6/internal/policyload"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 type Options struct {
 	Repo     string
+	Policy   string
 	Contract string
 	Out      string
 }
@@ -43,16 +45,14 @@ func Start(ctx context.Context, opts Options) (Result, error) {
 	if status != "" {
 		return Result{}, errors.New("polis start requires a clean worktree and index")
 	}
-	policyRaw, err := os.ReadFile(filepath.Join(root, ".polis", "policy.json"))
-	if err != nil {
-		return Result{}, fmt.Errorf("read .polis/policy.json: %w", err)
+	var policyRaw []byte
+	if opts.Policy != "" {
+		policyRaw, _, err = policyload.LoadExternal(root, opts.Policy)
+	} else {
+		policyRaw, _, err = policyload.LoadCommitted(ctx, root)
 	}
-	policy, err := spec.DecodePolicy(policyRaw)
 	if err != nil {
-		return Result{}, fmt.Errorf("invalid Project Policy: %w", err)
-	}
-	if policy.SchemaVersion != spec.PolicySchemaVersion {
-		return Result{}, fmt.Errorf("polis start requires Project Policy schema v%d", spec.PolicySchemaVersion)
+		return Result{}, err
 	}
 	draftRaw, err := fileutil.ReadOutside(root, opts.Contract, fileutil.OutsideReadOptions{Max: 1 << 20, OversizeMessage: "input exceeds maximum size"})
 	if err != nil {
@@ -81,7 +81,7 @@ func Start(ctx context.Context, opts Options) (Result, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Result{}, err
 	}
-	lock, err := devlock.Snapshot(ctx, root, draft.Specification)
+	lock, err := devlock.SnapshotWithPolicy(ctx, root, draft.Specification, policyRaw)
 	if err != nil {
 		return Result{}, fmt.Errorf("lock baseline: %w", err)
 	}

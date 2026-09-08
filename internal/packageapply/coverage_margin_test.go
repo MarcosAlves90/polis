@@ -23,10 +23,6 @@ func TestFailurePathCoverageMargin(t *testing.T) {
 	if _, err := workingTreeID(ctx, nonRepo, "not-a-commit"); err == nil {
 		t.Fatal("expected working-tree identity failure outside repository")
 	}
-	if _, err := fileSHA256(filepath.Join(t.TempDir(), "missing")); err == nil {
-		t.Fatal("expected hash failure for missing file")
-	}
-
 	repo := t.TempDir()
 	run := func(args ...string) {
 		t.Helper()

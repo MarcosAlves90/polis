@@ -866,3 +866,135 @@ func TestBuildV6RejectsUnlockedSchemaV3ProducerInput(t *testing.T) {
 		t.Fatalf("expected V6 locked schema-v4 producer rejection, got %v", err)
 	}
 }
+
+func externalPolicyBytes(t *testing.T, threshold float64) []byte {
+	t.Helper()
+	reason := "not applicable in external-policy fixture"
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	gates := make([]spec.GatePolicy, 0, len(spec.ProjectGateOrder))
+	for _, id := range spec.ProjectGateOrder {
+		switch id {
+		case "test.complete":
+			cmd := spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCommand, Command: &cmd})
+		case "coverage":
+			cmd := spec.CommandSpec{Argv: []string{"cp", "coverage.fixture", "coverage.out"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeCoverage, Command: &cmd, Adapter: spec.CoverageAdapterGoCoverProfileV1, Report: "coverage.out", Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: &threshold})
+		default:
+			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeNotApplicable, Reason: &reason})
+		}
+	}
+	raw, err := json.MarshalIndent(spec.Policy{SchemaVersion: spec.PolicySchemaVersion, Gates: gates}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(raw, '\n')
+}
+
+func newExternalV6Repo(t *testing.T) string {
+	t.Helper()
+	repo := filepath.Join(t.TempDir(), "external-repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "init", "-q")
+	files := map[string]string{
+		"app.txt":          "base\n",
+		"go.mod":           "module example.com/externalfixture\n\ngo 1.23\n",
+		"calc.go":          "package externalfixture\n\nfunc Add(a, b int) int { return a + b }\n",
+		"calc_test.go":     "package externalfixture\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) { if Add(2, 3) != 5 { t.Fatal(\"bad add\") } }\n",
+		"coverage.out":     "mode: set\nexample.com/externalfixture/calc.go:3.24,3.38 1 1\n",
+		"coverage.fixture": "mode: set\nexample.com/externalfixture/calc.go:3.24,3.38 1 1\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "base")
+	return repo
+}
+
+func lockedExternalCharacterizationContract(t *testing.T, repo, policyPath string) string {
+	t.Helper()
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	pass := spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	regression := spec.CommandSpec{Argv: []string{"go", "test", "-p=1", "./...", "-run", "TestAdd"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	clause := func(id, statement string) spec.SpecificationClause {
+		return spec.SpecificationClause{ID: id, Statement: statement}
+	}
+	draft := spec.ChangeContract{
+		SchemaVersion: spec.StrictChangeContractSchemaVersion, Kind: spec.ChangeKindBehaviorPreserving,
+		Scope: &spec.ChangeScope{AllowedPaths: []string{"app.txt", "calc_test.go"}}, TestScope: &spec.ChangeScope{AllowedPaths: []string{"calc_test.go"}}, DevelopmentMethod: spec.DevelopmentMethodStrictSDDTDDV1,
+		Specification: &spec.DevelopmentSpecification{
+			Objective: "external policy build", Requirements: []spec.SpecificationClause{clause("REQ-001", "build uses locked external policy")},
+			AcceptanceCriteria: []spec.AcceptanceCriterion{{ID: "AC-001", Statement: "build preserves characterization", Requirements: []string{"REQ-001"}, Proof: spec.ProofGateRegression}},
+			Invariants:         []spec.SpecificationClause{clause("INV-001", "target has no repository policy")}, ForbiddenStates: []spec.SpecificationClause{clause("FORBID-001", "policy hash drift accepted")},
+			Inputs: []spec.SpecificationClause{clause("IN-001", "external policy")}, Outputs: []spec.SpecificationClause{clause("OUT-001", "verified package")}, FailureSemantics: []spec.SpecificationClause{clause("FAIL-001", "policy mismatch fails")},
+		},
+		Behavior: pass, Affected: pass, Regression: spec.RegressionContract{Mode: spec.RegressionModeGreenGreen, Command: &regression},
+	}
+	raw, err := json.Marshal(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draftPath := filepath.Join(t.TempDir(), "external-draft.json")
+	lockedPath := filepath.Join(t.TempDir(), "external-locked.json")
+	if err := os.WriteFile(draftPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Policy: policyPath, Contract: draftPath, Out: lockedPath}); err != nil {
+		t.Fatalf("start external: %v", err)
+	}
+	return lockedPath
+}
+
+func TestBuildExternalPolicyWithoutRepositoryPolicyState(t *testing.T) {
+	repo := newExternalV6Repo(t)
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(policyPath, externalPolicyBytes(t, 80), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	contract := lockedExternalCharacterizationContract(t, repo, policyPath)
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Build(context.Background(), Options{Repo: repo, Policy: policyPath, Project: "external", Change: "no-residue", Out: t.TempDir(), Contract: contract})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := packageverify.Verify(result.Path); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".polis")); !os.IsNotExist(err) {
+		t.Fatalf(".polis residue: %v", err)
+	}
+}
+
+func TestBuildExternalPolicyRejectsLockedPolicyHashMismatch(t *testing.T) {
+	repo := newExternalV6Repo(t)
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(policyPath, externalPolicyBytes(t, 80), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	contract := lockedExternalCharacterizationContract(t, repo, policyPath)
+	if err := os.WriteFile(policyPath, externalPolicyBytes(t, 81), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	_, err := Build(context.Background(), Options{Repo: repo, Policy: policyPath, Project: "external", Change: "mismatch", Out: out, Contract: contract})
+	if err == nil || !strings.Contains(err.Error(), "policy_sha256 mismatch") {
+		t.Fatalf("expected policy hash mismatch, got %v", err)
+	}
+	entries, readErr := os.ReadDir(out)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("artifact emitted on mismatch: %v", entries)
+	}
+}

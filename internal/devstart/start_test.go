@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/MarcosAlves90/polis/v6/spec"
@@ -149,4 +150,90 @@ func TestStartRejectsDirtyRepoAndInvalidPolicy(t *testing.T) {
 	if _, err := Start(context.Background(), Options{Repo: repo, Contract: draft, Out: out}); err == nil {
 		t.Fatal("invalid policy accepted")
 	}
+}
+
+func makeExternalPolicyRepo(t *testing.T) string {
+	t.Helper()
+	repo := filepath.Join(t.TempDir(), "repo-external")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "base"}} {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, b)
+		}
+	}
+	return repo
+}
+
+func TestStartExternalPolicyProducesLockWithoutRepositoryResidue(t *testing.T) {
+	repo := makeExternalPolicyRepo(t)
+	ext := t.TempDir()
+	policyPath := filepath.Join(ext, "policy.json")
+	draft := filepath.Join(ext, "draft.json")
+	out := filepath.Join(ext, "locked.json")
+	if err := os.WriteFile(policyPath, policyBytes(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(draft, draftContractBytes(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beforeHead := strings.TrimSpace(runGitCommand(t, repo, "rev-parse", "HEAD"))
+	beforeIndex := strings.TrimSpace(runGitCommand(t, repo, "write-tree"))
+	beforeConfig, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Start(context.Background(), Options{Repo: repo, Policy: policyPath, Contract: draft, Out: out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Path != out || result.SHA256 == "" {
+		t.Fatalf("result=%+v", result)
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, err := spec.DecodeChangeContract(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if locked.BaselineLock == nil || locked.BaselineLock.PolicySHA256 == "" {
+		t.Fatalf("missing policy lock: %+v", locked.BaselineLock)
+	}
+	if got := strings.TrimSpace(runGitCommand(t, repo, "rev-parse", "HEAD")); got != beforeHead {
+		t.Fatalf("HEAD changed: %s -> %s", beforeHead, got)
+	}
+	if got := strings.TrimSpace(runGitCommand(t, repo, "write-tree")); got != beforeIndex {
+		t.Fatalf("index changed: %s -> %s", beforeIndex, got)
+	}
+	if status := strings.TrimSpace(runGitCommand(t, repo, "status", "--porcelain=v1", "--untracked-files=all")); status != "" {
+		t.Fatalf("repo mutated: %q", status)
+	}
+	afterConfig, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterConfig) != string(beforeConfig) {
+		t.Fatal("git config changed")
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".polis")); !os.IsNotExist(err) {
+		t.Fatalf(".polis residue: %v", err)
+	}
+}
+
+func runGitCommand(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	b, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, b)
+	}
+	return string(b)
 }
