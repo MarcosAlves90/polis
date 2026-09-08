@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Add the canonical V6 zero-residue workflow with explicit external Project Policy input for `polis start --policy` and `polis build --policy`, allowing target repositories to operate without a committed `.polis/policy.json`.
+- Add end-to-end zero-residue validation proving successful execution preserves `HEAD`, the real index, refs, Git configuration, linked-worktree administration, and persistent Git objects while leaving only the intended product payload.
+
+### Changed
+
+- Make schema-v4 consumers validate with the Project Policy packaged in the artifact and keep temporary validation state plus default apply evidence outside the target repository; committed `.polis/policy.json` remains available only as a compatibility path.
+
 ### Fixed
 
 - Allow V6 producer `build` to package descendant post-`start` commits from the locked baseline while preserving exact `capture-red` and consumer baseline rejection; non-descendant producer history still fails closed.
