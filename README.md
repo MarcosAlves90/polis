@@ -27,6 +27,7 @@ Then run `polis doctor`. See the [installation guide](docs/installation.md) for 
 ```bash
 polis doctor [--format text|json]
 polis init --repo /path/to/repo [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]
+polis plan --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
 polis start --repo /path/to/repo --policy /outside/policy-v3.json --contract /outside/draft-v3.json --out /outside/locked-v4.json
 polis capture-red --repo /path/to/repo --contract /outside/change.json --out /outside/regression.patch
 polis build --repo /path/to/repo --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/change.json --regression-patch /outside/regression.patch --out /path/to/output
@@ -64,10 +65,13 @@ Project Policy also supports explicit validation reinforcement. `strict` is the 
 
 Add `--dry-run` to emit the validated policy JSON to stdout without creating or modifying `.polis/policy.json`, the Git index, `HEAD`, or other worktree files. For the canonical zero-residue workflow, redirect that output to a path outside the target repository and pass it explicitly to `polis start --policy` and `polis build --policy`. Non-dry-run initialization remains available for repositories that intentionally use committed-policy compatibility and never overwrites an existing policy.
 
+`polis plan` is read-only. It compiles the effective committed or external Project Policy and displays the policy digest, runtime, commands, gate inventory, mandatory invariants, and guarantees provided or absent. It does not execute project commands or modify the repository.
+
 ## V6 contracts
 
 - package format v3, still exactly seven regular members under `polis/`;
 - Project Policy schema v3, with explicit command environments and configurable validation reinforcement;
+- read-only execution planning with a versioned gate inventory and guarantee summary;
 - new V6 builds require locked Change Contract schema v4 created by `polis start`; schemas v1-v3 remain read-compatible for migration;
 - Evidence v2 stores bounded-output byte counts and SHA-256 digests rather than raw stdout/stderr, plus the effective validation level and complete project-gate inventory;
 - detached Ed25519 signatures authenticate exact `.polis` bytes when the consumer supplies a trusted public key;
@@ -129,4 +133,4 @@ export SONAR_TOKEN='your-token'
 ./scripts/sonar-local.sh
 ```
 
-See [POLIS Specification V6](spec/POLIS-SPEC-v6.md), [SDD-0030](docs/sdd/0030-polis-v6-mandatory-strict-development.md), and [CHANGELOG.md](CHANGELOG.md).
+See [POLIS Specification V6](spec/POLIS-SPEC-v6.md), [SDD-0030](docs/sdd/0030-polis-v6-mandatory-strict-development.md), [SDD-0033](docs/sdd/0033-execution-plan.md), and [CHANGELOG.md](CHANGELOG.md).

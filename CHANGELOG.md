@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Add the canonical V6 zero-residue workflow with explicit external Project Policy input for `polis start --policy` and `polis build --policy`, allowing target repositories to operate without a committed `.polis/policy.json`.
 - Add end-to-end zero-residue validation proving successful execution preserves `HEAD`, the real index, refs, Git configuration, linked-worktree administration, and persistent Git objects while leaving only the intended product payload.
 - Add configurable `strict`, `standard`, and `minimal` validation reinforcement levels, selective project-gate disabling, and per-execution evidence of the effective gate inventory.
+- Add the read-only `polis plan` command and `internal/policyplan` module to compile effective policies into explicit commands, gate inventories, mandatory invariants, and guarantee summaries.
 
 ### Changed
 

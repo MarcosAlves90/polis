@@ -17,6 +17,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
 	"github.com/MarcosAlves90/polis/v6/internal/policyinit"
+	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
 	"github.com/MarcosAlves90/polis/v6/internal/redcapture"
 	artifactsig "github.com/MarcosAlves90/polis/v6/internal/signature"
 )
@@ -24,11 +25,12 @@ import (
 const version = "6.0.0"
 
 const (
-	outputFormatHelp = "output format: text or json"
-	repoHelp         = "Git worktree path"
-	targetRepoHelp   = "target Git worktree path"
-	preflightLabel   = "POLIS PREFLIGHT"
-	applyLabel       = "POLIS APPLY"
+	outputFormatHelp   = "output format: text or json"
+	externalPolicyHelp = "external Project Policy schema-v3 JSON outside the worktree"
+	repoHelp           = "Git worktree path"
+	targetRepoHelp     = "target Git worktree path"
+	preflightLabel     = "POLIS PREFLIGHT"
+	applyLabel         = "POLIS APPLY"
 )
 
 const (
@@ -45,7 +47,7 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 func run(args []string, out, errOut io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errOut, "usage: polis <doctor|init|start|capture-red|verify|inspect|preflight|build|apply|sign>")
+		fmt.Fprintln(errOut, "usage: polis <doctor|init|plan|start|capture-red|verify|inspect|preflight|build|apply|sign>")
 		return exitUsage
 	}
 	switch args[0] {
@@ -53,6 +55,8 @@ func run(args []string, out, errOut io.Writer) int {
 		return runDoctor(args[1:], out, errOut)
 	case "init":
 		return runInit(args[1:], out, errOut)
+	case "plan":
+		return runPlan(args[1:], out, errOut)
 	case "start":
 		return runStart(args[1:], out, errOut)
 	case "capture-red":
@@ -231,6 +235,95 @@ func runInit(args []string, out, errOut io.Writer) int {
 	return exitPass
 }
 
+func runPlan(args []string, out, errOut io.Writer) int {
+	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	repo := fs.String("repo", ".", targetRepoHelp)
+	policy := fs.String("policy", "", externalPolicyHelp)
+	format := fs.String("format", "text", outputFormatHelp)
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 0 || !validFormat(*format) {
+		fmt.Fprintln(errOut, "usage: polis plan [--repo <path>] [--policy <policy-v3.json>] [--format text|json]")
+		return exitUsage
+	}
+	plan, err := policyplan.Load(context.Background(), policyplan.Options{Repo: *repo, Policy: *policy})
+	if err != nil {
+		return writeFailure(errOut, *format, "POLIS PLAN", exitValidationFailed, err)
+	}
+	if *format == "json" {
+		writeJSON(out, plan)
+	} else {
+		writePlanText(out, plan)
+	}
+	return exitPass
+}
+
+func writePlanText(out io.Writer, plan policyplan.Plan) {
+	writePlanSummary(out, plan)
+	writePlanGates(out, plan.Gates)
+	writePlanInvariants(out, plan.MandatoryInvariants)
+	writePlanGuarantees(out, plan.Guarantees)
+}
+
+func writePlanSummary(out io.Writer, plan policyplan.Plan) {
+	fmt.Fprintf(out, "POLIS PLAN: PASS\nPlan version: %d\nPolicy source: %s\nPolicy SHA256: %s\nPolicy schema: %d\nRuntime: %s/%s (%s)\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\n",
+		plan.PlanVersion, plan.PolicySource, plan.PolicySHA256, plan.PolicySchemaVersion, plan.Runtime.OS, plan.Runtime.Architecture, plan.Runtime.GoVersion,
+		plan.ValidationLevel, strings.Join(plan.EnabledGates, ", "), strings.Join(plan.DisabledGates, ", "))
+}
+
+func writePlanGates(out io.Writer, gates []policyplan.Gate) {
+	fmt.Fprintln(out, "Gates:")
+	for _, gate := range gates {
+		writePlanGate(out, gate)
+	}
+}
+
+func writePlanGate(out io.Writer, gate policyplan.Gate) {
+	fmt.Fprintf(out, "- %s %s (%s)", strings.ToUpper(gate.State), gate.ID, gate.Mode)
+	writePlanCommand(out, gate)
+	writePlanCoverage(out, gate)
+	if gate.Reason != nil {
+		fmt.Fprintf(out, " reason=%s", *gate.Reason)
+	}
+	fmt.Fprintln(out)
+}
+
+func writePlanCommand(out io.Writer, gate policyplan.Gate) {
+	if gate.Command == nil {
+		return
+	}
+	fmt.Fprintf(out, " argv=%q cwd=%s timeout=%ds", gate.Command.Argv, gate.Command.Cwd, gate.Command.TimeoutSeconds)
+	if gate.Command.Environment != nil {
+		fmt.Fprintf(out, " environment=%s", gate.Command.Environment.Mode)
+	}
+}
+
+func writePlanCoverage(out io.Writer, gate policyplan.Gate) {
+	if gate.Adapter == "" && gate.Report == "" && gate.Operator == "" && gate.ThresholdPercent == nil {
+		return
+	}
+	fmt.Fprintf(out, " adapter=%s report=%s operator=%s", gate.Adapter, gate.Report, gate.Operator)
+	if gate.ThresholdPercent != nil {
+		fmt.Fprintf(out, " threshold=%.2f%%", *gate.ThresholdPercent)
+	}
+}
+
+func writePlanInvariants(out io.Writer, invariants []policyplan.Invariant) {
+	fmt.Fprintln(out, "Mandatory invariants:")
+	for _, invariant := range invariants {
+		fmt.Fprintf(out, "- %s: %s\n", invariant.ID, invariant.Description)
+	}
+}
+
+func writePlanGuarantees(out io.Writer, guarantees []policyplan.Guarantee) {
+	fmt.Fprintln(out, "Guarantees:")
+	for _, guarantee := range guarantees {
+		fmt.Fprintf(out, "- %s [%s]: %s\n", guarantee.Gate, guarantee.Status, guarantee.Description)
+	}
+}
+
 func writeInitUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: polis init [--repo <path>] [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--test-argv <arg> ... --coverage-argv <arg> ... --coverage-adapter <adapter> --coverage-report <path> [--coverage-threshold <percent>]] [--dry-run]")
 }
@@ -239,7 +332,7 @@ func runStart(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	repo := fs.String("repo", "", repoHelp)
-	policy := fs.String("policy", "", "external Project Policy schema-v3 JSON outside the worktree")
+	policy := fs.String("policy", "", externalPolicyHelp)
 	contract := fs.String("contract", "", "strict schema-v3 draft Change Contract outside the worktree")
 	outPath := fs.String("out", "", "locked schema-v4 Change Contract output outside the worktree")
 	if err := fs.Parse(args); err != nil {
@@ -284,7 +377,7 @@ func runBuild(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("build", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	repo := fs.String("repo", "", repoHelp)
-	policy := fs.String("policy", "", "external Project Policy schema-v3 JSON outside the worktree")
+	policy := fs.String("policy", "", externalPolicyHelp)
 	project := fs.String("project", "", "canonical project slug")
 	change := fs.String("change", "", "canonical change slug")
 	outDir := fs.String("out", "", "output directory")

@@ -82,6 +82,12 @@ All project gates remain present in the canonical registry and each gate's mode 
 
 Validation reinforcement levels apply only to project-quality gates. They MUST NOT disable policy/contract validation, path and environment safety, baseline or exact-tree checks, required development proof, package and evidence integrity, signature checks, isolated consumer validation, or transactional apply protections.
 
+### 4.2.1 Read-only execution plan
+
+`polis plan` MUST compile the effective Project Policy without executing a project command or modifying the repository. It MUST report the policy schema, source class (`committed` or `external`), policy SHA-256, current runtime, validation level, complete ordered gate inventory, mandatory invariants, and the guarantee status for every project gate. The plan output uses `plan_version: 1` and is available as text or JSON.
+
+The policy executor MUST consume the same compiled gate plan used by `polis plan`; a gate shown as `not_applicable` in the plan MUST NOT be executed. The plan MUST NOT serialize the external policy pathname.
+
 ### 4.3 Committed-policy compatibility
 
 When `--policy` is omitted, V6 MAY retain the historical producer behavior that reads exact committed `.polis/policy.json` bytes. This exists for compatibility and self-hosting; it is not the canonical zero-residue workflow.

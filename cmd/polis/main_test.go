@@ -17,6 +17,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
 	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -156,6 +157,58 @@ func TestRunUsageAndUnknownCommand(t *testing.T) {
 		if code := run(args, &out, &errOut); code != 2 {
 			t.Fatalf("args=%v code=%d stderr=%s", args, code, errOut.String())
 		}
+	}
+}
+
+func TestRunPlanReportsEffectiveExecutionPlan(t *testing.T) {
+	repo := makeBuildRepo(t)
+	var out, errOut bytes.Buffer
+	if code := run([]string{"plan", "--repo", repo, "--format", "json"}, &out, &errOut); code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, errOut.String())
+	}
+	var plan policyplan.Plan
+	if err := json.Unmarshal(out.Bytes(), &plan); err != nil {
+		t.Fatalf("invalid plan JSON: %v\n%s", err, out.String())
+	}
+	if plan.PlanVersion != policyplan.PlanVersion || plan.PolicySource != policyplan.PolicySourceCommitted || plan.ValidationLevel != spec.ValidationLevelStrict {
+		t.Fatalf("plan metadata=%+v", plan)
+	}
+	if len(plan.Gates) != len(spec.ProjectGateOrder) || len(plan.Guarantees) != len(spec.ProjectGateOrder) || len(plan.MandatoryInvariants) == 0 {
+		t.Fatalf("plan inventory: gates=%d guarantees=%d invariants=%d", len(plan.Gates), len(plan.Guarantees), len(plan.MandatoryInvariants))
+	}
+	if plan.Gates[0].Command == nil || plan.Gates[1].Mode != spec.GateModeCoverage {
+		t.Fatalf("plan gates=%+v", plan.Gates[:2])
+	}
+
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"plan", "--repo", repo}, &out, &errOut); code != 0 {
+		t.Fatalf("text code=%d stderr=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "POLIS PLAN: PASS") || !strings.Contains(out.String(), "Mandatory invariants:") || !strings.Contains(out.String(), "Guarantees:") {
+		t.Fatalf("text plan=%q", out.String())
+	}
+}
+
+func TestRunPlanReportsExternalPolicySourceWithoutPath(t *testing.T) {
+	repo := makeBuildRepo(t)
+	policyPath := filepath.Join(t.TempDir(), "policy-v3.json")
+	if err := os.WriteFile(policyPath, canonicalPolicyBytes(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := run([]string{"plan", "--repo", repo, "--policy", policyPath, "--format", "json"}, &out, &errOut); code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, errOut.String())
+	}
+	var plan policyplan.Plan
+	if err := json.Unmarshal(out.Bytes(), &plan); err != nil {
+		t.Fatalf("invalid plan JSON: %v\n%s", err, out.String())
+	}
+	if plan.PolicySource != policyplan.PolicySourceExternal {
+		t.Fatalf("policy source=%q", plan.PolicySource)
+	}
+	if strings.Contains(out.String(), policyPath) {
+		t.Fatalf("external policy pathname leaked into plan output: %q", policyPath)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
 	"github.com/MarcosAlves90/polis/v6/internal/pathguard"
+	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -22,18 +23,18 @@ type Result struct {
 
 func Execute(policy spec.Policy, repoRoot string, evidence io.Writer) Result {
 	result := Result{Overall: spec.StatusPass, Gates: make(map[string]spec.Status, len(policy.Gates))}
-	if err := policy.Validate(); err != nil {
+	plan, err := policyplan.Compile(policy)
+	if err != nil {
 		result.Overall = spec.StatusBlocked
 		return result
 	}
 	enc := json.NewEncoder(evidence)
 	enc.SetEscapeHTML(false)
-	summary := policy.ValidationSummary()
 	_ = enc.Encode(spec.EvidenceEvent{
-		Event: "validation_configured", Gate: "policy", ValidationLevel: summary.Level,
-		EnabledGates: append([]string{}, summary.EnabledGates...), DisabledGates: append([]string{}, summary.DisabledGates...),
+		Event: "validation_configured", Gate: "policy", ValidationLevel: plan.ValidationLevel,
+		EnabledGates: append([]string{}, plan.EnabledGates...), DisabledGates: append([]string{}, plan.DisabledGates...),
 	})
-	for _, gate := range policy.Gates {
+	for _, gate := range plan.GatePolicies() {
 		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_started", Gate: gate.ID})
 		status := spec.StatusPass
 		switch gate.Mode {
