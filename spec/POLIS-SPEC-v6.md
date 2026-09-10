@@ -84,9 +84,17 @@ Validation reinforcement levels apply only to project-quality gates. They MUST N
 
 ### 4.2.1 Read-only execution plan
 
-`polis plan` MUST compile the effective Project Policy without executing a project command or modifying the repository. It MUST report the policy schema, source class (`committed` or `external`), policy SHA-256, current runtime, validation level, complete ordered gate inventory, mandatory invariants, and the guarantee status for every project gate. The plan output uses `plan_version: 1` and is available as text or JSON.
+`polis plan` MUST compile the effective Project Policy without executing a project command or modifying the repository. It MUST report the policy schema, source class (`committed` or `external`), policy SHA-256, current runtime, validation level, complete canonical gate inventory, effective dependency edges, deterministic execution order, mandatory invariants, and the guarantee status for every project gate. The plan output uses `plan_version: 1` and is available as text or JSON.
 
 The policy executor MUST consume the same compiled gate plan used by `polis plan`; a gate shown as `not_applicable` in the plan MUST NOT be executed. The plan MUST NOT serialize the external policy pathname.
+
+### 4.2.2 Policy dependency graph and lint
+
+Project Policy schema v3 MAY declare `depends_on` on any project gate. POLIS also maintains built-in essential dependencies; the current built-in edge is `coverage` depends on `test.complete`. Declared dependencies are additive and MUST NOT remove a built-in dependency. Policies that omit `depends_on` remain valid with the built-in graph applied.
+
+Before any project command executes, policy validation MUST lint the combined graph. It MUST reject unknown or missing gate IDs, self-dependencies, duplicate dependency IDs, cycles, and any enabled gate whose dependency is `not_applicable`. A disabled gate's dependencies remain structurally validated, but a disabled gate does not require its dependencies to be enabled. Invalid graphs MUST fail closed.
+
+The linter MUST produce a deterministic topological execution order. The executor MUST use that order, while plan output MUST retain the canonical gate inventory and report the effective dependency edges and execution order. Disabling a dependency removes the guarantee represented by the dependent enabled gate; it MUST never happen silently.
 
 ### 4.3 Committed-policy compatibility
 
@@ -198,7 +206,7 @@ Every requirement MUST be covered by at least one acceptance criterion, every ac
 V6 does not change:
 
 - package format v3 and its seven canonical members;
-- Project Policy schema v3 gate registry and its backward-compatible `validation_level` reinforcement setting;
+- Project Policy schema v3 gate registry, its backward-compatible `validation_level` reinforcement setting, and additive `depends_on` dependency declarations;
 - Change Contract schema v4 structure;
 - Evidence v2 package member, digest, and bounded-output contract; V6 executions additionally emit `validation_configured` with the effective level and complete project-gate inventory;
 - coverage adapters and strict `>` threshold semantics;

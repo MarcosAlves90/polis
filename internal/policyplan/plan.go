@@ -31,17 +31,19 @@ type Options struct {
 }
 
 type Plan struct {
-	PlanVersion         int         `json:"plan_version"`
-	PolicySchemaVersion int         `json:"policy_schema_version"`
-	PolicySource        string      `json:"policy_source"`
-	PolicySHA256        string      `json:"policy_sha256"`
-	Runtime             Runtime     `json:"runtime"`
-	ValidationLevel     string      `json:"validation_level"`
-	EnabledGates        []string    `json:"enabled_gates"`
-	DisabledGates       []string    `json:"disabled_gates"`
-	Gates               []Gate      `json:"gates"`
-	MandatoryInvariants []Invariant `json:"mandatory_invariants"`
-	Guarantees          []Guarantee `json:"guarantees"`
+	PlanVersion         int                     `json:"plan_version"`
+	PolicySchemaVersion int                     `json:"policy_schema_version"`
+	PolicySource        string                  `json:"policy_source"`
+	PolicySHA256        string                  `json:"policy_sha256"`
+	Runtime             Runtime                 `json:"runtime"`
+	ValidationLevel     string                  `json:"validation_level"`
+	EnabledGates        []string                `json:"enabled_gates"`
+	DisabledGates       []string                `json:"disabled_gates"`
+	DependencyEdges     []spec.PolicyDependency `json:"dependency_edges"`
+	ExecutionOrder      []string                `json:"execution_order"`
+	Gates               []Gate                  `json:"gates"`
+	MandatoryInvariants []Invariant             `json:"mandatory_invariants"`
+	Guarantees          []Guarantee             `json:"guarantees"`
 	gatePolicies        []spec.GatePolicy
 }
 
@@ -57,6 +59,7 @@ type Gate struct {
 	Mode             string            `json:"mode"`
 	Command          *spec.CommandSpec `json:"command,omitempty"`
 	Reason           *string           `json:"reason,omitempty"`
+	DependsOn        []string          `json:"depends_on,omitempty"`
 	Adapter          string            `json:"adapter,omitempty"`
 	Report           string            `json:"report,omitempty"`
 	Operator         string            `json:"operator,omitempty"`
@@ -102,22 +105,40 @@ func Compile(policy spec.Policy) (Plan, error) {
 	if err := policy.Validate(); err != nil {
 		return Plan{}, fmt.Errorf("compile execution plan: %w", err)
 	}
+	lint := spec.LintPolicy(policy)
+	if err := lint.Err(); err != nil {
+		return Plan{}, fmt.Errorf("compile execution plan: %w", err)
+	}
 	summary := policy.ValidationSummary()
+	dependencies := make(map[string][]string, len(policy.Gates))
+	for _, edge := range lint.Dependencies {
+		dependencies[edge.Gate] = append(dependencies[edge.Gate], edge.DependsOn)
+	}
 	plan := Plan{
 		PlanVersion:         PlanVersion,
 		PolicySchemaVersion: policy.SchemaVersion,
 		ValidationLevel:     summary.Level,
 		EnabledGates:        append([]string{}, summary.EnabledGates...),
 		DisabledGates:       append([]string{}, summary.DisabledGates...),
+		DependencyEdges:     append([]spec.PolicyDependency{}, lint.Dependencies...),
+		ExecutionOrder:      append([]string{}, lint.ExecutionOrder...),
 		Gates:               make([]Gate, 0, len(policy.Gates)),
 		MandatoryInvariants: mandatoryInvariants(),
 		Guarantees:          make([]Guarantee, 0, len(policy.Gates)),
 		gatePolicies:        make([]spec.GatePolicy, 0, len(policy.Gates)),
 	}
 	for _, policyGate := range policy.Gates {
-		plan.Gates = append(plan.Gates, describeGate(policyGate))
+		plan.Gates = append(plan.Gates, describeGate(policyGate, dependencies[policyGate.ID]))
 		plan.Guarantees = append(plan.Guarantees, describeGuarantee(policyGate))
-		plan.gatePolicies = append(plan.gatePolicies, cloneGatePolicy(policyGate))
+	}
+	gateByID := make(map[string]spec.GatePolicy, len(policy.Gates))
+	for _, policyGate := range policy.Gates {
+		gateByID[policyGate.ID] = policyGate
+	}
+	for _, gateID := range lint.ExecutionOrder {
+		gate := cloneGatePolicy(gateByID[gateID])
+		gate.DependsOn = append([]string{}, dependencies[gateID]...)
+		plan.gatePolicies = append(plan.gatePolicies, gate)
 	}
 	return plan, nil
 }
@@ -139,7 +160,7 @@ func loadPolicy(ctx context.Context, root, policyPath string) ([]byte, spec.Poli
 	return raw, policy, PolicySourceCommitted, err
 }
 
-func describeGate(policyGate spec.GatePolicy) Gate {
+func describeGate(policyGate spec.GatePolicy, dependencies []string) Gate {
 	state := GateStateEnabled
 	if policyGate.Mode == spec.GateModeNotApplicable {
 		state = GateStateDisabled
@@ -150,6 +171,7 @@ func describeGate(policyGate spec.GatePolicy) Gate {
 		Mode:             policyGate.Mode,
 		Command:          cloneCommand(policyGate.Command),
 		Reason:           cloneString(policyGate.Reason),
+		DependsOn:        append([]string{}, dependencies...),
 		Adapter:          policyGate.Adapter,
 		Report:           policyGate.Report,
 		Operator:         policyGate.Operator,
@@ -187,6 +209,7 @@ func cloneGatePolicy(gate spec.GatePolicy) spec.GatePolicy {
 	copy := gate
 	copy.Command = cloneCommand(gate.Command)
 	copy.Reason = cloneString(gate.Reason)
+	copy.DependsOn = append([]string{}, gate.DependsOn...)
 	copy.ThresholdPercent = cloneFloat(gate.ThresholdPercent)
 	return copy
 }

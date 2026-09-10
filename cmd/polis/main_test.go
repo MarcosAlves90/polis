@@ -176,6 +176,9 @@ func TestRunPlanReportsEffectiveExecutionPlan(t *testing.T) {
 	if len(plan.Gates) != len(spec.ProjectGateOrder) || len(plan.Guarantees) != len(spec.ProjectGateOrder) || len(plan.MandatoryInvariants) == 0 {
 		t.Fatalf("plan inventory: gates=%d guarantees=%d invariants=%d", len(plan.Gates), len(plan.Guarantees), len(plan.MandatoryInvariants))
 	}
+	if len(plan.DependencyEdges) != 1 || len(plan.ExecutionOrder) != len(spec.ProjectGateOrder) {
+		t.Fatalf("plan dependencies: edges=%v order=%v", plan.DependencyEdges, plan.ExecutionOrder)
+	}
 	if plan.Gates[0].Command == nil || plan.Gates[1].Mode != spec.GateModeCoverage {
 		t.Fatalf("plan gates=%+v", plan.Gates[:2])
 	}
@@ -185,7 +188,7 @@ func TestRunPlanReportsEffectiveExecutionPlan(t *testing.T) {
 	if code := run([]string{"plan", "--repo", repo}, &out, &errOut); code != 0 {
 		t.Fatalf("text code=%d stderr=%s", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "POLIS PLAN: PASS") || !strings.Contains(out.String(), "Mandatory invariants:") || !strings.Contains(out.String(), "Guarantees:") {
+	if !strings.Contains(out.String(), "POLIS PLAN: PASS") || !strings.Contains(out.String(), "Dependency edges:") || !strings.Contains(out.String(), "Mandatory invariants:") || !strings.Contains(out.String(), "Guarantees:") {
 		t.Fatalf("text plan=%q", out.String())
 	}
 }

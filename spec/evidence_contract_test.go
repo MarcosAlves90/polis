@@ -35,8 +35,12 @@ func passCommandEvent(gate string, cmd CommandSpec, status Status, exit int, std
 
 func validPassEvidence(t *testing.T, defect bool) ([]EvidenceEvent, ChangeContract, Policy) {
 	t.Helper()
+	return validPassEvidenceForPolicy(t, defect, policyForEvidence(t))
+}
+
+func validPassEvidenceForPolicy(t *testing.T, defect bool, p Policy) ([]EvidenceEvent, ChangeContract, Policy) {
+	t.Helper()
 	c := contractForEvidence(t, defect)
-	p := policyForEvidence(t)
 	events := []EvidenceEvent{}
 	if defect {
 		events = append(events, EvidenceEvent{Event: "gate_started", Gate: "regression"}, passCommandEvent("regression", *c.Regression.Command, StatusFail, *c.Regression.BaselineExitCode, "BUG-RED"), EvidenceEvent{Event: "gate_finished", Gate: "regression", Status: StatusPass})
@@ -51,7 +55,7 @@ func validPassEvidence(t *testing.T, defect bool) ([]EvidenceEvent, ChangeContra
 	}{{"behavior", c.Behavior}, {"affected", c.Affected}} {
 		events = append(events, EvidenceEvent{Event: "gate_started", Gate: x.g}, passCommandEvent(x.g, x.c, StatusPass, 0, ""), EvidenceEvent{Event: "gate_finished", Gate: x.g, Status: StatusPass})
 	}
-	for _, g := range p.Gates {
+	for _, g := range policyGatesInExecutionOrder(t, p) {
 		events = append(events, EvidenceEvent{Event: "gate_started", Gate: g.ID})
 		switch g.Mode {
 		case GateModeNotApplicable:
@@ -68,12 +72,46 @@ func validPassEvidence(t *testing.T, defect bool) ([]EvidenceEvent, ChangeContra
 	return events, c, p
 }
 
+func policyGatesInExecutionOrder(t *testing.T, policy Policy) []GatePolicy {
+	t.Helper()
+	lint := LintPolicy(policy)
+	if err := lint.Err(); err != nil {
+		t.Fatal(err)
+	}
+	gates := make(map[string]GatePolicy, len(policy.Gates))
+	for _, gate := range policy.Gates {
+		gates[gate.ID] = gate
+	}
+	ordered := make([]GatePolicy, 0, len(lint.ExecutionOrder))
+	for _, gateID := range lint.ExecutionOrder {
+		ordered = append(ordered, gates[gateID])
+	}
+	return ordered
+}
+
 func TestValidatePassEvidenceAcceptsFeatureAndDefect(t *testing.T) {
 	for _, defect := range []bool{false, true} {
 		events, c, p := validPassEvidence(t, defect)
 		if err := ValidatePassEvidence(events, c, p); err != nil {
 			t.Fatalf("defect=%v: %v", defect, err)
 		}
+	}
+}
+
+func TestValidatePassEvidenceFollowsPolicyDependencyOrder(t *testing.T) {
+	p := decodeDependencyPolicy(t, ValidationLevelStandard, GateModeCommand, GateModeNotApplicable)
+	p.Gates[2] = GatePolicy{ID: "lint", Mode: GateModeCommand, Command: dependencyCommand("true"), DependsOn: []string{"build"}}
+	p.Gates[4] = GatePolicy{ID: "build", Mode: GateModeCommand, Command: dependencyCommand("true")}
+	events, c, p := validPassEvidenceForPolicy(t, false, p)
+	summary := p.ValidationSummary()
+	configuration := EvidenceEvent{Event: "validation_configured", Gate: "policy", ValidationLevel: summary.Level, EnabledGates: summary.EnabledGates, DisabledGates: summary.DisabledGates}
+	insertAt := eventIndex(events, "gate_started", "test.complete", 0)
+	events = append(events[:insertAt], append([]EvidenceEvent{configuration}, events[insertAt:]...)...)
+	if eventIndex(events, "gate_started", "build", 0) > eventIndex(events, "gate_started", "lint", 0) {
+		t.Fatalf("dependency order was not emitted: %v", events)
+	}
+	if err := ValidatePassEvidence(events, c, p); err != nil {
+		t.Fatalf("dependency-ordered evidence rejected: %v", err)
 	}
 }
 

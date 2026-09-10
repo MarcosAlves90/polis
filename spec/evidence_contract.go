@@ -243,7 +243,19 @@ func (v *evidenceValidator) expectPassFinish(gate string) error {
 }
 
 func (v *evidenceValidator) validateProjectGates(policy Policy) error {
+	lint := LintPolicy(policy)
+	if err := lint.Err(); err != nil {
+		return err
+	}
+	gates := make(map[string]GatePolicy, len(policy.Gates))
 	for _, gate := range policy.Gates {
+		gates[gate.ID] = gate
+	}
+	for _, gateID := range lint.ExecutionOrder {
+		gate, ok := gates[gateID]
+		if !ok {
+			return fmt.Errorf("policy execution order references missing gate %s", gateID)
+		}
 		if err := v.expectProjectGateStart(gate.ID); err != nil {
 			return err
 		}

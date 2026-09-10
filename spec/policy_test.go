@@ -40,6 +40,7 @@ func TestDecodePolicyRejectsAlpha1AndUnknownFields(t *testing.T) {
 		`{"schema_version":1,"gates":["integrity"]}`,
 		strings.Replace(canonicalPolicyJSON(), `"schema_version":2`, `"schema_version":2,"extra":true`, 1),
 		strings.Replace(canonicalPolicyJSON(), `"timeout_seconds":1200`, `"timeout_seconds":1200,"extra":true`, 1),
+		strings.Replace(canonicalPolicyJSON(), `"timeout_seconds":1200}`, `"timeout_seconds":1200,"depends_on":[]}`, 1),
 	}
 	for _, raw := range cases {
 		if _, err := DecodePolicy([]byte(raw)); err == nil {
@@ -152,6 +153,84 @@ func TestDecodePolicyAcceptsMinimalLevelWithRequiredProjectGatesDisabled(t *test
 	}
 }
 
+func TestDecodePolicyRejectsEnabledGateWithDisabledDependency(t *testing.T) {
+	policy, err := DecodePolicy(configurablePolicyJSON(ValidationLevelMinimal, GateModeNotApplicable, GateModeNotApplicable))
+	if err != nil {
+		t.Fatal(err)
+	}
+	threshold := 80.0
+	policy.Gates[1] = GatePolicy{
+		ID: "coverage", Mode: GateModeCoverage, Command: dependencyCommand("true"),
+		Adapter: CoverageAdapterGoCoverProfileV1, Report: "coverage.out", Operator: CoverageOperatorGreaterThan, ThresholdPercent: &threshold,
+	}
+	if err := policy.Validate(); err == nil || !strings.Contains(err.Error(), "enabled gate \"coverage\" depends on disabled gate \"test.complete\"") {
+		t.Fatalf("expected disabled dependency rejection, got %v", err)
+	}
+}
+
+func TestLintPolicyReportsDependenciesAndExecutionOrder(t *testing.T) {
+	policy := decodeDependencyPolicy(t, ValidationLevelStandard, GateModeCommand, GateModeNotApplicable)
+	policy.Gates[4] = GatePolicy{ID: "build", Mode: GateModeCommand, Command: dependencyCommand("go", "build", "./..."), DependsOn: []string{"test.complete"}}
+	if err := policy.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	report := LintPolicy(policy)
+	if len(report.Dependencies) != 2 || report.Dependencies[0] != (PolicyDependency{Gate: "coverage", DependsOn: "test.complete"}) || report.Dependencies[1] != (PolicyDependency{Gate: "build", DependsOn: "test.complete"}) {
+		t.Fatalf("dependencies=%v", report.Dependencies)
+	}
+	if len(report.ExecutionOrder) != len(ProjectGateOrder) || indexOfGate(report.ExecutionOrder, "test.complete") > indexOfGate(report.ExecutionOrder, "build") {
+		t.Fatalf("execution order=%v", report.ExecutionOrder)
+	}
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodePolicy(raw)
+	if err != nil {
+		t.Fatalf("dependency round trip: err=%v", err)
+	}
+	if len(decoded.Gates) <= 4 || len(decoded.Gates[4].DependsOn) != 1 || decoded.Gates[4].DependsOn[0] != "test.complete" {
+		t.Fatalf("dependency round trip: policy=%+v", decoded)
+	}
+}
+
+func TestLintPolicyRejectsUnknownSelfAndCyclicDependencies(t *testing.T) {
+	cases := []struct {
+		name     string
+		mutate   func(Policy) Policy
+		wantCode string
+	}{
+		{name: "unknown", wantCode: "unknown_dependency", mutate: func(policy Policy) Policy {
+			policy.Gates[2].DependsOn = []string{"missing"}
+			return policy
+		}},
+		{name: "self", wantCode: "self_dependency", mutate: func(policy Policy) Policy {
+			policy.Gates[2].DependsOn = []string{"lint"}
+			return policy
+		}},
+		{name: "duplicate", wantCode: "duplicate_dependency", mutate: func(policy Policy) Policy {
+			policy.Gates[2].DependsOn = []string{"build", "build"}
+			return policy
+		}},
+		{name: "cycle", wantCode: "dependency_cycle", mutate: func(policy Policy) Policy {
+			policy.Gates[2].DependsOn = []string{"build"}
+			policy.Gates[4].DependsOn = []string{"lint"}
+			return policy
+		}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			report := LintPolicy(tt.mutate(decodeDependencyPolicy(t, ValidationLevelStandard, GateModeCommand, GateModeNotApplicable)))
+			for _, issue := range report.Issues {
+				if issue.Code == tt.wantCode {
+					return
+				}
+			}
+			t.Fatalf("issues=%v", report.Issues)
+		})
+	}
+}
+
 func TestDecodePolicyRejectsIncompatibleValidationLevels(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -207,4 +286,26 @@ func configurablePolicyJSON(level, testMode, coverageMode string) []byte {
 		panic(err)
 	}
 	return raw
+}
+
+func decodeDependencyPolicy(t *testing.T, level, testMode, coverageMode string) Policy {
+	t.Helper()
+	policy, err := DecodePolicy(configurablePolicyJSON(level, testMode, coverageMode))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return policy
+}
+
+func dependencyCommand(argv ...string) *CommandSpec {
+	return &CommandSpec{Argv: argv, Cwd: ".", TimeoutSeconds: 60, Environment: &EnvironmentSpec{Mode: EnvironmentModeInherit}}
+}
+
+func indexOfGate(gates []string, wanted string) int {
+	for i, gate := range gates {
+		if gate == wanted {
+			return i
+		}
+	}
+	return len(gates)
 }

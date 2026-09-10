@@ -20,6 +20,7 @@ The `internal/policyplan` module exposes two seams:
 - `plan_version: 1`, policy schema version, source class, SHA-256 digest, and runtime;
 - the effective validation level and complete enabled/disabled gate inventories;
 - ordered gate descriptions with argv, working directory, timeout, environment mode, coverage metadata, and explicit disabled-gate reasons;
+- effective dependency edges and the deterministic topological execution order;
 - mandatory invariants that remain outside validation-level reduction;
 - guarantee status for every project gate (`provided` or `not_provided`).
 
@@ -35,14 +36,15 @@ The command is read-only. With no `--policy`, it loads the committed policy for 
 
 ## Reuse by execution
 
-`internal/policyexec` compiles the same `Plan` before emitting `validation_configured` and executes the gate policies returned by that plan. A gate represented as `not_applicable` is never passed to the command executor.
+`internal/policyexec` compiles the same `Plan` before emitting `validation_configured` and executes the gate policies returned by that plan in the plan's deterministic topological order. A gate represented as `not_applicable` is never passed to the command executor.
 
 ## Safety and compatibility
 
 - Invalid policies fail closed during plan compilation.
+- A policy dependency on an unknown, missing, self, cyclic, or disabled gate fails closed before project commands run.
 - `polis plan` performs no project-command execution and no repository mutation.
 - Policy, contract, command-safety, baseline, development-proof, package/evidence-integrity, signature, isolation, and transactional-apply invariants remain mandatory.
-- Existing policy and package schemas are unchanged; a missing `validation_level` continues to resolve to `strict`.
+- The package schema remains unchanged; Project Policy schema v3 gains only the optional `depends_on` field, so existing policies without it remain valid. A missing `validation_level` continues to resolve to `strict`, and the built-in `coverage` dependency on `test.complete` remains effective.
 - Disabled project gates are explicit and each missing project-quality guarantee is reported as `not_provided`.
 
 ## Validation

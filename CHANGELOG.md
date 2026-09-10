@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Add policy dependency graph linting with explicit `depends_on` edges, built-in essential dependencies, deterministic topological execution order, and fail-closed rejection of disabled dependencies.
+
 ## [6.1.0] - 2026-09-09
 
 ### Added

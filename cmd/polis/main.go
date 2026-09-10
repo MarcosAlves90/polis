@@ -20,6 +20,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
 	"github.com/MarcosAlves90/polis/v6/internal/redcapture"
 	artifactsig "github.com/MarcosAlves90/polis/v6/internal/signature"
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 const version = "6.1.0"
@@ -262,9 +263,18 @@ func runPlan(args []string, out, errOut io.Writer) int {
 
 func writePlanText(out io.Writer, plan policyplan.Plan) {
 	writePlanSummary(out, plan)
+	writePlanDependencies(out, plan.DependencyEdges, plan.ExecutionOrder)
 	writePlanGates(out, plan.Gates)
 	writePlanInvariants(out, plan.MandatoryInvariants)
 	writePlanGuarantees(out, plan.Guarantees)
+}
+
+func writePlanDependencies(out io.Writer, dependencies []spec.PolicyDependency, executionOrder []string) {
+	fmt.Fprintln(out, "Dependency edges:")
+	for _, dependency := range dependencies {
+		fmt.Fprintf(out, "- %s -> %s\n", dependency.DependsOn, dependency.Gate)
+	}
+	fmt.Fprintf(out, "Execution order: %s\n", strings.Join(executionOrder, ", "))
 }
 
 func writePlanSummary(out io.Writer, plan policyplan.Plan) {

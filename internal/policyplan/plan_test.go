@@ -54,6 +54,12 @@ func assertPlanInventory(t *testing.T, plan Plan) {
 	if len(plan.Gates) != len(spec.ProjectGateOrder) || len(plan.Guarantees) != len(spec.ProjectGateOrder) {
 		t.Fatalf("gates=%d guarantees=%d", len(plan.Gates), len(plan.Guarantees))
 	}
+	if len(plan.DependencyEdges) != 1 || plan.DependencyEdges[0].Gate != "coverage" || plan.DependencyEdges[0].DependsOn != "test.complete" {
+		t.Fatalf("dependency edges=%v", plan.DependencyEdges)
+	}
+	if len(plan.ExecutionOrder) != len(spec.ProjectGateOrder) || plan.ExecutionOrder[0] != "test.complete" {
+		t.Fatalf("execution order=%v", plan.ExecutionOrder)
+	}
 }
 
 func assertPlanGateDetails(t *testing.T, plan Plan) {
@@ -63,6 +69,9 @@ func assertPlanGateDetails(t *testing.T, plan Plan) {
 	}
 	if plan.Gates[1].State != GateStateDisabled || plan.Gates[1].Command != nil || plan.Gates[1].Reason == nil {
 		t.Fatalf("coverage gate=%+v", plan.Gates[1])
+	}
+	if len(plan.Gates[1].DependsOn) != 1 || plan.Gates[1].DependsOn[0] != "test.complete" {
+		t.Fatalf("coverage dependencies=%v", plan.Gates[1].DependsOn)
 	}
 }
 
@@ -84,8 +93,12 @@ func assertPlanIsDefensivelyCopied(t *testing.T, plan Plan) {
 	t.Helper()
 	policies := plan.GatePolicies()
 	policies[0].Command.Argv[0] = "mutated"
+	policies[1].DependsOn[0] = "mutated"
 	if got := plan.GatePolicies()[0].Command.Argv[0]; got == "mutated" {
 		t.Fatal("plan exposed mutable gate policy state")
+	}
+	if got := plan.GatePolicies()[1].DependsOn[0]; got == "mutated" {
+		t.Fatal("plan exposed mutable dependency state")
 	}
 }
 

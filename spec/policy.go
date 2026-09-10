@@ -89,6 +89,7 @@ type GatePolicy struct {
 	Mode             string       `json:"mode"`
 	Command          *CommandSpec `json:"command,omitempty"`
 	Reason           *string      `json:"reason,omitempty"`
+	DependsOn        []string     `json:"depends_on,omitempty"`
 	Adapter          string       `json:"adapter,omitempty"`
 	Report           string       `json:"report,omitempty"`
 	Operator         string       `json:"operator,omitempty"`
@@ -99,6 +100,39 @@ type Policy struct {
 	SchemaVersion   int          `json:"schema_version"`
 	ValidationLevel string       `json:"validation_level,omitempty"`
 	Gates           []GatePolicy `json:"gates"`
+}
+
+type PolicyDependency struct {
+	Gate      string `json:"gate"`
+	DependsOn string `json:"depends_on"`
+}
+
+type PolicyLintIssue struct {
+	Code      string `json:"code"`
+	Gate      string `json:"gate,omitempty"`
+	DependsOn string `json:"depends_on,omitempty"`
+	Message   string `json:"message"`
+}
+
+type PolicyLintReport struct {
+	Dependencies   []PolicyDependency `json:"dependencies"`
+	ExecutionOrder []string           `json:"execution_order"`
+	Issues         []PolicyLintIssue  `json:"issues,omitempty"`
+}
+
+func (r PolicyLintReport) Valid() bool {
+	return len(r.Issues) == 0
+}
+
+func (r PolicyLintReport) Err() error {
+	if r.Valid() {
+		return nil
+	}
+	messages := make([]string, 0, len(r.Issues))
+	for _, issue := range r.Issues {
+		messages = append(messages, issue.Message)
+	}
+	return errors.New("policy dependency lint: " + strings.Join(messages, "; "))
 }
 
 type rawPolicy struct {
@@ -173,7 +207,7 @@ func decodeGateFields(raw json.RawMessage) (map[string]json.RawMessage, error) {
 	}
 	allowed := map[string]struct{}{
 		"id": {}, "mode": {}, "command": {}, "reason": {}, "adapter": {},
-		"report": {}, "operator": {}, "threshold_percent": {},
+		"report": {}, "operator": {}, "threshold_percent": {}, "depends_on": {},
 	}
 	for key := range fields {
 		if _, ok := allowed[key]; !ok {
@@ -209,7 +243,7 @@ func decodeGateModeFields(gate *GatePolicy, fields map[string]json.RawMessage) e
 }
 
 func decodeCommandGate(gate *GatePolicy, fields map[string]json.RawMessage) error {
-	if len(fields) != 3 {
+	if len(fields) != 3+dependencyFieldCount(fields) {
 		return errors.New("command gate must contain exactly id, mode, command")
 	}
 	cmd, err := requiredCommand(fields)
@@ -217,11 +251,11 @@ func decodeCommandGate(gate *GatePolicy, fields map[string]json.RawMessage) erro
 		return err
 	}
 	gate.Command = &cmd
-	return nil
+	return decodeDependencies(gate, fields)
 }
 
 func decodeCoverageGate(gate *GatePolicy, fields map[string]json.RawMessage) error {
-	if len(fields) != 7 {
+	if len(fields) != 7+dependencyFieldCount(fields) {
 		return errors.New("coverage gate must contain exactly id, mode, command, adapter, report, operator, threshold_percent")
 	}
 	cmd, err := requiredCommand(fields)
@@ -232,7 +266,10 @@ func decodeCoverageGate(gate *GatePolicy, fields map[string]json.RawMessage) err
 	if err := decodeCoverageStrings(gate, fields); err != nil {
 		return err
 	}
-	return decodeCoverageThreshold(gate, fields)
+	if err := decodeCoverageThreshold(gate, fields); err != nil {
+		return err
+	}
+	return decodeDependencies(gate, fields)
 }
 
 func decodeCoverageStrings(gate *GatePolicy, fields map[string]json.RawMessage) error {
@@ -256,7 +293,7 @@ func decodeCoverageThreshold(gate *GatePolicy, fields map[string]json.RawMessage
 }
 
 func decodeNotApplicableGate(gate *GatePolicy, fields map[string]json.RawMessage) error {
-	if len(fields) != 3 {
+	if len(fields) != 3+dependencyFieldCount(fields) {
 		return errors.New("not_applicable gate must contain exactly id, mode, reason")
 	}
 	rawReason, ok := fields["reason"]
@@ -268,6 +305,29 @@ func decodeNotApplicableGate(gate *GatePolicy, fields map[string]json.RawMessage
 		return errors.New("reason must be a string")
 	}
 	gate.Reason = &reason
+	return decodeDependencies(gate, fields)
+}
+
+func dependencyFieldCount(fields map[string]json.RawMessage) int {
+	if _, ok := fields["depends_on"]; ok {
+		return 1
+	}
+	return 0
+}
+
+func decodeDependencies(gate *GatePolicy, fields map[string]json.RawMessage) error {
+	raw, ok := fields["depends_on"]
+	if !ok {
+		return nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return errors.New("depends_on must be an array of strings")
+	}
+	var dependencies []string
+	if err := json.Unmarshal(raw, &dependencies); err != nil {
+		return errors.New("depends_on must be an array of strings")
+	}
+	gate.DependsOn = dependencies
 	return nil
 }
 
@@ -314,7 +374,7 @@ func (p Policy) Validate() error {
 			return err
 		}
 	}
-	return nil
+	return LintPolicy(p).Err()
 }
 
 func (p Policy) EffectiveValidationLevel() string {
@@ -331,6 +391,127 @@ func ValidateValidationLevel(level string) error {
 	default:
 		return fmt.Errorf("unsupported validation_level %q", level)
 	}
+}
+
+func LintPolicy(policy Policy) PolicyLintReport {
+	report := PolicyLintReport{
+		Dependencies:   make([]PolicyDependency, 0),
+		ExecutionOrder: make([]string, 0, len(policy.Gates)),
+		Issues:         make([]PolicyLintIssue, 0),
+	}
+	gates := make(map[string]GatePolicy, len(policy.Gates))
+	for _, gate := range policy.Gates {
+		gates[gate.ID] = gate
+	}
+	indegree, dependents := buildPolicyDependencyGraph(gates, &report)
+	report.ExecutionOrder = topologicalPolicyOrder(gates, indegree, dependents)
+	if len(report.ExecutionOrder) != len(gates) {
+		appendPolicyLintIssue(&report, "dependency_cycle", "", "", "policy dependency graph contains a cycle")
+	}
+	return report
+}
+
+func buildPolicyDependencyGraph(gates map[string]GatePolicy, report *PolicyLintReport) (map[string]int, map[string][]string) {
+	indegree := make(map[string]int, len(gates))
+	dependents := make(map[string][]string, len(gates))
+	for _, gateID := range ProjectGateOrder {
+		gate, ok := gates[gateID]
+		if !ok {
+			continue
+		}
+		indegree[gateID] = 0
+		lintGateDependencies(gate, gates, report, indegree, dependents)
+	}
+	return indegree, dependents
+}
+
+func lintGateDependencies(gate GatePolicy, gates map[string]GatePolicy, report *PolicyLintReport, indegree map[string]int, dependents map[string][]string) {
+	dependencies := policyDependencies(gate)
+	lintDeclaredDependencyDuplicates(gate, report)
+	seen := make(map[string]struct{}, len(dependencies))
+	for _, dependency := range dependencies {
+		if _, duplicate := seen[dependency]; duplicate {
+			continue
+		}
+		seen[dependency] = struct{}{}
+		if !lintPolicyDependency(gate, dependency, gates, report) {
+			continue
+		}
+		indegree[gate.ID]++
+		dependents[dependency] = append(dependents[dependency], gate.ID)
+	}
+}
+
+func lintDeclaredDependencyDuplicates(gate GatePolicy, report *PolicyLintReport) {
+	seen := make(map[string]struct{}, len(gate.DependsOn))
+	for _, dependency := range gate.DependsOn {
+		if _, duplicate := seen[dependency]; duplicate {
+			appendPolicyLintIssue(report, "duplicate_dependency", gate.ID, dependency, fmt.Sprintf("gate %q declares dependency %q more than once", gate.ID, dependency))
+			continue
+		}
+		seen[dependency] = struct{}{}
+	}
+}
+
+func policyDependencies(gate GatePolicy) []string {
+	return append(builtInPolicyDependencies(gate.ID), gate.DependsOn...)
+}
+
+func lintPolicyDependency(gate GatePolicy, dependency string, gates map[string]GatePolicy, report *PolicyLintReport) bool {
+	if !IsProjectGate(dependency) {
+		appendPolicyLintIssue(report, "unknown_dependency", gate.ID, dependency, fmt.Sprintf("gate %q depends on unknown gate %q", gate.ID, dependency))
+		return false
+	}
+	if dependency == gate.ID {
+		appendPolicyLintIssue(report, "self_dependency", gate.ID, dependency, fmt.Sprintf("gate %q cannot depend on itself", gate.ID))
+		return false
+	}
+	dependencyGate, exists := gates[dependency]
+	if !exists {
+		appendPolicyLintIssue(report, "unknown_dependency", gate.ID, dependency, fmt.Sprintf("gate %q depends on gate %q which is missing from the policy", gate.ID, dependency))
+		return false
+	}
+	report.Dependencies = append(report.Dependencies, PolicyDependency{Gate: gate.ID, DependsOn: dependency})
+	if gate.Mode != GateModeNotApplicable && dependencyGate.Mode == GateModeNotApplicable {
+		appendPolicyLintIssue(report, "disabled_dependency", gate.ID, dependency, fmt.Sprintf("enabled gate %q depends on disabled gate %q", gate.ID, dependency))
+	}
+	return true
+}
+
+func builtInPolicyDependencies(gateID string) []string {
+	if gateID == "coverage" {
+		return []string{"test.complete"}
+	}
+	return nil
+}
+
+func appendPolicyLintIssue(report *PolicyLintReport, code, gate, dependency, message string) {
+	report.Issues = append(report.Issues, PolicyLintIssue{Code: code, Gate: gate, DependsOn: dependency, Message: message})
+}
+
+func topologicalPolicyOrder(gates map[string]GatePolicy, indegree map[string]int, dependents map[string][]string) []string {
+	order := make([]string, 0, len(gates))
+	emitted := make(map[string]struct{}, len(gates))
+	for len(order) < len(gates) {
+		var next string
+		for _, gateID := range ProjectGateOrder {
+			if _, exists := gates[gateID]; exists && indegree[gateID] == 0 {
+				if _, alreadyEmitted := emitted[gateID]; !alreadyEmitted {
+					next = gateID
+					break
+				}
+			}
+		}
+		if next == "" {
+			break
+		}
+		emitted[next] = struct{}{}
+		order = append(order, next)
+		for _, dependent := range dependents[next] {
+			indegree[dependent]--
+		}
+	}
+	return order
 }
 
 type ValidationSummary struct {
@@ -359,6 +540,9 @@ func validatePolicyGateAt(index int, expectedID string, gate GatePolicy, schemaV
 	if gate.ID != expectedID {
 		return fmt.Errorf("gate %d must be %q, got %q", index, expectedID, gate.ID)
 	}
+	if schemaVersion < PolicySchemaVersion && gate.DependsOn != nil {
+		return fmt.Errorf("gate %q: policy schema v%d does not support depends_on", gate.ID, schemaVersion)
+	}
 	if err := gate.Validate(); err != nil {
 		return fmt.Errorf("gate %q: %w", gate.ID, err)
 	}
@@ -381,6 +565,9 @@ func validatePolicyGateAt(index int, expectedID string, gate GatePolicy, schemaV
 }
 
 func (g GatePolicy) Validate() error {
+	if err := g.validateDependencies(); err != nil {
+		return err
+	}
 	switch g.Mode {
 	case GateModeCommand:
 		return g.validateCommandMode()
@@ -391,6 +578,20 @@ func (g GatePolicy) Validate() error {
 	default:
 		return fmt.Errorf("unknown mode %q", g.Mode)
 	}
+}
+
+func (g GatePolicy) validateDependencies() error {
+	seen := make(map[string]struct{}, len(g.DependsOn))
+	for i, dependency := range g.DependsOn {
+		if strings.TrimSpace(dependency) == "" {
+			return fmt.Errorf("depends_on[%d] must be a non-empty gate id", i)
+		}
+		if _, duplicate := seen[dependency]; duplicate {
+			return fmt.Errorf("depends_on contains duplicate gate %q", dependency)
+		}
+		seen[dependency] = struct{}{}
+	}
+	return nil
 }
 
 func (g GatePolicy) validateCommandMode() error {

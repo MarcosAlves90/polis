@@ -136,6 +136,31 @@ func TestExecuteDoesNotRunDisabledCoverageGate(t *testing.T) {
 	}
 }
 
+func TestExecuteRejectsEnabledGateWithDisabledDependencyBeforeCommands(t *testing.T) {
+	policy := testPolicy(t, "pass")
+	policy.SchemaVersion = spec.PolicySchemaVersion
+	policy.ValidationLevel = spec.ValidationLevelMinimal
+	for _, gate := range policy.Gates {
+		if gate.Command != nil {
+			gate.Command.Environment = &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+		}
+	}
+	reason := "test execution is disabled for this context"
+	policy.Gates[0] = spec.GatePolicy{ID: "test.complete", Mode: spec.GateModeNotApplicable, Reason: &reason}
+	root := t.TempDir()
+	var evidence bytes.Buffer
+	result := Execute(policy, root, &evidence)
+	if result.Overall != spec.StatusBlocked {
+		t.Fatalf("overall=%s evidence=%s", result.Overall, evidence.String())
+	}
+	if evidence.Len() != 0 {
+		t.Fatalf("invalid dependency produced execution evidence: %s", evidence.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "coverage.out")); !os.IsNotExist(err) {
+		t.Fatalf("coverage command ran despite disabled dependency: err=%v", err)
+	}
+}
+
 func TestExecuteRecordsEmptyEnabledInventoryForMinimalPolicy(t *testing.T) {
 	policy := testPolicy(t, "pass")
 	policy.SchemaVersion = spec.PolicySchemaVersion

@@ -63,14 +63,16 @@ Each repeated argv flag contributes exactly one argument; POLIS does not synthes
 
 Project Policy also supports explicit validation reinforcement. `strict` is the default and preserves the current behavior; its field may remain absent for compatibility with existing V6 policies. `standard` keeps `test.complete` required and the generated profile disables coverage by default; `minimal` disables all generated project-quality gates by default. An external policy may keep additional gates enabled at either lower level. Repeat `--disable-gate <id>` to disable a generated project gate with a recorded reason. Disabled gates are never silently skipped: the policy and execution evidence list every enabled and disabled gate. These levels do not disable structural, integrity, security, baseline, exact-tree, development-proof, or transactional-apply invariants. A policy committed in the project configures normal runs; a validated external policy passed with `--policy` configures that execution.
 
+Each project gate may additionally declare `depends_on` gate IDs. POLIS combines these declarations with built-in essential dependencies (currently `coverage` depends on `test.complete`), rejects unknown IDs, cycles, and enabled gates that depend on `not_applicable` gates, and executes the resulting deterministic topological order. Built-in dependencies cannot be removed by policy.
+
 Add `--dry-run` to emit the validated policy JSON to stdout without creating or modifying `.polis/policy.json`, the Git index, `HEAD`, or other worktree files. For the canonical zero-residue workflow, redirect that output to a path outside the target repository and pass it explicitly to `polis start --policy` and `polis build --policy`. Non-dry-run initialization remains available for repositories that intentionally use committed-policy compatibility and never overwrites an existing policy.
 
-`polis plan` is read-only. It compiles the effective committed or external Project Policy and displays the policy digest, runtime, commands, gate inventory, mandatory invariants, and guarantees provided or absent. It does not execute project commands or modify the repository.
+`polis plan` is read-only. It compiles the effective committed or external Project Policy and displays the policy digest, runtime, commands, gate inventory, dependency edges, deterministic execution order, mandatory invariants, and guarantees provided or absent. It does not execute project commands or modify the repository.
 
 ## V6 contracts
 
 - package format v3, still exactly seven regular members under `polis/`;
-- Project Policy schema v3, with explicit command environments and configurable validation reinforcement;
+- Project Policy schema v3, with explicit command environments, configurable validation reinforcement, and policy dependency linting;
 - read-only execution planning with a versioned gate inventory and guarantee summary;
 - new V6 builds require locked Change Contract schema v4 created by `polis start`; schemas v1-v3 remain read-compatible for migration;
 - Evidence v2 stores bounded-output byte counts and SHA-256 digests rather than raw stdout/stderr, plus the effective validation level and complete project-gate inventory;
@@ -133,4 +135,4 @@ export SONAR_TOKEN='your-token'
 ./scripts/sonar-local.sh
 ```
 
-See [POLIS Specification V6](spec/POLIS-SPEC-v6.md), [SDD-0030](docs/sdd/0030-polis-v6-mandatory-strict-development.md), [SDD-0033](docs/sdd/0033-execution-plan.md), and [CHANGELOG.md](CHANGELOG.md).
+See [POLIS Specification V6](spec/POLIS-SPEC-v6.md), [SDD-0030](docs/sdd/0030-polis-v6-mandatory-strict-development.md), [SDD-0033](docs/sdd/0033-execution-plan.md), [SDD-0034](docs/sdd/0034-policy-dependency-graph.md), and [CHANGELOG.md](CHANGELOG.md).
