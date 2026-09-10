@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [6.1.0] - 2026-09-09
+
 ### Added
 
 - Add the canonical V6 zero-residue workflow with explicit external Project Policy input for `polis start --policy` and `polis build --policy`, allowing target repositories to operate without a committed `.polis/policy.json`.
@@ -136,7 +138,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Aligned the Go module identity with the repository before the V4 semantic import-path migration.
 - Made Git-based CI fixtures deterministic across Windows line-ending behavior.
 
-[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.0.0...HEAD
+[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.1.0...HEAD
+[6.1.0]: https://github.com/MarcosAlves90/polis/compare/v6.0.0...v6.1.0
 [6.0.0]: https://github.com/MarcosAlves90/polis/compare/v5.0.1...v6.0.0
 [5.0.1]: https://github.com/MarcosAlves90/polis/compare/v5.0.0...v5.0.1
 [5.0.0]: https://github.com/MarcosAlves90/polis/compare/v4.0.0...v5.0.0

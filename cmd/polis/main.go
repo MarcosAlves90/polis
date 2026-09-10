@@ -22,7 +22,7 @@ import (
 	artifactsig "github.com/MarcosAlves90/polis/v6/internal/signature"
 )
 
-const version = "6.0.0"
+const version = "6.1.0"
 
 const (
 	outputFormatHelp   = "output format: text or json"
