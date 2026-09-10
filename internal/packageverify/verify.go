@@ -49,10 +49,13 @@ var expectedMembers = []string{
 var lowerSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type Result struct {
-	Project    string
-	Change     string
-	BaseCommit string
-	TargetTree string
+	Project         string
+	Change          string
+	BaseCommit      string
+	TargetTree      string
+	ValidationLevel string
+	EnabledGates    []string
+	DisabledGates   []string
 }
 
 type Inspection struct {
@@ -60,6 +63,9 @@ type Inspection struct {
 	Change                      string                  `json:"change"`
 	FormatVersion               int                     `json:"format_version"`
 	PolicySchemaVersion         int                     `json:"policy_schema_version"`
+	ValidationLevel             string                  `json:"validation_level"`
+	EnabledGates                []string                `json:"enabled_gates"`
+	DisabledGates               []string                `json:"disabled_gates"`
 	ChangeContractSchemaVersion int                     `json:"change_contract_schema_version"`
 	Kind                        string                  `json:"kind"`
 	BaseCommit                  string                  `json:"base_commit"`
@@ -105,10 +111,13 @@ func Inspect(filename string) (Inspection, error) {
 	}
 	inspection := Inspection{
 		Project: pkg.Manifest.Project, Change: pkg.Manifest.Change, FormatVersion: pkg.Manifest.FormatVersion,
-		PolicySchemaVersion: pkg.Policy.SchemaVersion, ChangeContractSchemaVersion: pkg.Change.SchemaVersion,
+		PolicySchemaVersion: pkg.Policy.SchemaVersion, ValidationLevel: pkg.Policy.EffectiveValidationLevel(), ChangeContractSchemaVersion: pkg.Change.SchemaVersion,
 		Kind: pkg.Change.Kind, BaseCommit: pkg.Manifest.BaseCommit, TargetTree: pkg.Manifest.TargetTree,
 		EvidenceEvents: len(events),
 	}
+	summary := pkg.Policy.ValidationSummary()
+	inspection.EnabledGates = append([]string(nil), summary.EnabledGates...)
+	inspection.DisabledGates = append([]string(nil), summary.DisabledGates...)
 	if pkg.Change.Scope != nil {
 		inspection.AllowedPaths = append([]string(nil), pkg.Change.Scope.AllowedPaths...)
 	} else {
@@ -323,7 +332,11 @@ func validateEvidenceAndIntegrity(contents map[string][]byte, contracts decodedC
 
 func packageFromContents(contents map[string][]byte, contracts decodedContracts, regressionPatch []byte) Package {
 	manifest := contracts.manifest
-	result := Result{Project: manifest.Project, Change: manifest.Change, BaseCommit: manifest.BaseCommit, TargetTree: manifest.TargetTree}
+	summary := contracts.policy.ValidationSummary()
+	result := Result{
+		Project: manifest.Project, Change: manifest.Change, BaseCommit: manifest.BaseCommit, TargetTree: manifest.TargetTree,
+		ValidationLevel: summary.Level, EnabledGates: append([]string{}, summary.EnabledGates...), DisabledGates: append([]string{}, summary.DisabledGates...),
+	}
 	return Package{
 		Result: result, Manifest: manifest, Policy: contracts.policy, Change: contracts.change,
 		Patch:           append([]byte(nil), contents[memberPayload]...),

@@ -26,7 +26,7 @@ Then run `polis doctor`. See the [installation guide](docs/installation.md) for 
 
 ```bash
 polis doctor [--format text|json]
-polis init --repo /path/to/repo [--profile auto|go|custom] [--dry-run]
+polis init --repo /path/to/repo [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]
 polis start --repo /path/to/repo --policy /outside/policy-v3.json --contract /outside/draft-v3.json --out /outside/locked-v4.json
 polis capture-red --repo /path/to/repo --contract /outside/change.json --out /outside/regression.patch
 polis build --repo /path/to/repo --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/change.json --regression-patch /outside/regression.patch --out /path/to/output
@@ -60,14 +60,16 @@ polis init --repo . --profile custom \
 
 Each repeated argv flag contributes exactly one argument; POLIS does not synthesize shell commands. `--coverage-threshold` is optional and defaults to `80.0` with the existing strict `>` operator. Supported adapters remain `go-coverprofile-v1`, `lcov-v1`, and `cobertura-v1`. All gates other than `test.complete` and `coverage` are generated as `not_applicable` with reasons because `custom` does not infer commands from ecosystem metadata.
 
+Project Policy also supports explicit validation reinforcement. `strict` is the default and preserves the current behavior; its field may remain absent for compatibility with existing V6 policies. `standard` keeps `test.complete` required and the generated profile disables coverage by default; `minimal` disables all generated project-quality gates by default. An external policy may keep additional gates enabled at either lower level. Repeat `--disable-gate <id>` to disable a generated project gate with a recorded reason. Disabled gates are never silently skipped: the policy and execution evidence list every enabled and disabled gate. These levels do not disable structural, integrity, security, baseline, exact-tree, development-proof, or transactional-apply invariants. A policy committed in the project configures normal runs; a validated external policy passed with `--policy` configures that execution.
+
 Add `--dry-run` to emit the validated policy JSON to stdout without creating or modifying `.polis/policy.json`, the Git index, `HEAD`, or other worktree files. For the canonical zero-residue workflow, redirect that output to a path outside the target repository and pass it explicitly to `polis start --policy` and `polis build --policy`. Non-dry-run initialization remains available for repositories that intentionally use committed-policy compatibility and never overwrites an existing policy.
 
 ## V6 contracts
 
 - package format v3, still exactly seven regular members under `polis/`;
-- Project Policy schema v3, with explicit command environments;
+- Project Policy schema v3, with explicit command environments and configurable validation reinforcement;
 - new V6 builds require locked Change Contract schema v4 created by `polis start`; schemas v1-v3 remain read-compatible for migration;
-- Evidence v2 stores bounded-output byte counts and SHA-256 digests rather than raw stdout/stderr;
+- Evidence v2 stores bounded-output byte counts and SHA-256 digests rather than raw stdout/stderr, plus the effective validation level and complete project-gate inventory;
 - detached Ed25519 signatures authenticate exact `.polis` bytes when the consumer supplies a trusted public key;
 - coverage adapters: `go-coverprofile-v1`, `lcov-v1`, and `cobertura-v1`;
 - exact Git baseline and target tree remain mandatory;

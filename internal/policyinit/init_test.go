@@ -58,6 +58,12 @@ func TestInitAutoCreatesCanonicalGoPolicyWithoutTouchingIndex(t *testing.T) {
 	if policy.SchemaVersion != spec.PolicySchemaVersion {
 		t.Fatalf("schema_version=%d want %d", policy.SchemaVersion, spec.PolicySchemaVersion)
 	}
+	if result.ValidationLevel != spec.ValidationLevelStrict || policy.ValidationLevel != "" {
+		t.Fatalf("strict compatibility level result=%q policy field=%q", result.ValidationLevel, policy.ValidationLevel)
+	}
+	if len(result.EnabledGates) != 5 || len(result.DisabledGates) != 6 {
+		t.Fatalf("strict gate inventory enabled=%v disabled=%v", result.EnabledGates, result.DisabledGates)
+	}
 	for _, gate := range policy.Gates {
 		if gate.Command != nil && gate.Command.Environment == nil {
 			t.Fatalf("gate %q command missing explicit environment", gate.ID)
@@ -366,5 +372,85 @@ func TestInitDryRunDoesNotOverwriteExistingPolicy(t *testing.T) {
 	}
 	if string(after) != string(original) {
 		t.Fatalf("existing policy changed: %q", after)
+	}
+}
+
+func TestInitStandardDisablesCoverageWithAnExplicitReason(t *testing.T) {
+	repo := goRepo(t)
+	result, err := Init(context.Background(), Options{Repo: repo, Profile: ProfileGo, ValidationLevel: spec.ValidationLevelStandard})
+	if err != nil {
+		t.Fatalf("Init standard: %v", err)
+	}
+	raw, err := os.ReadFile(result.PolicyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := spec.DecodePolicy(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.EffectiveValidationLevel() != spec.ValidationLevelStandard {
+		t.Fatalf("validation level=%q", policy.EffectiveValidationLevel())
+	}
+	if policy.Gates[0].Mode != spec.GateModeCommand {
+		t.Fatalf("test.complete=%+v", policy.Gates[0])
+	}
+	coverage := policy.Gates[1]
+	if coverage.Mode != spec.GateModeNotApplicable || coverage.Reason == nil || strings.TrimSpace(*coverage.Reason) == "" {
+		t.Fatalf("coverage=%+v", coverage)
+	}
+}
+
+func TestInitMinimalDisablesAllGeneratedProjectGates(t *testing.T) {
+	repo := goRepo(t)
+	result, err := Init(context.Background(), Options{Repo: repo, Profile: ProfileGo, ValidationLevel: spec.ValidationLevelMinimal, DryRun: true})
+	if err != nil {
+		t.Fatalf("Init minimal: %v", err)
+	}
+	policy, err := spec.DecodePolicy(result.Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.EnabledGates) != 0 || len(result.DisabledGates) != len(spec.ProjectGateOrder) {
+		t.Fatalf("result enabled=%v disabled=%v", result.EnabledGates, result.DisabledGates)
+	}
+	for _, gate := range policy.Gates {
+		if gate.Mode != spec.GateModeNotApplicable || gate.Reason == nil || strings.TrimSpace(*gate.Reason) == "" {
+			t.Fatalf("gate %q=%+v", gate.ID, gate)
+		}
+	}
+}
+
+func TestInitRejectsInvalidOrUnsafeValidationConfiguration(t *testing.T) {
+	repo := goRepo(t)
+	tests := []Options{
+		{Repo: repo, Profile: ProfileGo, ValidationLevel: "fast"},
+		{Repo: repo, Profile: ProfileGo, ValidationLevel: spec.ValidationLevelStrict, DisabledGates: []string{"coverage"}},
+		{Repo: repo, Profile: ProfileGo, ValidationLevel: spec.ValidationLevelStandard, DisabledGates: []string{"test.complete"}},
+		{Repo: repo, Profile: ProfileGo, ValidationLevel: spec.ValidationLevelStandard, DisabledGates: []string{"not-a-gate"}},
+		{Repo: repo, Profile: ProfileGo, ValidationLevel: spec.ValidationLevelStandard, DisabledGates: []string{"lint", "lint"}},
+	}
+	for i, opts := range tests {
+		if _, err := Init(context.Background(), opts); err == nil {
+			t.Fatalf("case %d accepted unsafe validation configuration", i)
+		}
+		if _, err := os.Stat(filepath.Join(repo, ".polis", "policy.json")); !os.IsNotExist(err) {
+			t.Fatalf("case %d wrote policy: %v", i, err)
+		}
+	}
+}
+
+func TestInitMinimalCustomAllowsOmittedProjectCommands(t *testing.T) {
+	repo := nonGoRepo(t)
+	result, err := Init(context.Background(), Options{Repo: repo, Profile: ProfileCustom, ValidationLevel: spec.ValidationLevelMinimal, DryRun: true})
+	if err != nil {
+		t.Fatalf("minimal custom init: %v", err)
+	}
+	policy, err := spec.DecodePolicy(result.Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Gates[0].Mode != spec.GateModeNotApplicable || policy.Gates[1].Mode != spec.GateModeNotApplicable {
+		t.Fatalf("required gates=%+v %+v", policy.Gates[0], policy.Gates[1])
 	}
 }

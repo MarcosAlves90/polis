@@ -28,6 +28,11 @@ func Execute(policy spec.Policy, repoRoot string, evidence io.Writer) Result {
 	}
 	enc := json.NewEncoder(evidence)
 	enc.SetEscapeHTML(false)
+	summary := policy.ValidationSummary()
+	_ = enc.Encode(spec.EvidenceEvent{
+		Event: "validation_configured", Gate: "policy", ValidationLevel: summary.Level,
+		EnabledGates: append([]string{}, summary.EnabledGates...), DisabledGates: append([]string{}, summary.DisabledGates...),
+	})
 	for _, gate := range policy.Gates {
 		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_started", Gate: gate.ID})
 		status := spec.StatusPass

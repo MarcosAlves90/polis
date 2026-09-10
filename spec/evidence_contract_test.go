@@ -77,6 +77,32 @@ func TestValidatePassEvidenceAcceptsFeatureAndDefect(t *testing.T) {
 	}
 }
 
+func TestValidatePassEvidenceAcceptsAndChecksValidationConfiguration(t *testing.T) {
+	events, c, p := validPassEvidence(t, false)
+	summary := p.ValidationSummary()
+	configuration := EvidenceEvent{Event: "validation_configured", Gate: "policy", ValidationLevel: summary.Level, EnabledGates: summary.EnabledGates, DisabledGates: summary.DisabledGates}
+	insertAt := eventIndex(events, "gate_started", "test.complete", 0)
+	events = append(events[:insertAt], append([]EvidenceEvent{configuration}, events[insertAt:]...)...)
+	if err := ValidatePassEvidence(events, c, p); err != nil {
+		t.Fatalf("configuration evidence rejected: %v", err)
+	}
+	configuration.ValidationLevel = ValidationLevelMinimal
+	events[insertAt] = configuration
+	if err := ValidatePassEvidence(events, c, p); err == nil {
+		t.Fatal("mismatched validation configuration accepted")
+	}
+}
+
+func TestValidatePassEvidenceRequiresConfigurationForExplicitLevel(t *testing.T) {
+	events, c, p := validPassEvidence(t, false)
+	p.ValidationLevel = ValidationLevelStandard
+	reason := "coverage disabled for this execution context"
+	p.Gates[1] = GatePolicy{ID: "coverage", Mode: GateModeNotApplicable, Reason: &reason}
+	if err := ValidatePassEvidence(events, c, p); err == nil {
+		t.Fatal("evidence without validation configuration accepted for explicit level")
+	}
+}
+
 func TestValidatePassEvidenceRejectsTampering(t *testing.T) {
 	base, c, p := validPassEvidence(t, true)
 	mutations := []func([]EvidenceEvent){

@@ -177,6 +177,9 @@ func TestVerifyAcceptsCanonicalPackage(t *testing.T) {
 	if r.Project != "gitrex" {
 		t.Fatalf("%+v", r)
 	}
+	if r.ValidationLevel != spec.ValidationLevelStrict || len(r.EnabledGates) != 2 || len(r.DisabledGates) != len(spec.ProjectGateOrder)-2 {
+		t.Fatalf("validation configuration=%+v", r)
+	}
 }
 func TestVerifyRejectsExtraMember(t *testing.T) {
 	p := writePackage(t, func(m map[string][]byte) { m["polis/extra.txt"] = []byte("x") })
@@ -285,6 +288,9 @@ func TestInspectReturnsCanonicalPackageMetadata(t *testing.T) {
 	}
 	if len(inspection.AllowedPaths) != 1 || inspection.AllowedPaths[0] != "." {
 		t.Fatalf("legacy scope=%v", inspection.AllowedPaths)
+	}
+	if inspection.ValidationLevel != spec.ValidationLevelStrict || len(inspection.EnabledGates) != 2 || len(inspection.DisabledGates) != len(spec.ProjectGateOrder)-2 {
+		t.Fatalf("validation configuration=%+v", inspection)
 	}
 }
 

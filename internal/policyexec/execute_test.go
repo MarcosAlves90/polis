@@ -86,6 +86,81 @@ func TestExecutePassAndEvidence(t *testing.T) {
 	}
 }
 
+func TestExecuteRecordsEffectiveValidationConfiguration(t *testing.T) {
+	var evidence bytes.Buffer
+	policy := testPolicy(t, "pass")
+	result := Execute(policy, t.TempDir(), &evidence)
+	if result.Overall != spec.StatusPass {
+		t.Fatalf("overall=%s", result.Overall)
+	}
+	events, err := spec.DecodeEvidence(evidence.Bytes())
+	if err != nil {
+		t.Fatalf("evidence invalid: %v\n%s", err, evidence.String())
+	}
+	var configuration *spec.EvidenceEvent
+	for i := range events {
+		if events[i].Event == "validation_configured" {
+			configuration = &events[i]
+			break
+		}
+	}
+	if configuration == nil {
+		t.Fatalf("validation configuration is missing from evidence: %s", evidence.String())
+	}
+	if configuration.ValidationLevel != spec.ValidationLevelStrict || len(configuration.EnabledGates) != 2 || len(configuration.DisabledGates) != len(spec.ProjectGateOrder)-2 {
+		t.Fatalf("configuration=%+v", configuration)
+	}
+}
+
+func TestExecuteDoesNotRunDisabledCoverageGate(t *testing.T) {
+	policy := testPolicy(t, "pass")
+	policy.SchemaVersion = spec.PolicySchemaVersion
+	policy.ValidationLevel = spec.ValidationLevelStandard
+	for _, gate := range policy.Gates {
+		if gate.Command != nil {
+			gate.Command.Environment = &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+		}
+	}
+	reason := "coverage is disabled for this execution context"
+	policy.Gates[1] = spec.GatePolicy{ID: "coverage", Mode: spec.GateModeNotApplicable, Reason: &reason}
+	var evidence bytes.Buffer
+	result := Execute(policy, t.TempDir(), &evidence)
+	if result.Overall != spec.StatusPass {
+		t.Fatalf("overall=%s evidence=%s", result.Overall, evidence.String())
+	}
+	if strings.Contains(evidence.String(), `"event":"command_finished","gate":"coverage"`) || strings.Contains(evidence.String(), `"event":"coverage_measured"`) {
+		t.Fatalf("disabled coverage command was executed: %s", evidence.String())
+	}
+	if !strings.Contains(evidence.String(), `"gate":"coverage","status":"NOT_APPLICABLE"`) {
+		t.Fatalf("disabled coverage was not recorded: %s", evidence.String())
+	}
+}
+
+func TestExecuteRecordsEmptyEnabledInventoryForMinimalPolicy(t *testing.T) {
+	policy := testPolicy(t, "pass")
+	policy.SchemaVersion = spec.PolicySchemaVersion
+	policy.ValidationLevel = spec.ValidationLevelMinimal
+	for i := range policy.Gates {
+		reason := "disabled for this minimal execution context"
+		policy.Gates[i] = spec.GatePolicy{ID: policy.Gates[i].ID, Mode: spec.GateModeNotApplicable, Reason: &reason}
+	}
+	var evidence bytes.Buffer
+	result := Execute(policy, t.TempDir(), &evidence)
+	if result.Overall != spec.StatusPass {
+		t.Fatalf("overall=%s evidence=%s", result.Overall, evidence.String())
+	}
+	if !strings.Contains(evidence.String(), `"enabled_gates":[]`) {
+		t.Fatalf("empty enabled inventory was omitted: %s", evidence.String())
+	}
+	events, err := spec.DecodeEvidence(evidence.Bytes())
+	if err != nil {
+		t.Fatalf("minimal evidence invalid: %v", err)
+	}
+	if len(events) == 0 || events[0].Event != "validation_configured" || events[0].EnabledGates == nil {
+		t.Fatalf("configuration=%+v", events[0])
+	}
+}
+
 func TestExecuteNonZeroIsFail(t *testing.T) {
 	var evidence bytes.Buffer
 	result := Execute(testPolicy(t, "fail"), t.TempDir(), &evidence)

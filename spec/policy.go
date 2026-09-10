@@ -24,6 +24,12 @@ const (
 	gateStringErrorFormat  = "%s must be a string"
 )
 
+const (
+	ValidationLevelStrict   = "strict"
+	ValidationLevelStandard = "standard"
+	ValidationLevelMinimal  = "minimal"
+)
+
 var ProjectGateOrder = []string{
 	"test.complete",
 	"coverage",
@@ -38,6 +44,19 @@ var ProjectGateOrder = []string{
 	"platform",
 }
 
+func IsProjectGate(id string) bool {
+	return projectGateIndex(id) >= 0
+}
+
+func projectGateIndex(id string) int {
+	for i, known := range ProjectGateOrder {
+		if known == id {
+			return i
+		}
+	}
+	return -1
+}
+
 var evidenceGateSet = func() map[string]struct{} {
 	m := map[string]struct{}{
 		"behavior":    {},
@@ -45,6 +64,7 @@ var evidenceGateSet = func() map[string]struct{} {
 		"affected":    {},
 		"integrity":   {},
 		"target-tree": {},
+		"policy":      {},
 	}
 	for _, gate := range ProjectGateOrder {
 		m[gate] = struct{}{}
@@ -76,13 +96,15 @@ type GatePolicy struct {
 }
 
 type Policy struct {
-	SchemaVersion int          `json:"schema_version"`
-	Gates         []GatePolicy `json:"gates"`
+	SchemaVersion   int          `json:"schema_version"`
+	ValidationLevel string       `json:"validation_level,omitempty"`
+	Gates           []GatePolicy `json:"gates"`
 }
 
 type rawPolicy struct {
-	SchemaVersion int               `json:"schema_version"`
-	Gates         []json.RawMessage `json:"gates"`
+	SchemaVersion   int               `json:"schema_version"`
+	ValidationLevel json.RawMessage   `json:"validation_level"`
+	Gates           []json.RawMessage `json:"gates"`
 }
 
 func DecodePolicy(raw []byte) (Policy, error) {
@@ -95,7 +117,11 @@ func DecodePolicy(raw []byte) (Policy, error) {
 	if err := ensureDecoderEOF(dec, "policy"); err != nil {
 		return Policy{}, err
 	}
-	p := Policy{SchemaVersion: rp.SchemaVersion, Gates: make([]GatePolicy, 0, len(rp.Gates))}
+	validationLevel, err := decodeValidationLevel(rp.ValidationLevel)
+	if err != nil {
+		return Policy{}, err
+	}
+	p := Policy{SchemaVersion: rp.SchemaVersion, ValidationLevel: validationLevel, Gates: make([]GatePolicy, 0, len(rp.Gates))}
 	for i, rawGate := range rp.Gates {
 		gate, err := decodeGatePolicy(rawGate)
 		if err != nil {
@@ -107,6 +133,17 @@ func DecodePolicy(raw []byte) (Policy, error) {
 		return Policy{}, err
 	}
 	return p, nil
+}
+
+func decodeValidationLevel(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var level string
+	if err := json.Unmarshal(raw, &level); err != nil || level == "" {
+		return "", errors.New("validation_level must be a non-empty string")
+	}
+	return level, nil
 }
 
 func decodeGatePolicy(raw json.RawMessage) (GatePolicy, error) {
@@ -262,18 +299,63 @@ func (p Policy) Validate() error {
 	if p.SchemaVersion != PolicySchemaVersion && p.SchemaVersion != LegacyPolicySchemaVersion {
 		return fmt.Errorf("unsupported policy schema_version %d", p.SchemaVersion)
 	}
+	if p.SchemaVersion < PolicySchemaVersion && p.ValidationLevel != "" {
+		return fmt.Errorf("policy schema v%d does not support validation_level", p.SchemaVersion)
+	}
+	level := p.EffectiveValidationLevel()
+	if err := ValidateValidationLevel(level); err != nil {
+		return err
+	}
 	if len(p.Gates) != len(ProjectGateOrder) {
 		return fmt.Errorf("policy must contain exactly %d project gates", len(ProjectGateOrder))
 	}
 	for i, expectedID := range ProjectGateOrder {
-		if err := validatePolicyGateAt(i, expectedID, p.Gates[i], p.SchemaVersion); err != nil {
+		if err := validatePolicyGateAt(i, expectedID, p.Gates[i], p.SchemaVersion, level); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validatePolicyGateAt(index int, expectedID string, gate GatePolicy, schemaVersion int) error {
+func (p Policy) EffectiveValidationLevel() string {
+	if p.ValidationLevel == "" {
+		return ValidationLevelStrict
+	}
+	return p.ValidationLevel
+}
+
+func ValidateValidationLevel(level string) error {
+	switch level {
+	case ValidationLevelStrict, ValidationLevelStandard, ValidationLevelMinimal:
+		return nil
+	default:
+		return fmt.Errorf("unsupported validation_level %q", level)
+	}
+}
+
+type ValidationSummary struct {
+	Level         string
+	EnabledGates  []string
+	DisabledGates []string
+}
+
+func (p Policy) ValidationSummary() ValidationSummary {
+	summary := ValidationSummary{
+		Level:         p.EffectiveValidationLevel(),
+		EnabledGates:  make([]string, 0, len(p.Gates)),
+		DisabledGates: make([]string, 0, len(p.Gates)),
+	}
+	for _, gate := range p.Gates {
+		if gate.Mode == GateModeNotApplicable {
+			summary.DisabledGates = append(summary.DisabledGates, gate.ID)
+			continue
+		}
+		summary.EnabledGates = append(summary.EnabledGates, gate.ID)
+	}
+	return summary
+}
+
+func validatePolicyGateAt(index int, expectedID string, gate GatePolicy, schemaVersion int, validationLevel string) error {
 	if gate.ID != expectedID {
 		return fmt.Errorf("gate %d must be %q, got %q", index, expectedID, gate.ID)
 	}
@@ -283,11 +365,14 @@ func validatePolicyGateAt(index int, expectedID string, gate GatePolicy, schemaV
 	if schemaVersion >= PolicySchemaVersion && gate.Command != nil && gate.Command.Environment == nil {
 		return fmt.Errorf("gate %q: policy schema v3 requires explicit command environment", gate.ID)
 	}
-	if gate.ID == "test.complete" && gate.Mode != GateModeCommand {
+	if gate.ID == "test.complete" && validationLevel != ValidationLevelMinimal && gate.Mode != GateModeCommand {
 		return fmt.Errorf("gate %q must use command mode", gate.ID)
 	}
-	if gate.ID == "coverage" && gate.Mode != GateModeCoverage {
-		return fmt.Errorf("gate %q must use coverage mode", gate.ID)
+	if gate.ID == "coverage" && validationLevel == ValidationLevelStrict && gate.Mode != GateModeCoverage {
+		return fmt.Errorf("gate %q must use coverage mode at validation level %q", gate.ID, validationLevel)
+	}
+	if gate.ID == "coverage" && gate.Mode != GateModeCoverage && gate.Mode != GateModeNotApplicable {
+		return fmt.Errorf("gate %q must use coverage or not_applicable mode", gate.ID)
 	}
 	if gate.ID != "coverage" && gate.Mode == GateModeCoverage {
 		return fmt.Errorf("gate %q must not use coverage mode", gate.ID)

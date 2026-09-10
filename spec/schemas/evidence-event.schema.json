@@ -3,12 +3,14 @@
   "$id":"https://polis.dev/spec/v5/evidence-event.schema.json",
   "title":"POLIS Evidence Event v2",
   "$defs":{
-    "gate":{"enum":["behavior","regression","affected","test.complete","coverage","lint","typecheck","build","smoke","compatibility","dependency","migration","security","platform","integrity","target-tree"]},
+    "gate":{"enum":["behavior","regression","affected","test.complete","coverage","lint","typecheck","build","smoke","compatibility","dependency","migration","security","platform","integrity","target-tree","policy"]},
+    "projectGate":{"enum":["test.complete","coverage","lint","typecheck","build","smoke","compatibility","dependency","migration","security","platform"]},
     "terminalStatus":{"enum":["PASS","FAIL","BLOCKED","NOT_APPLICABLE"]},
     "commandStatus":{"enum":["PASS","FAIL","BLOCKED"]},
     "sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}
   },
   "oneOf":[
+    {"type":"object","additionalProperties":false,"required":["event","gate","validation_level","enabled_gates","disabled_gates"],"properties":{"event":{"const":"validation_configured"},"gate":{"const":"policy"},"validation_level":{"enum":["strict","standard","minimal"]},"enabled_gates":{"type":"array","uniqueItems":true,"items":{"$ref":"#/$defs/projectGate"}},"disabled_gates":{"type":"array","uniqueItems":true,"items":{"$ref":"#/$defs/projectGate"}}}},
     {"type":"object","additionalProperties":false,"required":["event","gate"],"properties":{"event":{"const":"gate_started"},"gate":{"$ref":"#/$defs/gate"}}},
     {"type":"object","additionalProperties":false,"required":["event","gate","status","argv","cwd","exit_code","duration_ms","stdout_bytes","stderr_bytes","stdout_sha256","stderr_sha256","stdout_truncated","stderr_truncated"],"properties":{"event":{"const":"command_finished"},"gate":{"$ref":"#/$defs/gate"},"status":{"$ref":"#/$defs/commandStatus"},"argv":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"cwd":{"type":"string","minLength":1},"exit_code":{"type":"integer","minimum":-1},"duration_ms":{"type":"integer","minimum":0},"stdout_bytes":{"type":"integer","minimum":0},"stderr_bytes":{"type":"integer","minimum":0},"stdout_sha256":{"$ref":"#/$defs/sha256"},"stderr_sha256":{"$ref":"#/$defs/sha256"},"stdout_truncated":{"type":"boolean"},"stderr_truncated":{"type":"boolean"},"environment_mode":{"enum":["clean","inherit"]},"environment_pass":{"type":"array","uniqueItems":true,"items":{"type":"string"}}}},
     {"type":"object","additionalProperties":false,"required":["event","gate","status","oracle","oracle_index"],"properties":{"event":{"const":"oracle_checked"},"gate":{"const":"regression"},"status":{"const":"PASS"},"oracle":{"const":"baseline_output_contains"},"oracle_index":{"type":"integer","minimum":0}}},

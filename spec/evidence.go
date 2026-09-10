@@ -49,6 +49,34 @@ type EvidenceEvent struct {
 	ValuePercent     *float64 `json:"value_percent,omitempty"`
 	Operator         string   `json:"operator,omitempty"`
 	ThresholdPercent *float64 `json:"threshold_percent,omitempty"`
+	ValidationLevel  string   `json:"validation_level,omitempty"`
+	EnabledGates     []string `json:"enabled_gates,omitempty"`
+	DisabledGates    []string `json:"disabled_gates,omitempty"`
+}
+
+func (e EvidenceEvent) MarshalJSON() ([]byte, error) {
+	if e.Event != "validation_configured" {
+		type wire EvidenceEvent
+		return json.Marshal(wire(e))
+	}
+	enabled := e.EnabledGates
+	if enabled == nil {
+		enabled = []string{}
+	}
+	disabled := e.DisabledGates
+	if disabled == nil {
+		disabled = []string{}
+	}
+	return json.Marshal(struct {
+		Event           string   `json:"event"`
+		Gate            string   `json:"gate"`
+		ValidationLevel string   `json:"validation_level"`
+		EnabledGates    []string `json:"enabled_gates"`
+		DisabledGates   []string `json:"disabled_gates"`
+	}{
+		Event: e.Event, Gate: e.Gate, ValidationLevel: e.ValidationLevel,
+		EnabledGates: enabled, DisabledGates: disabled,
+	})
 }
 
 func DecodeEvidence(raw []byte) ([]EvidenceEvent, error) {
@@ -128,9 +156,87 @@ func decodeEventPayload(e *EvidenceEvent, fields map[string]json.RawMessage, all
 		return decodeOracleChecked(e, fields, allowed)
 	case "coverage_measured":
 		return decodeCoverageMeasured(e, fields, allowed)
+	case "validation_configured":
+		return decodeValidationConfigured(e, fields, allowed)
 	default:
 		return fmt.Errorf("unknown event %q", e.Event)
 	}
+}
+
+func decodeValidationConfigured(e *EvidenceEvent, fields map[string]json.RawMessage, allowed map[string]bool) error {
+	if e.Gate != "policy" {
+		return errors.New("validation_configured gate must be policy")
+	}
+	for _, name := range []string{"validation_level", "enabled_gates", "disabled_gates"} {
+		allowed[name] = true
+		if _, ok := fields[name]; !ok {
+			return fmt.Errorf("validation_configured missing %s", name)
+		}
+	}
+	level, err := requiredStringField(fields, "validation_level")
+	if err != nil {
+		return err
+	}
+	if err := ValidateValidationLevel(level); err != nil {
+		return err
+	}
+	e.ValidationLevel = level
+	enabled, err := decodeGateInventory(fields["enabled_gates"], "enabled_gates")
+	if err != nil {
+		return err
+	}
+	disabled, err := decodeGateInventory(fields["disabled_gates"], "disabled_gates")
+	if err != nil {
+		return err
+	}
+	if err := validateCompleteGateInventory(enabled, disabled); err != nil {
+		return err
+	}
+	e.EnabledGates, e.DisabledGates = enabled, disabled
+	return nil
+}
+
+func decodeGateInventory(raw json.RawMessage, name string) ([]string, error) {
+	var ids []string
+	if err := json.Unmarshal(raw, &ids); err != nil {
+		return nil, fmt.Errorf("validation_configured %s must be a string array", name)
+	}
+	seen := map[string]struct{}{}
+	lastIndex := -1
+	for _, id := range ids {
+		if !IsProjectGate(id) {
+			return nil, fmt.Errorf("validation_configured %s contains unknown gate %q", name, id)
+		}
+		if _, ok := seen[id]; ok {
+			return nil, fmt.Errorf("validation_configured %s contains duplicate gate %q", name, id)
+		}
+		seen[id] = struct{}{}
+		index := projectGateIndex(id)
+		if index <= lastIndex {
+			return nil, fmt.Errorf("validation_configured %s must use project gate order", name)
+		}
+		lastIndex = index
+	}
+	return ids, nil
+}
+
+func validateCompleteGateInventory(enabled, disabled []string) error {
+	present := make(map[string]struct{}, len(enabled)+len(disabled))
+	for _, id := range append(append([]string(nil), enabled...), disabled...) {
+		if _, ok := present[id]; ok {
+			return fmt.Errorf("validation_configured gate %q appears in both enabled and disabled inventories", id)
+		}
+		present[id] = struct{}{}
+	}
+	if len(present) != len(ProjectGateOrder) {
+		return fmt.Errorf("validation_configured gate inventory must contain exactly %d project gates", len(ProjectGateOrder))
+	}
+	for _, id := range ProjectGateOrder {
+		if _, ok := present[id]; !ok {
+			return fmt.Errorf("validation_configured gate inventory is missing %q", id)
+		}
+	}
+	return nil
 }
 
 func decodeGateFinished(e *EvidenceEvent, fields map[string]json.RawMessage, allowed map[string]bool) error {

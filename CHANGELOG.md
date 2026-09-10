@@ -10,10 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Add the canonical V6 zero-residue workflow with explicit external Project Policy input for `polis start --policy` and `polis build --policy`, allowing target repositories to operate without a committed `.polis/policy.json`.
 - Add end-to-end zero-residue validation proving successful execution preserves `HEAD`, the real index, refs, Git configuration, linked-worktree administration, and persistent Git objects while leaving only the intended product payload.
+- Add configurable `strict`, `standard`, and `minimal` validation reinforcement levels, selective project-gate disabling, and per-execution evidence of the effective gate inventory.
 
 ### Changed
 
 - Make schema-v4 consumers validate with the Project Policy packaged in the artifact and keep temporary validation state plus default apply evidence outside the target repository; committed `.polis/policy.json` remains available only as a compatibility path.
+- Propagate the effective validation level and enabled/disabled project gates through initialization, start, build, verify, inspect, preflight, and apply output.
 
 ### Fixed
 

@@ -79,7 +79,7 @@ The follow-up did not weaken the gate. Deterministic tests were added for previo
 
 ## POLIS V6 zero-residue target validation — 2026-09-08
 
-This section records the validation contract for the V6 external-policy zero-residue change. The implementation adds explicit external Project Policy input for `start`/`build`, separates repository baseline validation from policy-byte validation, consumes the packaged policy at consumer boundaries, makes default apply evidence ephemeral outside the target, and isolates temporary Git object/index/worktree activity from the target repository. Package format v3, Project Policy schema v3, Change Contract schema v4, and Evidence v2 remain unchanged.
+This section records the validation contract for the V6 external-policy zero-residue change. The implementation adds explicit external Project Policy input for `start`/`build`, separates repository baseline validation from policy-byte validation, consumes the packaged policy at consumer boundaries, makes default apply evidence ephemeral outside the target, and isolates temporary Git object/index/worktree activity from the target repository. Package format v3, Project Policy schema v3, Change Contract schema v4, and Evidence v2 remain the active versions; their V6 semantics are extended by the configurable validation-reinforcement evidence described below.
 
 The end-to-end regression test `TestZeroResidueExternalPolicyWorkflow` exercises:
 
@@ -104,3 +104,22 @@ Observed V6 zero-residue gate results on Linux amd64 with Go 1.23.2 and Git 2.47
 - normative `go-coverprofile-v1` line metric: `3599 / 4354 = 82.659623334864%`, strictly greater than the unchanged `80.0%` threshold — PASS.
 
 `go tool cover -func` reported 85.9% statements for the same profile; that value is not used as the normative POLIS line-coverage gate.
+
+
+## POLIS V6 configurable validation reinforcement — 2026-09-09
+
+This section records the validation of the explicit validation-level model. The default remains legacy-compatible `strict`; `standard` and `minimal` reduce only project-quality gates, while policy decoding, contract/evidence integrity, scope, baseline/exact-tree checks, development proof, package verification, signatures, resource limits, isolation, and transactional application remain mandatory and fail closed.
+
+The supported project-gate inventory is `test.complete`, `coverage`, `lint`, `typecheck`, `build`, `smoke`, `compatibility`, `dependency`, `migration`, `security`, and `platform`. Each execution exposes the effective level plus the enabled and disabled gate lists through command results and a `validation_configured` evidence event. Disabled gates require an explicit non-empty reason; incompatible combinations are rejected before project commands execute.
+
+Observed repository validation on the current macOS arm64 host with Go 1.27.1 and Git 2.55.0:
+
+- `go test ./... -count=1` — PASS.
+- `go test -race ./... -count=1` — PASS.
+- `go test -coverpkg=./... ./... -coverprofile=.polis/coverage.out` — PASS.
+- normative union line coverage: `3514 / 4304 = 81.6%`, strictly greater than `80.0%` — PASS.
+- `go vet ./...`, `go build ./cmd/polis`, `go mod verify`, `gofmt -l .`, and `git diff --check` — PASS.
+- Go JSON Schema checks for strict legacy, standard, minimal, and invalid combinations — PASS.
+- focused tests cover omitted-command behavior, disabled-command non-execution, enabled command execution, explicit evidence inventory, empty enabled inventories, invalid configurations, and strict compatibility — PASS.
+
+The installed `/Users/marcos.lopes/go/bin/polis` v6 was also exercised in an isolated clone: `doctor`, `start`, `build`, and `verify` passed, and `apply` passed with its embedded fail-closed preflight for the generated update artifact. The clone received the intended payload; the main worktree was not used as the apply target.

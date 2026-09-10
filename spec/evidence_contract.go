@@ -30,11 +30,30 @@ func ValidatePassEvidence(events []EvidenceEvent, change ChangeContract, policy 
 	if err := validator.expectPassCommandGate("affected", change.Affected); err != nil {
 		return err
 	}
+	if err := validator.validateValidationConfiguration(policy); err != nil {
+		return err
+	}
 	if err := validator.validateProjectGates(policy); err != nil {
 		return err
 	}
 	if validator.index != len(events) {
 		return fmt.Errorf("unexpected extra evidence events: %d", len(events)-validator.index)
+	}
+	return nil
+}
+
+func (v *evidenceValidator) validateValidationConfiguration(policy Policy) error {
+	if v.index >= len(v.events) || v.events[v.index].Event != "validation_configured" {
+		if policy.ValidationLevel != "" {
+			return errors.New("evidence is missing validation_configured for an explicit validation level")
+		}
+		return nil
+	}
+	e := v.events[v.index]
+	v.index++
+	summary := policy.ValidationSummary()
+	if e.Gate != "policy" || e.ValidationLevel != summary.Level || !reflect.DeepEqual(e.EnabledGates, summary.EnabledGates) || !reflect.DeepEqual(e.DisabledGates, summary.DisabledGates) {
+		return fmt.Errorf("event %d: validation configuration does not match policy", v.index-1)
 	}
 	return nil
 }

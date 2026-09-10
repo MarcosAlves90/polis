@@ -329,6 +329,35 @@ func TestRunInitRejectsExtraArgsAndUnknownProfile(t *testing.T) {
 	}
 }
 
+func TestRunInitExposesValidationLevelAndSelectiveDisabledGate(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/cli-level\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "-C", repo, "init", "-q")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, b)
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{"init", "--repo", repo, "--profile", "go", "--validation-level", "standard", "--disable-gate", "lint", "--dry-run"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, errOut.String())
+	}
+	policy, err := spec.DecodePolicy(out.Bytes())
+	if err != nil {
+		t.Fatalf("policy invalid: %v\n%s", err, out.String())
+	}
+	if policy.EffectiveValidationLevel() != spec.ValidationLevelStandard {
+		t.Fatalf("level=%q", policy.EffectiveValidationLevel())
+	}
+	if policy.Gates[1].Mode != spec.GateModeNotApplicable || policy.Gates[2].Mode != spec.GateModeNotApplicable {
+		t.Fatalf("coverage=%+v lint=%+v", policy.Gates[1], policy.Gates[2])
+	}
+}
+
 func TestRunCaptureRedCreatesPatch(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	if err := os.MkdirAll(filepath.Join(repo, ".polis"), 0o755); err != nil {
@@ -415,9 +444,16 @@ func TestRunV6TrustBoundaryCommands(t *testing.T) {
 		"project":     "polis",
 		"target_tree": built.TargetTree,
 	})
-	assertJSONFields(t, runCLIJSON(t, "verify", "--format", "json", built.Path), map[string]string{
+	verify := runCLIJSON(t, "verify", "--format", "json", built.Path)
+	assertJSONFields(t, verify, map[string]string{
 		"status": "PASS",
 	})
+	if verify["validation_level"] != spec.ValidationLevelStrict {
+		t.Fatalf("verify validation_level=%v", verify["validation_level"])
+	}
+	if gates, ok := verify["enabled_gates"].([]any); !ok || len(gates) != 2 {
+		t.Fatalf("verify enabled_gates=%v", verify["enabled_gates"])
+	}
 	assertJSONFields(t, runCLIJSON(t, "preflight", "--repo", repo, "--format", "json", built.Path), map[string]string{
 		"status": "PASS",
 	})
@@ -591,13 +627,13 @@ func TestRunInitRejectsCustomFlagsOutsideCustomProfile(t *testing.T) {
 
 func TestInspectionTextIncludesTraceability(t *testing.T) {
 	inspection := packageverify.Inspection{
-		Project: "polis", Change: "strict", FormatVersion: 3, PolicySchemaVersion: 3, ChangeContractSchemaVersion: 3,
+		Project: "polis", Change: "strict", FormatVersion: 3, PolicySchemaVersion: 3, ValidationLevel: spec.ValidationLevelStrict, ChangeContractSchemaVersion: 3,
 		Kind: spec.ChangeKindFeature, BaseCommit: "base", TargetTree: "target", AllowedPaths: []string{"spec/"}, EvidenceEvents: 1,
 		Traceability: []spec.TraceabilityLink{{RequirementID: "REQ-001", AcceptanceCriterionID: "AC-001", Proof: spec.ProofGateRegression}},
 	}
 	var out bytes.Buffer
 	writeInspectionText(&out, inspection)
-	if !strings.Contains(out.String(), "Trace: REQ-001 -> AC-001 -> regression") {
+	if !strings.Contains(out.String(), "Validation level: strict") || !strings.Contains(out.String(), "Trace: REQ-001 -> AC-001 -> regression") {
 		t.Fatalf("stdout=%q", out.String())
 	}
 }

@@ -63,12 +63,26 @@ It MUST:
 - emit an external schema-v4 contract using `strict_sdd_tdd_v2`;
 - bind Git object format, base commit, base tree, SHA-256 of the canonical effective Project Policy, and canonical Specification SHA-256;
 - never serialize the external policy pathname;
-- never create `.polis`, modify HEAD, modify the real index, modify existing worktree files, or write tool-specific Git metadata;
+- never create `.polis`, modify HEAD, modify the real index, modidwfy existing worktree files, or write tool-specific Git metadata;
 - never overwrite its output.
 
 `baseline_lock.policy_sha256` therefore identifies policy bytes, not a repository pathname.
 
-### 4.2 Committed-policy compatibility
+### 4.2 Validation reinforcement
+
+Project Policy schema v3 may contain the optional `validation_level` field. When absent, its effective value is `strict` for backward compatibility; generated strict policies may omit the field so existing V6 consumers continue to read them. Supported values are:
+
+- `strict`: `test.complete` MUST use `command` mode and `coverage` MUST use `coverage` mode; this is the current V6 behavior;
+- `standard`: `test.complete` MUST use `command` mode, while `coverage` may use explicit `not_applicable` mode;
+- `minimal`: `test.complete` and `coverage` may each use explicit `not_applicable` mode.
+
+All project gates remain present in the canonical registry and each gate's mode remains authoritative. `not_applicable` always requires a non-empty reason. A lower level is a minimum assurance profile: additional gates may remain enabled, but the actual enabled and disabled gate lists MUST be recorded in the validation evidence. The effective policy can be committed for project configuration or supplied outside the worktree for an individual execution.
+
+`polis init --validation-level standard` generates the Go profile with coverage disabled by an explicit reason. `polis init --validation-level minimal` generates all project-quality gates as explicitly not applicable. Repeated `--disable-gate <id>` selectively disables generated project gates; it MUST reject unknown gates and attempts to disable required gates at an incompatible level.
+
+Validation reinforcement levels apply only to project-quality gates. They MUST NOT disable policy/contract validation, path and environment safety, baseline or exact-tree checks, required development proof, package and evidence integrity, signature checks, isolated consumer validation, or transactional apply protections.
+
+### 4.3 Committed-policy compatibility
 
 When `--policy` is omitted, V6 MAY retain the historical producer behavior that reads exact committed `.polis/policy.json` bytes. This exists for compatibility and self-hosting; it is not the canonical zero-residue workflow.
 
@@ -178,9 +192,9 @@ Every requirement MUST be covered by at least one acceptance criterion, every ac
 V6 does not change:
 
 - package format v3 and its seven canonical members;
-- Project Policy schema v3 gate registry;
+- Project Policy schema v3 gate registry and its backward-compatible `validation_level` reinforcement setting;
 - Change Contract schema v4 structure;
-- Evidence v2 format for packaged validation evidence;
+- Evidence v2 package member, digest, and bounded-output contract; V6 executions additionally emit `validation_configured` with the effective level and complete project-gate inventory;
 - coverage adapters and strict `>` threshold semantics;
 - bounded stdout/stderr retention and full-stream digests;
 - direct argv execution and declared environments;

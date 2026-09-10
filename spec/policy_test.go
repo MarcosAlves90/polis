@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -128,4 +129,82 @@ func FuzzDecodePolicy(f *testing.F) {
 	f.Add([]byte(`{"schema_version":3,"gates":[]}`))
 	f.Add([]byte(`not-json`))
 	f.Fuzz(func(t *testing.T, raw []byte) { _, _ = DecodePolicy(raw) })
+}
+
+func TestDecodePolicyAcceptsStandardLevelWithCoverageDisabled(t *testing.T) {
+	policy, err := DecodePolicy(configurablePolicyJSON("standard", "command", "not_applicable"))
+	if err != nil {
+		t.Fatalf("POLIS-RED: standard policy with explicitly disabled coverage was rejected: %v", err)
+	}
+	if policy.ValidationLevel != ValidationLevelStandard {
+		t.Fatalf("validation level = %q", policy.ValidationLevel)
+	}
+}
+
+func TestDecodePolicyAcceptsMinimalLevelWithRequiredProjectGatesDisabled(t *testing.T) {
+	policy, err := DecodePolicy(configurablePolicyJSON(ValidationLevelMinimal, GateModeNotApplicable, GateModeNotApplicable))
+	if err != nil {
+		t.Fatalf("minimal policy with explicit disabled gates was rejected: %v", err)
+	}
+	summary := policy.ValidationSummary()
+	if summary.Level != ValidationLevelMinimal || len(summary.EnabledGates) != 0 || len(summary.DisabledGates) != len(ProjectGateOrder) {
+		t.Fatalf("summary=%+v", summary)
+	}
+}
+
+func TestDecodePolicyRejectsIncompatibleValidationLevels(t *testing.T) {
+	cases := []struct {
+		name  string
+		level string
+		test  string
+		cover string
+	}{
+		{name: "strict coverage disabled", level: ValidationLevelStrict, test: GateModeCommand, cover: GateModeNotApplicable},
+		{name: "standard test disabled", level: ValidationLevelStandard, test: GateModeNotApplicable, cover: GateModeNotApplicable},
+		{name: "unknown level", level: "fast", test: GateModeCommand, cover: GateModeCoverage},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := DecodePolicy(configurablePolicyJSON(tt.level, tt.test, tt.cover)); err == nil {
+				t.Fatal("incompatible validation policy was accepted")
+			}
+		})
+	}
+}
+
+func configurablePolicyJSON(level, testMode, coverageMode string) []byte {
+	environment := map[string]any{"mode": EnvironmentModeInherit}
+	command := func(argv ...string) map[string]any {
+		return map[string]any{
+			"argv": argv, "cwd": ".", "timeout_seconds": 60, "environment": environment,
+		}
+	}
+	reason := func(id string) map[string]any {
+		return map[string]any{"id": id, "mode": GateModeNotApplicable, "reason": "disabled for this execution context"}
+	}
+	gates := make([]any, 0, len(ProjectGateOrder))
+	for _, id := range ProjectGateOrder {
+		switch id {
+		case "test.complete":
+			if testMode == GateModeCommand {
+				gates = append(gates, map[string]any{"id": id, "mode": GateModeCommand, "command": command("true")})
+			} else {
+				gates = append(gates, reason(id))
+			}
+		case "coverage":
+			if coverageMode == GateModeCoverage {
+				threshold := 80.0
+				gates = append(gates, map[string]any{"id": id, "mode": GateModeCoverage, "command": command("true"), "adapter": CoverageAdapterGoCoverProfileV1, "report": "coverage.out", "operator": CoverageOperatorGreaterThan, "threshold_percent": threshold})
+			} else {
+				gates = append(gates, reason(id))
+			}
+		default:
+			gates = append(gates, reason(id))
+		}
+	}
+	raw, err := json.Marshal(map[string]any{"schema_version": PolicySchemaVersion, "validation_level": level, "gates": gates})
+	if err != nil {
+		panic(err)
+	}
+	return raw
 }

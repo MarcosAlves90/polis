@@ -22,10 +22,13 @@ var (
 )
 
 type Result struct {
-	Project      string
-	Change       string
-	TargetTree   string
-	EvidencePath string
+	Project         string
+	Change          string
+	TargetTree      string
+	ValidationLevel string
+	EnabledGates    []string
+	DisabledGates   []string
+	EvidencePath    string
 }
 
 const (
@@ -109,7 +112,7 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 		}
 		return Result{}, fmt.Errorf("post-apply target_tree mismatch: got %s want %s; patch reversed", gotTree, pkg.Manifest.TargetTree)
 	}
-	return Result{Project: pkg.Manifest.Project, Change: pkg.Manifest.Change, TargetTree: gotTree}, nil
+	return resultForPackage(pkg, gotTree), nil
 }
 
 func Preflight(ctx context.Context, artifact, repoPath string) (Result, error) {
@@ -154,7 +157,19 @@ func Preflight(ctx context.Context, artifact, repoPath string) (Result, error) {
 	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", gitApplyCheck, "-"); err != nil {
 		return Result{}, fmt.Errorf("%w: real git apply --check failed: %v", ErrValidationFailed, err)
 	}
-	return Result{Project: pkg.Manifest.Project, Change: pkg.Manifest.Change, TargetTree: pkg.Manifest.TargetTree}, nil
+	return resultForPackage(pkg, pkg.Manifest.TargetTree), nil
+}
+
+func resultForPackage(pkg packageverify.Package, targetTree string) Result {
+	summary := pkg.Policy.ValidationSummary()
+	return Result{
+		Project:         pkg.Manifest.Project,
+		Change:          pkg.Manifest.Change,
+		TargetTree:      targetTree,
+		ValidationLevel: summary.Level,
+		EnabledGates:    append([]string{}, summary.EnabledGates...),
+		DisabledGates:   append([]string{}, summary.DisabledGates...),
+	}
 }
 
 func resolveRepo(ctx context.Context, repo string) (string, error) {

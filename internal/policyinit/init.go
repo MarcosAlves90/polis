@@ -14,14 +14,17 @@ import (
 )
 
 const (
-	ProfileAuto   = "auto"
-	ProfileGo     = "go"
-	ProfileCustom = "custom"
+	ProfileAuto        = "auto"
+	ProfileGo          = "go"
+	ProfileCustom      = "custom"
+	testCompleteGateID = "test.complete"
 )
 
 type Options struct {
 	Repo              string
 	Profile           string
+	ValidationLevel   string
+	DisabledGates     []string
 	TestArgv          []string
 	CoverageArgv      []string
 	CoverageAdapter   string
@@ -31,9 +34,12 @@ type Options struct {
 }
 
 type Result struct {
-	Profile    string
-	PolicyPath string
-	Policy     []byte
+	Profile         string
+	ValidationLevel string
+	EnabledGates    []string
+	DisabledGates   []string
+	PolicyPath      string
+	Policy          []byte
 }
 
 func Init(ctx context.Context, opts Options) (Result, error) {
@@ -65,7 +71,15 @@ func Init(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	policyPath := filepath.Join(root, ".polis", "policy.json")
-	result := Result{Profile: resolvedProfile, PolicyPath: policyPath, Policy: encoded}
+	summary := policy.ValidationSummary()
+	result := Result{
+		Profile:         resolvedProfile,
+		ValidationLevel: summary.Level,
+		EnabledGates:    append([]string{}, summary.EnabledGates...),
+		DisabledGates:   append([]string{}, summary.DisabledGates...),
+		PolicyPath:      policyPath,
+		Policy:          encoded,
+	}
 	if opts.DryRun {
 		return result, nil
 	}
@@ -76,8 +90,18 @@ func Init(ctx context.Context, opts Options) (Result, error) {
 }
 
 func validateProfileOptions(profile string, opts Options) error {
+	level := opts.ValidationLevel
+	if level == "" {
+		level = spec.ValidationLevelStrict
+	}
+	if err := spec.ValidateValidationLevel(level); err != nil {
+		return err
+	}
+	if err := validateDisabledGates(level, opts.DisabledGates); err != nil {
+		return err
+	}
 	if profile == ProfileCustom {
-		return nil
+		return validateCustomOptions(level, opts)
 	}
 	if len(opts.TestArgv) != 0 || len(opts.CoverageArgv) != 0 || opts.CoverageAdapter != "" || opts.CoverageReport != "" || opts.CoverageThreshold != nil {
 		return errors.New("custom init options require --profile custom")
@@ -85,14 +109,106 @@ func validateProfileOptions(profile string, opts Options) error {
 	return nil
 }
 
+func validateCustomOptions(level string, opts Options) error {
+	if len(opts.TestArgv) == 0 && level != spec.ValidationLevelMinimal {
+		return errors.New("custom profile requires test argv unless validation level is minimal")
+	}
+	coverageValues := len(opts.CoverageArgv) != 0 || opts.CoverageAdapter != "" || opts.CoverageReport != "" || opts.CoverageThreshold != nil
+	if !coverageValues {
+		if level == spec.ValidationLevelStrict {
+			return errors.New("custom profile requires coverage argv, adapter, and report at strict validation level")
+		}
+		return nil
+	}
+	if len(opts.CoverageArgv) == 0 || opts.CoverageAdapter == "" || opts.CoverageReport == "" {
+		return errors.New("custom coverage configuration requires coverage argv, adapter, and report")
+	}
+	return nil
+}
+
+func validateDisabledGates(level string, disabled []string) error {
+	seen := make(map[string]struct{}, len(disabled))
+	for _, id := range disabled {
+		if _, ok := seen[id]; ok {
+			return fmt.Errorf("duplicate disabled gate %q", id)
+		}
+		seen[id] = struct{}{}
+		if !knownProjectGate(id) {
+			return fmt.Errorf("unknown disabled gate %q", id)
+		}
+		if id == testCompleteGateID && level != spec.ValidationLevelMinimal {
+			return fmt.Errorf("gate %q can be disabled only at validation level %q", id, spec.ValidationLevelMinimal)
+		}
+		if id == "coverage" && level == spec.ValidationLevelStrict {
+			return fmt.Errorf("gate %q cannot be disabled at validation level %q", id, level)
+		}
+	}
+	return nil
+}
+
+func knownProjectGate(id string) bool {
+	for _, known := range spec.ProjectGateOrder {
+		if id == known {
+			return true
+		}
+	}
+	return false
+}
+
 func policyForProfile(profile string, opts Options) (spec.Policy, error) {
+	level := opts.ValidationLevel
+	if level == "" {
+		level = spec.ValidationLevelStrict
+	}
+	var policy spec.Policy
 	switch profile {
 	case ProfileGo:
-		return goPolicy(), nil
+		policy = goPolicy()
 	case ProfileCustom:
-		return customPolicy(opts), nil
+		policy = customPolicy(opts)
 	default:
 		return spec.Policy{}, fmt.Errorf("unsupported profile %q", profile)
+	}
+	if level != spec.ValidationLevelStrict {
+		policy.ValidationLevel = level
+	}
+	if profile != ProfileCustom {
+		applyLevelDefaults(&policy, level)
+	}
+	applyDisabledGates(&policy, opts.DisabledGates, level)
+	return policy, nil
+}
+
+func applyLevelDefaults(policy *spec.Policy, level string) {
+	switch level {
+	case spec.ValidationLevelStandard:
+		disableGate(policy, "coverage", "disabled by the standard validation level; coverage is a non-structural project-quality gate")
+	case spec.ValidationLevelMinimal:
+		for _, id := range spec.ProjectGateOrder {
+			disableGate(policy, id, "disabled by the minimal validation level; project-quality gates are not required in this execution context")
+		}
+	}
+}
+
+func applyDisabledGates(policy *spec.Policy, disabled []string, level string) {
+	for _, id := range disabled {
+		disableGate(policy, id, fmt.Sprintf("disabled by explicit validation configuration at level %q", level))
+	}
+}
+
+func disableGate(policy *spec.Policy, id, reason string) {
+	for i := range policy.Gates {
+		if policy.Gates[i].ID != id {
+			continue
+		}
+		policy.Gates[i].Mode = spec.GateModeNotApplicable
+		policy.Gates[i].Command = nil
+		policy.Gates[i].Reason = &reason
+		policy.Gates[i].Adapter = ""
+		policy.Gates[i].Report = ""
+		policy.Gates[i].Operator = ""
+		policy.Gates[i].ThresholdPercent = nil
+		return
 	}
 }
 
@@ -178,7 +294,7 @@ func goPolicy() spec.Policy {
 	return spec.Policy{
 		SchemaVersion: spec.PolicySchemaVersion,
 		Gates: []spec.GatePolicy{
-			{ID: "test.complete", Mode: spec.GateModeCommand, Command: command(1200, "go", "test", "./...")},
+			{ID: testCompleteGateID, Mode: spec.GateModeCommand, Command: command(1200, "go", "test", "./...")},
 			{ID: "coverage", Mode: spec.GateModeCoverage, Command: command(1200, "go", "test", "-coverpkg=./...", "./...", "-coverprofile=.polis/coverage.out"), Adapter: spec.CoverageAdapterGoCoverProfileV1, Report: ".polis/coverage.out", Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: &threshold},
 			{ID: "lint", Mode: spec.GateModeCommand, Command: command(600, "go", "vet", "./...")},
 			{ID: "typecheck", Mode: spec.GateModeNotApplicable, Reason: reason("Go test/build perform compile checks; the canonical Go profile defines no independent typecheck command")},
@@ -194,30 +310,43 @@ func goPolicy() spec.Policy {
 }
 
 func customPolicy(opts Options) spec.Policy {
-	threshold := spec.MinimumCoverageThreshold
-	if opts.CoverageThreshold != nil {
-		threshold = *opts.CoverageThreshold
+	testGate := spec.GatePolicy{ID: testCompleteGateID, Mode: spec.GateModeCommand, Command: commandFromArgv(1200, opts.TestArgv)}
+	if len(opts.TestArgv) == 0 {
+		testGate = notApplicable(testCompleteGateID, "custom profile has no explicit test command for this validation level")
 	}
-	notApplicable := func(id string) spec.GatePolicy {
-		reason := fmt.Sprintf("custom profile has no explicit command for %s", id)
-		return spec.GatePolicy{ID: id, Mode: spec.GateModeNotApplicable, Reason: &reason}
+	coverageGate := spec.GatePolicy{ID: "coverage", Mode: spec.GateModeCoverage, Command: commandFromArgv(1200, opts.CoverageArgv), Adapter: opts.CoverageAdapter, Report: opts.CoverageReport, Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: coverageThreshold(opts)}
+	if len(opts.CoverageArgv) == 0 {
+		coverageGate = notApplicable("coverage", "custom profile has no explicit coverage command for this validation level")
 	}
 	return spec.Policy{
 		SchemaVersion: spec.PolicySchemaVersion,
 		Gates: []spec.GatePolicy{
-			{ID: "test.complete", Mode: spec.GateModeCommand, Command: commandFromArgv(1200, opts.TestArgv)},
-			{ID: "coverage", Mode: spec.GateModeCoverage, Command: commandFromArgv(1200, opts.CoverageArgv), Adapter: opts.CoverageAdapter, Report: opts.CoverageReport, Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: &threshold},
-			notApplicable("lint"),
-			notApplicable("typecheck"),
-			notApplicable("build"),
-			notApplicable("smoke"),
-			notApplicable("compatibility"),
-			notApplicable("dependency"),
-			notApplicable("migration"),
-			notApplicable("security"),
-			notApplicable("platform"),
+			testGate,
+			coverageGate,
+			notApplicable("lint", "custom profile has no explicit command for lint"),
+			notApplicable("typecheck", "custom profile has no explicit command for typecheck"),
+			notApplicable("build", "custom profile has no explicit command for build"),
+			notApplicable("smoke", "custom profile has no explicit command for smoke"),
+			notApplicable("compatibility", "custom profile has no explicit command for compatibility"),
+			notApplicable("dependency", "custom profile has no explicit command for dependency"),
+			notApplicable("migration", "custom profile has no explicit command for migration"),
+			notApplicable("security", "custom profile has no explicit command for security"),
+			notApplicable("platform", "custom profile has no explicit command for platform"),
 		},
 	}
+}
+
+func coverageThreshold(opts Options) *float64 {
+	threshold := spec.MinimumCoverageThreshold
+	if opts.CoverageThreshold != nil {
+		threshold = *opts.CoverageThreshold
+	}
+	return &threshold
+}
+
+func notApplicable(id, reasonValue string) spec.GatePolicy {
+	reason := reasonValue
+	return spec.GatePolicy{ID: id, Mode: spec.GateModeNotApplicable, Reason: &reason}
 }
 
 func command(timeout int, argv ...string) *spec.CommandSpec {

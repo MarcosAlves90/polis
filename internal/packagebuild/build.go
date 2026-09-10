@@ -36,10 +36,13 @@ type Options struct {
 }
 
 type Result struct {
-	Path       string
-	SHA256     string
-	BaseCommit string
-	TargetTree string
+	Path            string
+	SHA256          string
+	BaseCommit      string
+	TargetTree      string
+	ValidationLevel string
+	EnabledGates    []string
+	DisabledGates   []string
 }
 
 const (
@@ -53,6 +56,7 @@ type buildArtifact struct {
 	baseCommit      string
 	targetTree      string
 	policyRaw       []byte
+	policy          spec.Policy
 	changeRaw       []byte
 	regressionPatch []byte
 	patch           []byte
@@ -135,7 +139,7 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 
 	artifact := buildArtifact{
 		opts: opts, objectFormat: objectFormat, baseCommit: baseCommit, targetTree: targetTree,
-		policyRaw: policyRaw, changeRaw: changeRaw, regressionPatch: regressionPatch, patch: patch, evidence: evidence.Bytes(),
+		policyRaw: policyRaw, policy: policy, changeRaw: changeRaw, regressionPatch: regressionPatch, patch: patch, evidence: evidence.Bytes(),
 	}
 	manifestRaw, err := encodeManifest(artifact)
 	if err != nil {
@@ -261,7 +265,16 @@ func finalizeArtifact(artifact buildArtifact, manifestRaw []byte) (Result, error
 	if err := copyExclusive(candidate, finalPath); err != nil {
 		return Result{}, err
 	}
-	return Result{Path: finalPath, SHA256: archiveHash, BaseCommit: artifact.baseCommit, TargetTree: artifact.targetTree}, nil
+	summary := artifact.policy.ValidationSummary()
+	return Result{
+		Path:            finalPath,
+		SHA256:          archiveHash,
+		BaseCommit:      artifact.baseCommit,
+		TargetTree:      artifact.targetTree,
+		ValidationLevel: summary.Level,
+		EnabledGates:    append([]string{}, summary.EnabledGates...),
+		DisabledGates:   append([]string{}, summary.DisabledGates...),
+	}, nil
 }
 
 func resolveRepo(ctx context.Context, repo string) (string, error) {

@@ -1,6 +1,9 @@
 package spec
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestDecodeEvidenceAcceptsCanonicalEvents(t *testing.T) {
 	raw := []byte(
@@ -18,10 +21,42 @@ func TestDecodeEvidenceAcceptsCanonicalEvents(t *testing.T) {
 	}
 }
 
+func TestDecodeEvidenceAcceptsValidationConfiguration(t *testing.T) {
+	raw := []byte(`{"event":"validation_configured","gate":"policy","validation_level":"standard","enabled_gates":["test.complete","lint"],"disabled_gates":["coverage","typecheck","build","smoke","compatibility","dependency","migration","security","platform"]}` + "\n")
+	events, err := DecodeEvidence(raw)
+	if err != nil {
+		t.Fatalf("validation configuration evidence rejected: %v", err)
+	}
+	if len(events) != 1 || events[0].ValidationLevel != ValidationLevelStandard || len(events[0].EnabledGates) != 2 || len(events[0].DisabledGates) != 9 {
+		t.Fatalf("events=%+v", events)
+	}
+}
+
+func TestMarshalValidationConfigurationPreservesEmptyInventory(t *testing.T) {
+	raw, err := json.Marshal(EvidenceEvent{
+		Event: "validation_configured", Gate: "policy", ValidationLevel: ValidationLevelMinimal,
+		EnabledGates: []string{}, DisabledGates: append([]string{}, ProjectGateOrder...),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := DecodeEvidence(append(raw, '\n'))
+	if err != nil {
+		t.Fatalf("marshaled validation configuration rejected: %v; raw=%s", err, raw)
+	}
+	if events[0].EnabledGates == nil || len(events[0].EnabledGates) != 0 {
+		t.Fatalf("enabled inventory=%v", events[0].EnabledGates)
+	}
+}
+
 func TestDecodeEvidenceRejectsInvalidEvents(t *testing.T) {
 	cases := [][]byte{
 		[]byte(`{"event":"unknown","gate":"lint"}` + "\n"),
 		[]byte(`{"event":"gate_started","gate":"made-up"}` + "\n"),
+		[]byte(`{"event":"validation_configured","gate":"policy","validation_level":"standard","enabled_gates":["test.complete"],"disabled_gates":["coverage"]}` + "\n"),
+		[]byte(`{"event":"validation_configured","gate":"policy","validation_level":"standard","enabled_gates":["lint","test.complete"],"disabled_gates":["coverage","typecheck","build","smoke","compatibility","dependency","migration","security","platform"]}` + "\n"),
+		[]byte(`{"event":"validation_configured","gate":"policy","validation_level":"standard","enabled_gates":["test.complete","test.complete"],"disabled_gates":["coverage","lint","typecheck","build","smoke","compatibility","dependency","migration","security","platform"]}` + "\n"),
+		[]byte(`{"event":"validation_configured","gate":"integrity","validation_level":"standard","enabled_gates":["test.complete"],"disabled_gates":["coverage","lint","typecheck","build","smoke","compatibility","dependency","migration","security","platform"]}` + "\n"),
 		[]byte(`{"event":"gate_started","gate":"lint","status":"PASS"}` + "\n"),
 		[]byte(`{"event":"gate_finished","gate":"lint","status":"NOT_APPLICABLE"}` + "\n"),
 		[]byte(`{"event":"gate_finished","gate":"lint","status":"PASS","reason":"extra"}` + "\n"),

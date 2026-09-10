@@ -2,7 +2,7 @@
   "title": "End-to-End Software Project Delivery Guide",
   "version": "6.0.0",
   "language": "en",
-  "theme": "Mandatory Strict Development",
+  "theme": "Configurable Validation with Mandatory Integrity",
   "architecture": {
     "modules": [
       {
@@ -38,7 +38,7 @@
     "bounded_input": "Treat .polis bytes as untrusted and reject archives, members, evidence lines, and command output exceeding normative bounds.",
     "scope": "Change Contract v2+ declares scope.allowed_paths; strict v3/v4 additionally declare test_scope, and producer plus consumer validate authorized paths.",
     "environment": "Every executable schema-v3 command declares inherit or clean environment semantics; clean passes only named variables and never serializes values.",
-    "evidence": "V6 command evidence persists byte counts, SHA-256 digests, truncation state, command identity, environment names, and semantic oracle results instead of raw stdout/stderr.",
+    "evidence": "V6 command evidence persists byte counts, SHA-256 digests, truncation state, command identity, environment names, and semantic oracle results instead of raw stdout/stderr; each policy execution also records its effective validation level and complete enabled/disabled project-gate inventory.",
     "authentication": "Detached Ed25519 signatures authenticate SHA-256 of exact .polis bytes when the consumer supplies a trusted public key; package contents never define trust roots.",
     "preflight": "Consumer preflight repeats package, repository baseline, isolated validation, target-tree, scope, packaged policy, and git apply --check without applying the payload. Apply never reuses a previous preflight result.",
     "development": "V6 requires a strict schema-v3 Specification draft to be locked by polis start into schema v4 before implementation. The canonical zero-residue path supplies Project Policy schema v3 explicitly from outside the target repository and locks its canonical SHA-256. New builds accept only schema v4. Feature/defect use Red-to-Green; behavior-preserving uses Green-to-Green; REQ-to-AC proof traceability and captured-test immutability are mandatory.",
@@ -67,12 +67,12 @@
   "delivery_workflow": [
     "Orient and resolve repository identity, permissions, objective, changed behavior, protected behavior, compatibility surface, and non-goals.",
     "Inspect tests, architecture, contracts, CI, release tooling, current policy requirements, and relevant runtime evidence.",
-    "Resolve an effective Project Policy schema v3 before delivery work. For the canonical zero-residue path, keep it outside the target repository; polis init --dry-run may generate validated policy JSON without creating .polis. A committed .polis/policy.json remains a compatibility option, not a requirement.",
+    "Resolve an effective Project Policy schema v3 and choose its validation reinforcement level before delivery work. Strict remains the default; standard and minimal may reduce only explicitly identified project-quality gates, with reasons. For the canonical zero-residue path, keep it outside the target repository; polis init --dry-run may generate validated policy JSON without creating .polis. A committed .polis/policy.json remains a compatibility option, not a requirement.",
     "Write or revise the versioned behavior Specification and external strict Change Contract schema-v3 draft before production implementation.",
     "Run polis start --policy <external-policy> on the clean committed baseline to produce the mandatory locked schema-v4 contract. The lock binds canonical effective-policy bytes by SHA-256; do not implement before this state transition.",
     "For feature/defect work, add the test-only Red delta and run polis capture-red with the locked v4 contract before production implementation. For behavior-preserving work, keep the characterization command Green on the locked baseline.",
     "Implement bounded Red-Green-Refactor slices while preserving captured strict test bytes, declared test_scope, and scope.",
-    "Run repository-required affected and complete validation using the same effective Project Policy without weakening gates or thresholds.",
+    "Run repository-required affected and complete validation using the same effective Project Policy. Record the selected level and actual enabled/disabled gate inventory; structural, integrity, security, baseline, scope, exact-tree, development-proof, and transactional-apply invariants remain mandatory.",
     "Invoke polis build --policy <same-effective-policy> only with the locked schema-v4 contract and regression patch exactly when Red-to-Green requires it. Reject policy hash drift before accepting the artifact.",
     "Accept an artifact only after canonical polis verify; use polis inspect for validated metadata and REQ-to-AC proof traceability.",
     "Before mutation, run polis preflight against the exact consumer baseline. Then use polis apply, which repeats validation, consumes the packaged policy, preserves HEAD/index, and leaves no default tool-owned target-repository state.",
