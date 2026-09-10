@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [6.2.0] - 2026-09-10
+
 ### Added
 
 - Add policy dependency graph linting with explicit `depends_on` edges, built-in essential dependencies, deterministic topological execution order, and fail-closed rejection of disabled dependencies.
@@ -142,7 +144,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Aligned the Go module identity with the repository before the V4 semantic import-path migration.
 - Made Git-based CI fixtures deterministic across Windows line-ending behavior.
 
-[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.1.0...HEAD
+[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.2.0...HEAD
+[6.2.0]: https://github.com/MarcosAlves90/polis/compare/v6.1.0...v6.2.0
 [6.1.0]: https://github.com/MarcosAlves90/polis/compare/v6.0.0...v6.1.0
 [6.0.0]: https://github.com/MarcosAlves90/polis/compare/v5.0.1...v6.0.0
 [5.0.1]: https://github.com/MarcosAlves90/polis/compare/v5.0.0...v5.0.1

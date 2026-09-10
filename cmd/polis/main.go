@@ -23,7 +23,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
-const version = "6.1.0"
+const version = "6.2.0"
 
 const (
 	outputFormatHelp   = "output format: text or json"
