@@ -141,8 +141,12 @@ func TestRunExportCreatesSelfContainedOfflineBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer archive.Close()
+	executableMember := "polis-offline/bin/polis"
+	if runtime.GOOS == "windows" {
+		executableMember += ".exe"
+	}
 	want := map[string]bool{
-		"polis-offline/bin/polis":                       false,
+		executableMember:                                false,
 		"polis-offline/manifest.json":                   false,
 		"polis-offline/POLIS-OFFLINE.md":                false,
 		"polis-offline/spec/POLIS-SPEC-v6.md":           false,
