@@ -12,6 +12,8 @@ Options:
   --tag TAG             Release tag to verify/create (required).
   --gh COMMAND          GitHub CLI command or executable path.
                         Defaults to POLIS_GH, then gh from PATH.
+  --go COMMAND          Go command or executable path used to build the
+                        offline POLIS asset. Defaults to POLIS_GO, then go.
   --remote NAME         Git remote used for tag inspection/push (default: origin).
   --title TEXT          Explicit GitHub Release title.
   --notes-file FILE     Read release notes from FILE instead of generated notes.
@@ -23,7 +25,8 @@ Options:
   -h, --help            Show this help.
 
 Without --publish the script performs preflight only and does not create/push tags
-or create a GitHub Release.
+or create a GitHub Release. Every release also generates a platform-specific
+offline POLIS bundle and includes it in the assets prepared for publication.
 USAGE
 }
 
@@ -45,6 +48,19 @@ resolve_command() {
   command -v "$candidate" 2>/dev/null || fail "GitHub CLI command not found: $candidate"
 }
 
+resolve_go_command() {
+  local candidate=$1
+  if [[ "$candidate" == */* ]]; then
+    if [[ "$candidate" != /* ]]; then
+      candidate="$START_DIR/$candidate"
+    fi
+    [[ -x "$candidate" ]] || fail "Go command is not executable: $candidate"
+    printf '%s\n' "$candidate"
+    return
+  fi
+  command -v "$candidate" 2>/dev/null || fail "Go command not found: $candidate"
+}
+
 sha256_file() {
   local file=$1
   if command -v sha256sum >/dev/null 2>&1; then
@@ -59,7 +75,7 @@ sha256_file() {
     openssl dgst -sha256 "$file" | awk '{print $NF}'
     return
   fi
-  fail "SHA-256 tool not found (sha256sum, shasum, or openssl required when assets are supplied)"
+  fail "SHA-256 tool not found (sha256sum, shasum, or openssl required for release assets)"
 }
 
 file_size() {
@@ -91,7 +107,53 @@ assert_asset() {
   [[ -s "$file" ]] || fail "asset is empty: $file"
 }
 
+assert_unique_asset_name() {
+  local name=$1
+  while IFS= read -r seen; do
+    [[ -z "$seen" || "$seen" != "$name" ]] || fail "duplicate asset basename: $name"
+  done <<< "$asset_names"
+  asset_names+="$name"$'\n'
+}
+
+prepare_offline_asset() {
+  local safe_tag offline_binary go_host_os go_host_arch
+
+  GO=$(resolve_go_command "$GO_CHOICE")
+  GOOS=$("$GO" env GOOS) || fail "cannot resolve Go target OS"
+  GOARCH=$("$GO" env GOARCH) || fail "cannot resolve Go target architecture"
+  go_host_os=$("$GO" env GOHOSTOS) || fail "cannot resolve Go host OS"
+  go_host_arch=$("$GO" env GOHOSTARCH) || fail "cannot resolve Go host architecture"
+  [[ "$GOOS" =~ ^[a-z0-9._-]+$ ]] || fail "invalid Go target OS: $GOOS"
+  [[ "$GOARCH" =~ ^[a-z0-9._-]+$ ]] || fail "invalid Go target architecture: $GOARCH"
+  [[ "$go_host_os" =~ ^[a-z0-9._-]+$ ]] || fail "invalid Go host OS: $go_host_os"
+  [[ "$go_host_arch" =~ ^[a-z0-9._-]+$ ]] || fail "invalid Go host architecture: $go_host_arch"
+
+  OFFLINE_RUNTIME="$GOOS/$GOARCH"
+  GO_HOST_RUNTIME="$go_host_os/$go_host_arch"
+  if [[ "$OFFLINE_RUNTIME" != "$GO_HOST_RUNTIME" ]]; then
+    fail "offline release target $OFFLINE_RUNTIME differs from Go host $GO_HOST_RUNTIME; run the release on the target platform"
+  fi
+  safe_tag=${TAG//\//-}
+  offline_binary="$TMP_DIR/polis-${safe_tag}-${GOOS}-${GOARCH}"
+  if [[ "$GOOS" == "windows" ]]; then
+    offline_binary+='.exe'
+  fi
+  OFFLINE_ASSET="$TMP_DIR/polis-${safe_tag}-offline-${GOOS}-${GOARCH}.zip"
+
+  if ! "$GO" build -trimpath -o "$offline_binary" ./cmd/polis; then
+    fail "cannot build POLIS executable for offline release asset"
+  fi
+  if ! "$offline_binary" export --out "$OFFLINE_ASSET" >/dev/null; then
+    fail "cannot export offline POLIS release asset"
+  fi
+
+  assert_asset "$OFFLINE_ASSET"
+  OFFLINE_ASSET_NAME=$(basename "$OFFLINE_ASSET")
+  assert_unique_asset_name "$OFFLINE_ASSET_NAME"
+}
+
 GH_CHOICE=${POLIS_GH:-gh}
+GO_CHOICE=${POLIS_GO:-go}
 REMOTE=origin
 TAG=''
 TITLE=''
@@ -101,6 +163,13 @@ PRERELEASE=false
 LATEST=automatic
 PUBLISH=false
 ASSETS=()
+GO=''
+GOOS=''
+GOARCH=''
+GO_HOST_RUNTIME=''
+OFFLINE_ASSET=''
+OFFLINE_ASSET_NAME=''
+OFFLINE_RUNTIME=''
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -112,6 +181,11 @@ while [[ $# -gt 0 ]]; do
     --gh)
       [[ $# -ge 2 ]] || fail "--gh requires a value"
       GH_CHOICE=$2
+      shift 2
+      ;;
+    --go)
+      [[ $# -ge 2 ]] || fail "--go requires a value"
+      GO_CHOICE=$2
       shift 2
       ;;
     --remote)
@@ -189,10 +263,7 @@ for asset in "${ASSETS[@]}"; do
   assert_asset "$asset"
   name=$(basename "$asset")
   [[ "$name" != "SHA256SUMS" ]] || fail "asset basename SHA256SUMS is reserved by the release script"
-  while IFS= read -r seen; do
-    [[ -z "$seen" || "$seen" != "$name" ]] || fail "duplicate asset basename: $name"
-  done <<< "$asset_names"
-  asset_names+="$name"$'\n'
+  assert_unique_asset_name "$name"
 done
 
 LOCAL_TAG=$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" 2>/dev/null || true)
@@ -222,15 +293,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ ${#ASSETS[@]} -gt 0 ]]; then
-  TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/polis-release.XXXXXX")
-  CHECKSUM_FILE="$TMP_DIR/SHA256SUMS"
-  : > "$CHECKSUM_FILE"
-  for asset in "${ASSETS[@]}"; do
-    printf '%s  %s\n' "$(sha256_file "$asset")" "$(basename "$asset")" >> "$CHECKSUM_FILE"
-  done
-  UPLOADS+=("$CHECKSUM_FILE")
-fi
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/polis-release.XXXXXX")
+prepare_offline_asset
+UPLOADS+=("$OFFLINE_ASSET")
+
+CHECKSUM_FILE="$TMP_DIR/SHA256SUMS"
+: > "$CHECKSUM_FILE"
+for asset in "${UPLOADS[@]}"; do
+  printf '%s  %s\n' "$(sha256_file "$asset")" "$(basename "$asset")" >> "$CHECKSUM_FILE"
+done
+UPLOADS+=("$CHECKSUM_FILE")
 
 printf 'POLIS RELEASE PREFLIGHT: PASS\n'
 printf 'Repository: %s\n' "$REPO"
@@ -238,7 +310,11 @@ printf 'Source commit: %s\n' "$SOURCE_COMMIT"
 printf 'Tag: %s\n' "$TAG"
 printf 'Git remote: %s\n' "$REMOTE"
 printf 'GitHub CLI: %s\n' "$GH"
-printf 'Assets: %d\n' "${#ASSETS[@]}"
+printf 'Go: %s\n' "$GO"
+printf 'Go host: %s\n' "$GO_HOST_RUNTIME"
+printf 'Offline runtime: %s\n' "$OFFLINE_RUNTIME"
+printf 'Offline bundle: %s\n' "$OFFLINE_ASSET_NAME"
+printf 'Assets: %d\n' "${#UPLOADS[@]}"
 if [[ -n "$CHECKSUM_FILE" ]]; then
   printf 'Checksums:\n'
   cat "$CHECKSUM_FILE"

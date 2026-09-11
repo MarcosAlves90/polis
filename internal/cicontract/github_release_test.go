@@ -22,9 +22,12 @@ func TestGitHubReleaseDocumentationContract(t *testing.T) {
 		"--tag",
 		"--publish",
 		"--gh",
+		"--go",
 		"POLIS_GH",
+		"POLIS_GO",
 		"--verify-tag",
 		"SHA256SUMS",
+		"offline",
 	})
 }
 
@@ -58,6 +61,34 @@ func TestGitHubReleaseScriptPreflightUsesDefaultGHWithoutMutation(t *testing.T) 
 	}
 }
 
+func TestGitHubReleaseScriptPreflightBuildsOfflineAsset(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("release script is a Bash operator tool")
+	}
+	fixture := newReleaseScriptFixture(t)
+	customGH := fixture.writeFakeGH("custom-gh", "custom")
+
+	output, err := fixture.run("--tag", "v5.0.0", "--gh", customGH)
+	if err != nil {
+		t.Fatalf("offline asset preflight failed: %v\n%s", err, output)
+	}
+	for _, fragment := range []string{
+		"Offline runtime: linux/amd64",
+		"Offline bundle: polis-v5.0.0-offline-linux-amd64.zip",
+		"Assets: 2",
+	} {
+		if !strings.Contains(output, fragment) {
+			t.Fatalf("offline asset evidence missing %q:\n%s", fragment, output)
+		}
+	}
+	goLog := fixture.readGoLog()
+	for _, fragment := range []string{"env GOOS", "env GOARCH", "build -trimpath -o"} {
+		if !strings.Contains(goLog, fragment) {
+			t.Fatalf("offline asset did not invoke Go with %q:\n%s", fragment, goLog)
+		}
+	}
+}
+
 func TestGitHubReleaseScriptUsesPOLISGH(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("release script is a Bash operator tool")
@@ -72,6 +103,43 @@ func TestGitHubReleaseScriptUsesPOLISGH(t *testing.T) {
 	}
 	if log := fixture.readGHLog(); !strings.Contains(log, "env|") {
 		t.Fatalf("POLIS_GH was not used:\n%s", log)
+	}
+}
+
+func TestGitHubReleaseScriptExplicitGoOverridesEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("release script is a Bash operator tool")
+	}
+	fixture := newReleaseScriptFixture(t)
+	fixture.env = append(fixture.env, "POLIS_GO="+filepath.Join(fixture.binDir, "missing-go"))
+	customGH := fixture.writeFakeGH("custom-gh", "custom")
+
+	output, err := fixture.run("--tag", "v5.0.0", "--gh", customGH, "--go", fixture.goPath)
+	if err != nil {
+		t.Fatalf("explicit Go preflight failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(output, "Offline bundle: polis-v5.0.0-offline-linux-amd64.zip") {
+		t.Fatalf("explicit Go command was not used:\n%s", output)
+	}
+}
+
+func TestGitHubReleaseScriptRejectsCrossCompiledOfflineAsset(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("release script is a Bash operator tool")
+	}
+	fixture := newReleaseScriptFixture(t)
+	customGH := fixture.writeFakeGH("custom-gh", "custom")
+	fixture.env = append(fixture.env, "POLIS_RELEASE_TEST_GOOS=darwin")
+
+	output, err := fixture.run("--tag", "v5.0.0", "--gh", customGH)
+	if err == nil {
+		t.Fatalf("cross-compiled offline asset was accepted:\n%s", output)
+	}
+	if !strings.Contains(output, "offline release target darwin/amd64 differs from Go host linux/amd64") {
+		t.Fatalf("unexpected cross-compilation error:\n%s", output)
+	}
+	if strings.Contains(fixture.readGoLog(), "build -trimpath") {
+		t.Fatal("cross-target validation happened after the build")
 	}
 }
 
@@ -95,6 +163,26 @@ func TestGitHubReleaseScriptPreflightHashesAssets(t *testing.T) {
 	}
 	if strings.Contains(fixture.readGHLog(), "release create") {
 		t.Fatal("asset preflight performed remote release mutation")
+	}
+}
+
+func TestGitHubReleaseScriptRejectsOfflineAssetBasenameCollision(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("release script is a Bash operator tool")
+	}
+	fixture := newReleaseScriptFixture(t)
+	customGH := fixture.writeFakeGH("custom-gh", "custom")
+	asset := filepath.Join(t.TempDir(), "polis-v5.0.0-offline-linux-amd64.zip")
+	if err := os.WriteFile(asset, []byte("ambiguous-release-asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := fixture.run("--tag", "v5.0.0", "--gh", customGH, "--asset", asset)
+	if err == nil {
+		t.Fatalf("offline asset basename collision was accepted:\n%s", output)
+	}
+	if !strings.Contains(output, "duplicate asset basename: polis-v5.0.0-offline-linux-amd64.zip") {
+		t.Fatalf("unexpected collision error:\n%s", output)
 	}
 }
 
@@ -169,6 +257,9 @@ func TestGitHubReleaseScriptPublishPushesExactTagAndUsesVerifyTag(t *testing.T) 
 	if strings.Contains(log, "--clobber") {
 		t.Fatalf("release flow must not clobber assets:\n%s", log)
 	}
+	if !strings.Contains(log, "polis-v5.0.0-offline-linux-amd64.zip") || !strings.Contains(log, "SHA256SUMS") {
+		t.Fatalf("release did not upload the offline bundle and release checksums:\n%s", log)
+	}
 }
 
 func assertFileContains(t *testing.T, path string, fragments []string) {
@@ -186,13 +277,16 @@ func assertFileContains(t *testing.T, path string, fragments []string) {
 }
 
 type releaseScriptFixture struct {
-	t       *testing.T
-	root    string
-	remote  string
-	binDir  string
-	ghLog   string
-	ghState string
-	env     []string
+	t        *testing.T
+	root     string
+	remote   string
+	binDir   string
+	ghLog    string
+	ghState  string
+	ghAssets string
+	goLog    string
+	goPath   string
+	env      []string
 }
 
 func newReleaseScriptFixture(t *testing.T) *releaseScriptFixture {
@@ -220,18 +314,79 @@ func newReleaseScriptFixture(t *testing.T) *releaseScriptFixture {
 	runGit(t, root, "remote", "add", "origin", remote)
 	runGit(t, root, "push", "-u", "origin", "main")
 
-	return &releaseScriptFixture{
-		t:       t,
-		root:    root,
-		remote:  remote,
-		binDir:  binDir,
-		ghLog:   filepath.Join(base, "gh.log"),
-		ghState: filepath.Join(base, "gh.state"),
+	fixture := &releaseScriptFixture{
+		t:        t,
+		root:     root,
+		remote:   remote,
+		binDir:   binDir,
+		ghLog:    filepath.Join(base, "gh.log"),
+		ghState:  filepath.Join(base, "gh.state"),
+		ghAssets: filepath.Join(base, "gh.assets"),
+		goLog:    filepath.Join(base, "go.log"),
 		env: append(os.Environ(),
 			"POLIS_RELEASE_TEST_LOG="+filepath.Join(base, "gh.log"),
 			"POLIS_RELEASE_TEST_STATE="+filepath.Join(base, "gh.state"),
+			"POLIS_RELEASE_TEST_ASSETS="+filepath.Join(base, "gh.assets"),
+			"POLIS_RELEASE_TEST_GO_LOG="+filepath.Join(base, "go.log"),
 		),
 	}
+	fixture.goPath = fixture.writeFakeGo()
+	fixture.env = append(fixture.env, "POLIS_GO="+fixture.goPath)
+	return fixture
+}
+
+func (f *releaseScriptFixture) writeFakeGo() string {
+	f.t.Helper()
+	path := filepath.Join(f.binDir, "fake-go")
+	script := `#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$POLIS_RELEASE_TEST_GO_LOG"
+if [[ "${1:-}" == "env" && "${2:-}" == "GOOS" ]]; then
+  echo "${POLIS_RELEASE_TEST_GOOS:-linux}"
+  exit 0
+fi
+if [[ "${1:-}" == "env" && "${2:-}" == "GOARCH" ]]; then
+  echo "${POLIS_RELEASE_TEST_GOARCH:-amd64}"
+  exit 0
+fi
+if [[ "${1:-}" == "env" && "${2:-}" == "GOHOSTOS" ]]; then
+  echo linux
+  exit 0
+fi
+if [[ "${1:-}" == "env" && "${2:-}" == "GOHOSTARCH" ]]; then
+  echo amd64
+  exit 0
+fi
+if [[ "${1:-}" == "build" ]]; then
+  output=''
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "-o" ]]; then
+      [[ $# -ge 2 ]]
+      output=$2
+      shift 2
+    else
+      shift
+    fi
+  done
+  [[ -n "$output" ]]
+  cat > "$output" <<'BINARY'
+#!/usr/bin/env bash
+set -eu
+if [[ "${1:-}" == "export" && "${2:-}" == "--out" && $# -eq 3 ]]; then
+  printf 'offline bundle fixture\n' > "$3"
+  exit 0
+fi
+exit 1
+BINARY
+  chmod +x "$output"
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	return path
 }
 
 func (f *releaseScriptFixture) writeFakeGH(name, marker string) string {
@@ -259,7 +414,10 @@ if [[ "${1:-}" == "release" && "${2:-}" == "list" ]]; then
 fi
 if [[ "${1:-}" == "release" && "${2:-}" == "view" ]]; then
   if [[ -f "$POLIS_RELEASE_TEST_STATE" ]]; then
-    if [[ "$*" == *"--json tagName,isDraft,isPrerelease,isImmutable,url"* ]]; then
+    if [[ "$*" == *"--json assets"* ]]; then
+      [[ -f "$POLIS_RELEASE_TEST_ASSETS" ]]
+      cat "$POLIS_RELEASE_TEST_ASSETS"
+    elif [[ "$*" == *"--json tagName,isDraft,isPrerelease,isImmutable,url"* ]]; then
       printf '%s\n' 'v5.0.0|false|false|false|https://example.invalid/release'
     else
       printf '%s\n' 'v5.0.0'
@@ -270,6 +428,32 @@ if [[ "${1:-}" == "release" && "${2:-}" == "view" ]]; then
 fi
 if [[ "${1:-}" == "release" && "${2:-}" == "create" ]]; then
   : > "$POLIS_RELEASE_TEST_STATE"
+  : > "$POLIS_RELEASE_TEST_ASSETS"
+  skip_next=false
+  for arg in "$@"; do
+    if [[ "$skip_next" == true ]]; then
+      skip_next=false
+      continue
+    fi
+    case "$arg" in
+      --repo|--title|--notes-file)
+        skip_next=true
+        continue
+        ;;
+      --*)
+        continue
+        ;;
+    esac
+    if [[ -f "$arg" ]]; then
+      if command -v sha256sum >/dev/null 2>&1; then
+        digest=$(sha256sum "$arg" | awk '{print $1}')
+      else
+        digest=$(shasum -a 256 "$arg" | awk '{print $1}')
+      fi
+      size=$(wc -c < "$arg" | tr -d '[:space:]')
+      printf '%s|%s|sha256:%s\n' "$(basename "$arg")" "$size" "$digest" >> "$POLIS_RELEASE_TEST_ASSETS"
+    fi
+  done
   exit 0
 fi
 exit 0
@@ -306,6 +490,15 @@ func (f *releaseScriptFixture) readGHLog() string {
 	raw, err := os.ReadFile(f.ghLog)
 	if err != nil {
 		f.t.Fatalf("read gh log: %v", err)
+	}
+	return string(raw)
+}
+
+func (f *releaseScriptFixture) readGoLog() string {
+	f.t.Helper()
+	raw, err := os.ReadFile(f.goLog)
+	if err != nil {
+		f.t.Fatalf("read go log: %v", err)
 	}
 	return string(raw)
 }

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [6.3.0] - 2026-09-11
+
+### Added
+
+- Add `polis export` to generate a self-contained, checksummed offline runtime bundle with the native V6 executable, specification, schemas, and usage guidance for coding agents without language runtimes or internet access.
+- Make the GitHub release flow build and upload the matching native offline bundle and release-level `SHA256SUMS` asset automatically for every release.
+
 ## [6.2.0] - 2026-09-10
 
 ### Added
@@ -144,7 +151,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Aligned the Go module identity with the repository before the V4 semantic import-path migration.
 - Made Git-based CI fixtures deterministic across Windows line-ending behavior.
 
-[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.2.0...HEAD
+[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.3.0...HEAD
+[6.3.0]: https://github.com/MarcosAlves90/polis/compare/v6.2.0...v6.3.0
 [6.2.0]: https://github.com/MarcosAlves90/polis/compare/v6.1.0...v6.2.0
 [6.1.0]: https://github.com/MarcosAlves90/polis/compare/v6.0.0...v6.1.0
 [6.0.0]: https://github.com/MarcosAlves90/polis/compare/v5.0.1...v6.0.0

@@ -36,6 +36,7 @@ polis inspect [--format text|json] [--signature artifact.polis.sig --trusted-key
 polis preflight --repo /path/to/repo [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
 polis apply --repo /path/to/repo [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
 polis sign --key private.pem --out artifact.polis.sig [--format text|json] artifact.polis
+polis export --out /outside/polis-v6-offline.zip [--format text|json]
 ```
 
 `--regression-patch` is required for Change Contracts whose proof mode is Red-to-Green (defects and strict features). `preflight` never applies the payload and a later `apply` always validates again.
@@ -43,6 +44,14 @@ polis sign --key private.pem --out artifact.polis.sig [--format text|json] artif
 ### Zero-residue target workflow
 
 The canonical V6 path is explicit rather than discoverable: policy, Change Contract, regression patch, package, signature, and optional caller-owned records live outside the target repository. Successful execution does not create `.polis`, `.git/polis`, linked-worktree administration, persistent temporary Git objects, or default apply-evidence files in the target. Temporary validation state is isolated outside the target and cleaned before successful return. The external `.polis` artifact still uses its normative member names; that artifact is not repository residue.
+
+### Offline runtime export
+
+`polis export` creates one self-contained `polis-v6-offline.zip` bundle for an offline coding agent. The bundle contains the current native POLIS executable, the V6 specification, the policy/contract/package/evidence/signature schemas, a concise offline usage guide, a machine-readable manifest, and `SHA256SUMS`. It does not contain the target repository or project-specific policy.
+
+The bundle does not require Go, Python, Node.js, Ruby, or internet access for the POLIS runtime. A project command configured in a policy may have its own network dependency. Git remains required by POLIS operations, and the bundle must be used on the operating system and CPU architecture recorded in its manifest. After extraction, run `bin/polis` (or `bin/polis.exe` on Windows) directly. This is a POLIS runtime bundle, not a delivery `.polis` package and must not be passed to `polis verify`.
+
+The export is deterministic, never overwrites an existing output, and declares `network_required: false`. The archive and its contents can be transferred to an AI together with the target project without sending the POLIS source repository.
 
 ### Policy initialization
 
@@ -121,10 +130,14 @@ Repository-owned GitHub Release publication is available through `scripts/github
 Run preflight first:
 
 ```bash
-./scripts/github-release.sh --tag v6.2.0
+./scripts/github-release.sh --tag v6.3.0
 ```
 
-Remote mutation requires an explicit `--publish`. See [the GitHub Release guide](docs/releases.md) for tag safety, release notes, optional assets, SHA-256 verification, and immutable-release attestation checks.
+Remote mutation requires an explicit `--publish`. Each release also builds and
+uploads a native `polis-<tag>-offline-<GOOS>-<GOARCH>.zip` runtime plus the
+release-level `SHA256SUMS`; use `POLIS_GO` or `--go` to select Go when needed.
+See [the GitHub Release guide](docs/releases.md) for tag safety, release notes,
+additional assets, SHA-256 verification, and immutable-release attestation checks.
 
 ## Local SonarQube analysis
 
@@ -135,4 +148,4 @@ export SONAR_TOKEN='your-token'
 ./scripts/sonar-local.sh
 ```
 
-See [POLIS Specification V6](spec/POLIS-SPEC-v6.md), [SDD-0030](docs/sdd/0030-polis-v6-mandatory-strict-development.md), [SDD-0033](docs/sdd/0033-execution-plan.md), [SDD-0034](docs/sdd/0034-policy-dependency-graph.md), and [CHANGELOG.md](CHANGELOG.md).
+See [POLIS Specification V6](spec/POLIS-SPEC-v6.md), [SDD-0030](docs/sdd/0030-polis-v6-mandatory-strict-development.md), [SDD-0033](docs/sdd/0033-execution-plan.md), [SDD-0034](docs/sdd/0034-policy-dependency-graph.md), [SDD-0035](docs/sdd/0035-offline-runtime-export.md), and [CHANGELOG.md](CHANGELOG.md).

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/ed25519"
@@ -8,9 +9,11 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -107,9 +110,108 @@ func TestRunDoctor(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "POLIS doctor 6.2.0") {
+	if !strings.Contains(out.String(), "POLIS doctor 6.3.0") {
 		t.Fatalf("doctor version mismatch: stdout=%q", out.String())
 	}
+}
+
+func TestRunExportCreatesSelfContainedOfflineBundle(t *testing.T) {
+	bundlePath := filepath.Join(t.TempDir(), "polis-offline.zip")
+	var out, errOut bytes.Buffer
+	code := run([]string{"export", "--out", bundlePath, "--format", "json"}, &out, &errOut)
+	if code != exitPass {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	var result struct {
+		Status          string `json:"status"`
+		Bundle          string `json:"bundle"`
+		Version         string `json:"polis_version"`
+		Runtime         string `json:"runtime"`
+		NetworkRequired bool   `json:"network_required"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("invalid export JSON: %v\n%s", err, out.String())
+	}
+	if result.Status != "PASS" || result.Bundle != bundlePath || result.Version != version || result.Runtime != runtime.GOOS+"/"+runtime.GOARCH || result.NetworkRequired {
+		t.Fatalf("export result=%+v", result)
+	}
+
+	archive, err := zip.OpenReader(bundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	want := map[string]bool{
+		"polis-offline/bin/polis":                       false,
+		"polis-offline/manifest.json":                   false,
+		"polis-offline/POLIS-OFFLINE.md":                false,
+		"polis-offline/spec/POLIS-SPEC-v6.md":           false,
+		"polis-offline/spec/schemas/policy.schema.json": false,
+	}
+	for _, member := range archive.File {
+		if _, ok := want[member.Name]; ok {
+			want[member.Name] = true
+		}
+	}
+	for name, present := range want {
+		if !present {
+			t.Errorf("offline bundle missing %s", name)
+		}
+	}
+}
+
+func TestRunExportRejectsExistingOutput(t *testing.T) {
+	bundlePath := filepath.Join(t.TempDir(), "polis-offline.zip")
+	if err := os.WriteFile(bundlePath, []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{"export", "--out", bundlePath}, &out, &errOut)
+	if code != exitValidationFailed || !strings.Contains(errOut.String(), "output already exists") {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+}
+
+func TestRunExportReportsExecutableMember(t *testing.T) {
+	bundlePath := filepath.Join(t.TempDir(), "polis-offline.zip")
+	var out, errOut bytes.Buffer
+	if code := run([]string{"export", "--out", bundlePath}, &out, &errOut); code != exitPass {
+		t.Fatalf("code=%d stderr=%s", code, errOut.String())
+	}
+	archive, err := zip.OpenReader(bundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	for _, member := range archive.File {
+		if member.Name != "polis-offline/manifest.json" {
+			continue
+		}
+		reader, err := member.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest, err := io.ReadAll(reader)
+		_ = reader.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var document struct {
+			Executable string `json:"executable"`
+		}
+		if err := json.Unmarshal(manifest, &document); err != nil {
+			t.Fatal(err)
+		}
+		want := "polis-offline/bin/polis"
+		if runtime.GOOS == "windows" {
+			want += ".exe"
+		}
+		if document.Executable != want {
+			t.Fatalf("executable=%q want=%q", document.Executable, want)
+		}
+		return
+	}
+	t.Fatal("offline bundle manifest not found")
 }
 
 func TestRunDoctorBlocksWithoutGit(t *testing.T) {

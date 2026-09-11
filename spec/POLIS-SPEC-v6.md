@@ -16,7 +16,7 @@ Compatibility MUST NOT weaken the canonical zero-residue producer path or author
 
 ## 2. Runtime identity
 
-The V6 CLI version is `6.2.0`.
+The V6 CLI version is `6.3.0`.
 
 The Go module path is:
 
@@ -172,6 +172,23 @@ Consumer isolation MUST NOT create persistent linked-worktree administration or 
 
 `preflight` remains read-only with respect to the target. `apply` repeats validation and MUST NOT reuse a cached preflight PASS.
 
+## 8. Offline runtime bundle
+
+`polis export --out <bundle.zip>` MUST emit one self-contained ZIP bundle for offline POLIS V6 use. The bundle is a runtime distribution and is distinct from a delivery `.polis` package.
+
+The bundle MUST contain:
+
+- a native `polis` executable for the exporting `GOOS` and `GOARCH`;
+- `POLIS-OFFLINE.md` with the offline operating instructions;
+- `spec/POLIS-SPEC-v6.md`;
+- the V6 policy, Change Contract v3/v4, package manifest, evidence-event, and signature schemas;
+- `manifest.json` declaring the POLIS version, runtime, executable path, prerequisites, and `network_required: false`;
+- `SHA256SUMS` covering every other bundle member.
+
+The bundle MUST NOT contain the target repository, a project-specific policy, credentials, or external input paths. It MUST be deterministic, MUST NOT overwrite an existing output, and MUST validate its archive contents before returning success.
+
+Using the bundle MUST NOT require Go or another programming-language runtime, and the runtime bundle itself MUST NOT perform network access. A project command configured in a policy MAY have its own network dependency. Git remains a required native prerequisite for POLIS repository operations, and a consumer MUST verify that the host matches the runtime recorded in the manifest. The bundle is not accepted by `polis verify`; it is used by extracting and invoking its embedded executable directly.
+
 ## 9. Zero-residue target invariant
 
 Successful canonical external-policy execution MUST leave no tool-owned state in the target repository after command completion.
@@ -191,7 +208,7 @@ Temporary files, clones, object databases, and evidence may exist outside the ta
 
 The zero-residue invariant does not rename or remove canonical members inside the external `.polis` delivery artifact itself; the artifact is not target-repository state.
 
-## 10. Traceability
+## 11. Traceability
 
 Strict schema-v4 Specification traceability remains authoritative:
 
@@ -201,7 +218,7 @@ REQ -> AC -> regression proof
 
 Every requirement MUST be covered by at least one acceptance criterion, every acceptance criterion MUST reference existing requirements, and the proof binding remains deterministic.
 
-## 11. Unchanged contracts
+## 12. Unchanged contracts
 
 V6 does not change:
 
@@ -217,7 +234,7 @@ V6 does not change:
 - transactional apply preserving HEAD and the real index;
 - package/member resource limits.
 
-## 12. Major-version rationale
+## 13. Major-version rationale
 
 V6 remains a semantic major because producer operations that were valid in V5 become invalid: a caller cannot create a new artifact directly from Change Contract schema v2 or unlocked strict schema v3. The required `polis start` lock and development proof are part of the producer contract.
 

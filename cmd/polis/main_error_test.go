@@ -46,7 +46,7 @@ func TestV5ArtifactCommandsFailClosedOnInvalidArtifacts(t *testing.T) {
 }
 
 func TestV5CommandsRejectMalformedFlags(t *testing.T) {
-	commands := []string{"verify", "inspect", "preflight", "init", "capture-red", "build", "apply", "sign", "doctor"}
+	commands := []string{"verify", "inspect", "preflight", "init", "capture-red", "build", "apply", "sign", "export", "doctor"}
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
 			var out, errOut bytes.Buffer

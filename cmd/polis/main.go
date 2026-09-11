@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
+	"github.com/MarcosAlves90/polis/v6/internal/offlinekit"
 	"github.com/MarcosAlves90/polis/v6/internal/packageapply"
 	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
@@ -23,7 +24,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
-const version = "6.2.0"
+const version = "6.3.0"
 
 const (
 	outputFormatHelp   = "output format: text or json"
@@ -48,7 +49,7 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 func run(args []string, out, errOut io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errOut, "usage: polis <doctor|init|plan|start|capture-red|verify|inspect|preflight|build|apply|sign>")
+		fmt.Fprintln(errOut, "usage: polis <doctor|init|plan|start|capture-red|verify|inspect|preflight|build|apply|sign|export>")
 		return exitUsage
 	}
 	switch args[0] {
@@ -74,6 +75,8 @@ func run(args []string, out, errOut io.Writer) int {
 		return runApply(args[1:], out, errOut)
 	case "sign":
 		return runSign(args[1:], out, errOut)
+	case "export":
+		return runExport(args[1:], out, errOut)
 	default:
 		fmt.Fprintf(errOut, "unknown command %q\n", args[0])
 		return exitUsage
@@ -478,6 +481,39 @@ func runSign(args []string, out, errOut io.Writer) int {
 		writeJSON(out, map[string]any{"status": "PASS", "signature": result.SignaturePath, "artifact_sha256": result.ArtifactSHA256, "public_key_sha256": result.PublicKeySHA256})
 	} else {
 		fmt.Fprintf(out, "POLIS SIGN: PASS\nSignature: %s\nArtifact SHA256: %s\nPublic key SHA256: %s\n", result.SignaturePath, result.ArtifactSHA256, result.PublicKeySHA256)
+	}
+	return exitPass
+}
+
+func runExport(args []string, out, errOut io.Writer) int {
+	fs := flag.NewFlagSet("export", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	outPath := fs.String("out", "", "self-contained POLIS V6 offline bundle output")
+	format := fs.String("format", "text", outputFormatHelp)
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 0 || *outPath == "" || !validFormat(*format) {
+		fmt.Fprintln(errOut, "usage: polis export --out <polis-offline.zip> [--format text|json]")
+		return exitUsage
+	}
+	result, err := offlinekit.Export(offlinekit.Options{Out: *outPath, Version: version})
+	if err != nil {
+		return writeFailure(errOut, *format, "POLIS EXPORT", exitValidationFailed, err)
+	}
+	if *format == "json" {
+		writeJSON(out, map[string]any{
+			"status":           "PASS",
+			"bundle":           result.Path,
+			"sha256":           result.SHA256,
+			"polis_version":    result.Version,
+			"runtime":          result.Runtime,
+			"executable":       result.Executable,
+			"network_required": result.NetworkRequired,
+			"entries":          result.Entries,
+		})
+	} else {
+		fmt.Fprintf(out, "POLIS EXPORT: PASS\nBundle: %s\nSHA256: %s\nPOLIS version: %s\nRuntime: %s\nExecutable: %s\nNetwork required: no\nGit required: yes\n", result.Path, result.SHA256, result.Version, result.Runtime, result.Executable)
 	}
 	return exitPass
 }
