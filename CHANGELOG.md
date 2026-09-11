@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Restructure the README as a concise landing page and move operational V6 reference material into `docs/usage.md`.
+
 ## [6.3.0] - 2026-09-11
 
 ### Added

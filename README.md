@@ -1,151 +1,70 @@
 # POLIS V6
 
-POLIS is a deterministic software-delivery protocol and Go CLI for evidence-driven validation, packaging, inspection, and transactional application of code changes.
+> Deterministic, evidence-driven software delivery for AI-assisted engineering.
 
-Go module: `github.com/MarcosAlves90/polis/v6`.
+POLIS is a Go CLI and delivery protocol for validating, packaging, inspecting,
+signing, and safely applying code changes.
 
-![Banner do POLIS](./polis-banner.png)
+![POLIS banner](./polis-banner.png)
 
-V6 keeps the V5 portable trust boundary and makes locked SDD/TDD mandatory for every new producer build. Authority remains separated into:
+## Why POLIS
 
-1. `guide/` — engineering workflow, scope, safety, and evidence obligations.
-2. `spec/` — machine contracts for package bytes, schemas, evidence, status, integrity, and application semantics.
-3. `cmd/polis` + `internal/` — deterministic Go reference implementation.
+- Makes requirements, tests, evidence, and change scope explicit.
+- Applies configurable validation with strict, safe defaults.
+- Produces verifiable `.polis` delivery packages and detached signatures.
+- Preserves repository integrity through isolated validation and transactional apply.
+- Includes a portable offline runtime for coding agents without the source tree.
 
 ## Installation
 
-With Go 1.23+ and Git installed:
+### Go installation (recommended)
 
-```text
+Requirements: Go 1.23 or newer and Git.
+
+```bash
 go install github.com/MarcosAlves90/polis/v6/cmd/polis@latest
+polis doctor
 ```
 
-Then run `polis doctor`. See the [installation guide](docs/installation.md) for OS-specific `PATH` instructions.
-
-## Commands
+For a reproducible installation, pin the release instead of using `@latest`:
 
 ```bash
-polis doctor [--format text|json]
-polis init --repo /path/to/repo [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]
-polis plan --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
-polis start --repo /path/to/repo --policy /outside/policy-v3.json --contract /outside/draft-v3.json --out /outside/locked-v4.json
-polis capture-red --repo /path/to/repo --contract /outside/change.json --out /outside/regression.patch
-polis build --repo /path/to/repo --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/change.json --regression-patch /outside/regression.patch --out /path/to/output
-polis verify [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
-polis inspect [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
-polis preflight --repo /path/to/repo [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
-polis apply --repo /path/to/repo [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
-polis sign --key private.pem --out artifact.polis.sig [--format text|json] artifact.polis
-polis export --out /outside/polis-v6-offline.zip [--format text|json]
+go install github.com/MarcosAlves90/polis/v6/cmd/polis@v6.3.0
 ```
 
-`--regression-patch` is required for Change Contracts whose proof mode is Red-to-Green (defects and strict features). `preflight` never applies the payload and a later `apply` always validates again.
+See the [installation guide](docs/installation.md) for `PATH` setup on Linux,
+macOS, and Windows, plus upgrade, removal, and source-checkout instructions.
 
-### Zero-residue target workflow
+### Offline runtime
 
-The canonical V6 path is explicit rather than discoverable: policy, Change Contract, regression patch, package, signature, and optional caller-owned records live outside the target repository. Successful execution does not create `.polis`, `.git/polis`, linked-worktree administration, persistent temporary Git objects, or default apply-evidence files in the target. Temporary validation state is isolated outside the target and cleaned before successful return. The external `.polis` artifact still uses its normative member names; that artifact is not repository residue.
+Download the `polis-<tag>-offline-<GOOS>-<GOARCH>.zip` asset that matches your
+platform from the [latest release](https://github.com/MarcosAlves90/polis/releases/latest).
+Extract it and run `bin/polis` (or `bin/polis.exe` on Windows).
 
-### Offline runtime export
+The offline runtime requires Git and the matching OS/CPU architecture. It does
+not require Go or another language runtime for POLIS operations. Read the
+[offline runtime guide](spec/POLIS-OFFLINE.md) before transferring it to an AI.
 
-`polis export` creates one self-contained `polis-v6-offline.zip` bundle for an offline coding agent. The bundle contains the current native POLIS executable, the V6 specification, the policy/contract/package/evidence/signature schemas, a concise offline usage guide, a machine-readable manifest, and `SHA256SUMS`. It does not contain the target repository or project-specific policy.
+### Source checkout
 
-The bundle does not require Go, Python, Node.js, Ruby, or internet access for the POLIS runtime. A project command configured in a policy may have its own network dependency. Git remains required by POLIS operations, and the bundle must be used on the operating system and CPU architecture recorded in its manifest. After extraction, run `bin/polis` (or `bin/polis.exe` on Windows) directly. This is a POLIS runtime bundle, not a delivery `.polis` package and must not be passed to `polis verify`.
-
-The export is deterministic, never overwrites an existing output, and declares `network_required: false`. The archive and its contents can be transferred to an AI together with the target project without sending the POLIS source repository.
-
-### Policy initialization
-
-`polis init` keeps `--profile auto` fail-closed. V6 auto-detection recognizes only a root-level Go module. For other repositories, use the explicit `custom` profile and provide direct argv for both required executable gates:
+For development or a checked-out revision:
 
 ```bash
-polis init --repo . --profile custom \
-  --test-argv npm \
-  --test-argv test \
-  --coverage-argv npm \
-  --coverage-argv run \
-  --coverage-argv coverage \
-  --coverage-adapter lcov-v1 \
-  --coverage-report coverage/lcov.info
+git clone https://github.com/MarcosAlves90/polis.git
+cd polis
+go install ./cmd/polis
+polis doctor
 ```
 
-Each repeated argv flag contributes exactly one argument; POLIS does not synthesize shell commands. `--coverage-threshold` is optional and defaults to `80.0` with the existing strict `>` operator. Supported adapters remain `go-coverprofile-v1`, `lcov-v1`, and `cobertura-v1`. All gates other than `test.complete` and `coverage` are generated as `not_applicable` with reasons because `custom` does not infer commands from ecosystem metadata.
+## Documentation
 
-Project Policy also supports explicit validation reinforcement. `strict` is the default and preserves the current behavior; its field may remain absent for compatibility with existing V6 policies. `standard` keeps `test.complete` required and the generated profile disables coverage by default; `minimal` disables all generated project-quality gates by default. An external policy may keep additional gates enabled at either lower level. Repeat `--disable-gate <id>` to disable a generated project gate with a recorded reason. Disabled gates are never silently skipped: the policy and execution evidence list every enabled and disabled gate. These levels do not disable structural, integrity, security, baseline, exact-tree, development-proof, or transactional-apply invariants. A policy committed in the project configures normal runs; a validated external policy passed with `--policy` configures that execution.
+- [Usage and V6 workflows](docs/usage.md)
+- [Installation guide](docs/installation.md)
+- [Offline runtime guide](spec/POLIS-OFFLINE.md)
+- [POLIS Specification V6](spec/POLIS-SPEC-v6.md)
+- [GitHub release process](docs/releases.md)
+- [Architecture and design decisions](docs/sdd/)
+- [Changelog](CHANGELOG.md)
 
-Each project gate may additionally declare `depends_on` gate IDs. POLIS combines these declarations with built-in essential dependencies (currently `coverage` depends on `test.complete`), rejects unknown IDs, cycles, and enabled gates that depend on `not_applicable` gates, and executes the resulting deterministic topological order. Built-in dependencies cannot be removed by policy.
-
-Add `--dry-run` to emit the validated policy JSON to stdout without creating or modifying `.polis/policy.json`, the Git index, `HEAD`, or other worktree files. For the canonical zero-residue workflow, redirect that output to a path outside the target repository and pass it explicitly to `polis start --policy` and `polis build --policy`. Non-dry-run initialization remains available for repositories that intentionally use committed-policy compatibility and never overwrites an existing policy.
-
-`polis plan` is read-only. It compiles the effective committed or external Project Policy and displays the policy digest, runtime, commands, gate inventory, dependency edges, deterministic execution order, mandatory invariants, and guarantees provided or absent. It does not execute project commands or modify the repository.
-
-## V6 contracts
-
-- package format v3, still exactly seven regular members under `polis/`;
-- Project Policy schema v3, with explicit command environments, configurable validation reinforcement, and policy dependency linting;
-- read-only execution planning with a versioned gate inventory and guarantee summary;
-- new V6 builds require locked Change Contract schema v4 created by `polis start`; schemas v1-v3 remain read-compatible for migration;
-- Evidence v2 stores bounded-output byte counts and SHA-256 digests rather than raw stdout/stderr, plus the effective validation level and complete project-gate inventory;
-- detached Ed25519 signatures authenticate exact `.polis` bytes when the consumer supplies a trusted public key;
-- coverage adapters: `go-coverprofile-v1`, `lcov-v1`, and `cobertura-v1`;
-- exact Git baseline and target tree remain mandatory;
-- consumer validation remains isolated, `apply` preserves `HEAD` and the real index, and canonical external-policy execution leaves no tool-owned worktree or Git-metadata residue;
-- project-wide line coverage remains strictly greater than 80% unless project policy requires more.
-
-V6 can read historical Project Policy/Change Contract schemas supported by V5 for migration. New `polis init` output uses Project Policy v3. New `polis build` operations require locked Change Contract schema v4; schema v2 and unlocked schema v3 are no longer valid producer inputs.
-
-## Strict SDD/TDD workflow
-
-POLIS V6 makes machine enforcement of development order mandatory for new builds. A strict schema-v3 draft contains the Specification, requirement-to-acceptance traceability, test scope, and proof command. For the canonical zero-residue path, keep Project Policy schema v3 outside the target repository and run `polis start --policy /outside/policy-v3.json` on a clean committed baseline before implementation. The resulting schema-v4 `baseline_lock` binds the canonical policy bytes by SHA-256, not a repository pathname. Omitting `--policy` retains committed `.polis/policy.json` compatibility for existing/self-hosting repositories.
-
-Strict feature and defect work requires Red-to-Green proof. Strict `behavior_preserving` work uses Green-to-Green characterization: the same explicit command must pass on both baseline and target, without manufacturing a Red state. Captured strict Red paths are immutable between capture and target, preventing tests from being weakened after the failing proof.
-
-Schema-v4 `capture-red` revalidates repository-dependent Git/Specification baseline facts, while `build --policy` additionally proves the effective policy hash. `verify` proves the packaged policy matches `baseline_lock.policy_sha256`. `preflight` and `apply` therefore use the packaged policy and do not require `.polis/policy.json` in the consumer. They still revalidate repository-dependent baseline facts, and `inspect` exposes deterministic `REQ -> AC -> regression` links.
-
-## Artifact hardening
-
-The verifier treats `.polis` bytes as untrusted input. V6 retains the V5 bounds for archive size, total uncompressed content, individual contract/evidence/patch members, and NDJSON event lines. Runtime stdout/stderr retention is limited to 1 MiB per stream while digesting all received bytes.
-
-Change Contract v2+ scopes are checked from the Git base-to-target path set. `.` authorizes the full repository; directory entries ending in `/` authorize that prefix; other entries authorize an exact path. Rename source and destination are both checked.
-
-## Signature trust model
-
-`polis sign` produces a detached signature. The signature signs SHA-256 of the exact artifact bytes with Ed25519. The `.polis` package never chooses its own trusted key; `verify`, `preflight`, and `apply` only authenticate when the consumer supplies both `--signature` and `--trusted-key`.
-
-## Exit categories
-
-Automation-oriented commands use these stable categories:
-
-- `0` PASS
-- `2` usage error
-- `3` invalid artifact/signature
-- `4` blocked environment
-- `5` baseline mismatch
-- `6` validation failure
-- `7` apply failure
-
-## GitHub Releases
-
-Repository-owned GitHub Release publication is available through `scripts/github-release.sh`. It resolves the standard `gh` from `PATH` by default and accepts `POLIS_GH` or `--gh` when an explicit GitHub CLI executable is required.
-
-Run preflight first:
-
-```bash
-./scripts/github-release.sh --tag v6.3.0
-```
-
-Remote mutation requires an explicit `--publish`. Each release also builds and
-uploads a native `polis-<tag>-offline-<GOOS>-<GOARCH>.zip` runtime plus the
-release-level `SHA256SUMS`; use `POLIS_GO` or `--go` to select Go when needed.
-See [the GitHub Release guide](docs/releases.md) for tag safety, release notes,
-additional assets, SHA-256 verification, and immutable-release attestation checks.
-
-## Local SonarQube analysis
-
-The existing local SonarQube workflow remains available:
-
-```bash
-export SONAR_TOKEN='your-token'
-./scripts/sonar-local.sh
-```
-
-See [POLIS Specification V6](spec/POLIS-SPEC-v6.md), [SDD-0030](docs/sdd/0030-polis-v6-mandatory-strict-development.md), [SDD-0033](docs/sdd/0033-execution-plan.md), [SDD-0034](docs/sdd/0034-policy-dependency-graph.md), [SDD-0035](docs/sdd/0035-offline-runtime-export.md), and [CHANGELOG.md](CHANGELOG.md).
+The usage guide is the entry point for command reference, policy profiles,
+strict SDD/TDD, artifact trust, signatures, and exit categories.

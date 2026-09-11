@@ -13,12 +13,12 @@ func TestGitHubReleaseDocumentationContract(t *testing.T) {
 	root := repositoryRoot(t)
 
 	assertFileContains(t, filepath.Join(root, "README.md"), []string{
-		"## GitHub Releases",
+		"## Documentation",
 		"docs/releases.md",
-		"scripts/github-release.sh",
 	})
 	assertFileContains(t, filepath.Join(root, "docs", "releases.md"), []string{
 		"# Publishing GitHub Releases",
+		"scripts/github-release.sh",
 		"--tag",
 		"--publish",
 		"--gh",
