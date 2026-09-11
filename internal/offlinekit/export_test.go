@@ -14,7 +14,7 @@ import (
 	"testing"
 )
 
-const testVersion = "6.3.0"
+const testVersion = "6.3.1"
 
 type testManifest struct {
 	FormatVersion int    `json:"format_version"`
