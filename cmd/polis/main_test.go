@@ -110,8 +110,55 @@ func TestRunDoctor(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "POLIS doctor 6.3.1") {
+	if !strings.Contains(out.String(), "POLIS doctor 6.4.0") {
 		t.Fatalf("doctor version mismatch: stdout=%q", out.String())
+	}
+}
+
+func TestRunHelp(t *testing.T) {
+	for _, args := range [][]string{{"help"}, {"-h"}, {"--help"}} {
+		var out, errOut bytes.Buffer
+		if code := run(args, &out, &errOut); code != exitPass {
+			t.Fatalf("args=%v code=%d stdout=%s stderr=%s", args, code, out.String(), errOut.String())
+		}
+		for _, fragment := range []string{"POLIS V6", "Usage:", "doctor", "export", "polis help <command>"} {
+			if !strings.Contains(out.String(), fragment) {
+				t.Errorf("args=%v help missing %q: %s", args, fragment, out.String())
+			}
+		}
+		if errOut.Len() != 0 {
+			t.Errorf("args=%v unexpected stderr=%q", args, errOut.String())
+		}
+	}
+}
+
+func TestRunCommandHelp(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"help", "doctor"}, &out, &errOut); code != exitPass {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	for _, fragment := range []string{"Usage:", "polis doctor [--format text|json]", "Git and runtime prerequisites"} {
+		if !strings.Contains(out.String(), fragment) {
+			t.Errorf("command help missing %q: %s", fragment, out.String())
+		}
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("unexpected stderr=%q", errOut.String())
+	}
+}
+
+func TestRunHelpRejectsInvalidArguments(t *testing.T) {
+	for _, args := range [][]string{{"help", "unknown"}, {"help", "doctor", "extra"}} {
+		var out, errOut bytes.Buffer
+		if code := run(args, &out, &errOut); code != exitUsage {
+			t.Fatalf("args=%v code=%d stdout=%s stderr=%s", args, code, out.String(), errOut.String())
+		}
+		if out.Len() != 0 {
+			t.Errorf("args=%v unexpected stdout=%q", args, out.String())
+		}
+		if errOut.Len() == 0 {
+			t.Errorf("args=%v expected stderr", args)
+		}
 	}
 }
 

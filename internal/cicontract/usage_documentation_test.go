@@ -20,7 +20,8 @@ func TestREADMEIsLandingPage(t *testing.T) {
 		"## Why POLIS",
 		"## Installation",
 		"go install github.com/MarcosAlves90/polis/v6/cmd/polis@latest",
-		"go install github.com/MarcosAlves90/polis/v6/cmd/polis@v6.3.1",
+		"polis help",
+		"go install github.com/MarcosAlves90/polis/v6/cmd/polis@v6.4.0",
 		"[installation guide](docs/installation.md)",
 		"[Usage and V6 workflows](docs/usage.md)",
 		"[latest release](https://github.com/MarcosAlves90/polis/releases/latest)",
@@ -50,6 +51,7 @@ func TestREADMEIsLandingPage(t *testing.T) {
 	for _, fragment := range []string{
 		"# Using POLIS V6",
 		"## Command reference",
+		"polis help [command]",
 		"## Canonical V6 delivery flow",
 		"## Project Policy and validation",
 		"## V6 contract summary",

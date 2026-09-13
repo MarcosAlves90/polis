@@ -23,13 +23,14 @@ Requirements: Go 1.23 or newer and Git.
 
 ```bash
 go install github.com/MarcosAlves90/polis/v6/cmd/polis@latest
+polis help
 polis doctor
 ```
 
 For a reproducible installation, pin the release instead of using `@latest`:
 
 ```bash
-go install github.com/MarcosAlves90/polis/v6/cmd/polis@v6.3.1
+go install github.com/MarcosAlves90/polis/v6/cmd/polis@v6.4.0
 ```
 
 See the [installation guide](docs/installation.md) for `PATH` setup on Linux,

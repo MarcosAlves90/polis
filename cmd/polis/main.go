@@ -24,7 +24,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
-const version = "6.3.1"
+const version = "6.4.0"
 
 const (
 	outputFormatHelp   = "output format: text or json"
@@ -45,14 +45,75 @@ const (
 	exitApplyFailed      = 7
 )
 
+type commandHelpEntry struct {
+	name    string
+	usage   string
+	summary string
+}
+
+var commandHelpEntries = []commandHelpEntry{
+	{name: "help", usage: "polis help [command]", summary: "show general or command-specific help"},
+	{name: "doctor", usage: "polis doctor [--format text|json]", summary: "check Git and runtime prerequisites"},
+	{name: "init", usage: "polis init [--repo <path>] [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]", summary: "create or preview a Project Policy"},
+	{name: "plan", usage: "polis plan [--repo <path>] [--policy <policy-v3.json>] [--format text|json]", summary: "compile and report the effective Project Policy"},
+	{name: "start", usage: "polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3.json> --out <locked-v4.json>", summary: "lock a strict Change Contract baseline"},
+	{name: "capture-red", usage: "polis capture-red --repo <path> --contract <change.json> --out <regression.patch>", summary: "capture the required Red proof"},
+	{name: "build", usage: "polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] --out <directory>", summary: "build a .polis delivery package"},
+	{name: "verify", usage: "polis verify [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate a .polis artifact"},
+	{name: "inspect", usage: "polis inspect [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "inspect validated artifact metadata"},
+	{name: "preflight", usage: "polis preflight [--repo <path>] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate an artifact without applying it"},
+	{name: "apply", usage: "polis apply [--repo <path>] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate and apply an artifact transactionally"},
+	{name: "sign", usage: "polis sign --key <private.pem> --out <artifact.polis.sig> [--format text|json] <artifact.polis>", summary: "create a detached artifact signature"},
+	{name: "export", usage: "polis export --out <polis-offline.zip> [--format text|json]", summary: "create a self-contained offline runtime bundle"},
+}
+
+func rootUsageLine() string {
+	names := make([]string, 0, len(commandHelpEntries))
+	for _, command := range commandHelpEntries {
+		names = append(names, command.name)
+	}
+	return "usage: polis <" + strings.Join(names, "|") + ">"
+}
+
+func runHelp(args []string, out, errOut io.Writer) int {
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+		args = nil
+	}
+	if len(args) > 1 {
+		fmt.Fprintln(errOut, "usage: polis help [command]")
+		return exitUsage
+	}
+	if len(args) == 1 {
+		for _, command := range commandHelpEntries {
+			if command.name != args[0] {
+				continue
+			}
+			fmt.Fprintf(out, "POLIS V6 %s\n\nUsage:\n  %s\n\n%s\n", version, command.usage, command.summary)
+			return exitPass
+		}
+		fmt.Fprintf(errOut, "unknown command %q\n", args[0])
+		return exitUsage
+	}
+
+	fmt.Fprintf(out, "POLIS V6 %s\n\nUsage:\n  polis <command> [options]\n\nCommands:\n", version)
+	for _, command := range commandHelpEntries {
+		fmt.Fprintf(out, "  %-12s %s\n", command.name, command.summary)
+	}
+	fmt.Fprintln(out, "\nUse `polis help <command>` for command syntax.")
+	fmt.Fprintln(out, "Aliases: `polis -h` and `polis --help`.")
+	return exitPass
+}
+
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 func run(args []string, out, errOut io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errOut, "usage: polis <doctor|init|plan|start|capture-red|verify|inspect|preflight|build|apply|sign|export>")
+		fmt.Fprintln(errOut, rootUsageLine())
 		return exitUsage
 	}
 	switch args[0] {
+	case "help", "-h", "--help":
+		return runHelp(args[1:], out, errOut)
 	case "doctor":
 		return runDoctor(args[1:], out, errOut)
 	case "init":

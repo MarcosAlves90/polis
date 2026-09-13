@@ -12,6 +12,7 @@ rules live in the [POLIS Specification V6](../spec/POLIS-SPEC-v6.md).
 ## Command reference
 
 ```bash
+polis help [command]
 polis doctor [--format text|json]
 polis init --repo /path/to/repo [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]
 polis plan --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
@@ -25,6 +26,9 @@ polis apply --repo /path/to/repo [--format text|json] [--signature artifact.poli
 polis sign --key private.pem --out artifact.polis.sig [--format text|json] artifact.polis
 polis export --out /outside/polis-v6-offline.zip [--format text|json]
 ```
+
+`polis help` lists all commands and can receive a command name to show its
+syntax. `polis -h` and `polis --help` are equivalent top-level aliases.
 
 `--regression-patch` is required for Red-to-Green defects and strict features.
 `preflight` validates without applying; `apply` validates again before mutation.
