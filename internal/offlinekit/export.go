@@ -28,9 +28,10 @@ const (
 )
 
 type Options struct {
-	Out        string
-	Executable string
-	Version    string
+	Out           string
+	Executable    string
+	TargetRuntime string
+	Version       string
 }
 
 type Result struct {
@@ -81,6 +82,10 @@ func Export(opts Options) (Result, error) {
 	if strings.TrimSpace(opts.Version) == "" {
 		return Result{}, errors.New("POLIS version is required")
 	}
+	targetOS, targetArch, err := resolveTargetRuntime(opts.TargetRuntime)
+	if err != nil {
+		return Result{}, err
+	}
 
 	source, err := resolveExecutable(opts.Executable)
 	if err != nil {
@@ -102,7 +107,7 @@ func Export(opts Options) (Result, error) {
 	}
 
 	executableMember := bundlePrefix + "bin/polis"
-	if runtime.GOOS == "windows" {
+	if targetOS == "windows" {
 		executableMember += ".exe"
 	}
 	files := []bundleFile{{Path: executableMember, Data: executable, Mode: 0o755}}
@@ -115,7 +120,7 @@ func Export(opts Options) (Result, error) {
 	}
 
 	resources := digestResources(files)
-	manifestRaw, err := encodeManifest(opts.Version, executableMember, resources)
+	manifestRaw, err := encodeManifest(opts.Version, executableMember, targetOS, targetArch, resources)
 	if err != nil {
 		return Result{}, err
 	}
@@ -151,11 +156,35 @@ func Export(opts Options) (Result, error) {
 		Path:            out,
 		SHA256:          digest,
 		Version:         opts.Version,
-		Runtime:         runtime.GOOS + "/" + runtime.GOARCH,
+		Runtime:         targetOS + "/" + targetArch,
 		Executable:      executableMember,
 		NetworkRequired: false,
 		Entries:         entries,
 	}, nil
+}
+
+func resolveTargetRuntime(value string) (string, string, error) {
+	if strings.TrimSpace(value) == "" {
+		return runtime.GOOS, runtime.GOARCH, nil
+	}
+	parts := strings.Split(value, "/")
+	if len(parts) != 2 || !validRuntimeComponent(parts[0]) || !validRuntimeComponent(parts[1]) {
+		return "", "", fmt.Errorf("invalid target runtime %q: expected GOOS/GOARCH", value)
+	}
+	return parts[0], parts[1], nil
+}
+
+func validRuntimeComponent(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func resolveExecutable(filename string) (string, error) {
@@ -210,13 +239,13 @@ func digestResources(files []bundleFile) []resourceDigest {
 	return resources
 }
 
-func encodeManifest(version, executable string, resources []resourceDigest) ([]byte, error) {
+func encodeManifest(version, executable, targetOS, targetArch string, resources []resourceDigest) ([]byte, error) {
 	document := manifest{
 		FormatVersion:   BundleFormatVersion,
 		ArtifactType:    "polis_offline_bundle",
 		Protocol:        "POLIS V6",
 		PolisVersion:    version,
-		Runtime:         runtimeManifest{OS: runtime.GOOS, Architecture: runtime.GOARCH, GoVersion: runtime.Version()},
+		Runtime:         runtimeManifest{OS: targetOS, Architecture: targetArch, GoVersion: runtime.Version()},
 		Executable:      executable,
 		NetworkRequired: false,
 		Prerequisites:   []string{"git"},

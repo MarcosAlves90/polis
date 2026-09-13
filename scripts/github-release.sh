@@ -13,7 +13,7 @@ Options:
   --gh COMMAND          GitHub CLI command or executable path.
                         Defaults to POLIS_GH, then gh from PATH.
   --go COMMAND          Go command or executable path used to build the
-                        offline POLIS asset. Defaults to POLIS_GO, then go.
+                        offline POLIS assets. Defaults to POLIS_GO, then go.
   --remote NAME         Git remote used for tag inspection/push (default: origin).
   --title TEXT          Explicit GitHub Release title.
   --notes-file FILE     Read release notes from FILE instead of generated notes.
@@ -115,41 +115,66 @@ assert_unique_asset_name() {
   asset_names+="$name"$'\n'
 }
 
-prepare_offline_asset() {
-  local safe_tag offline_binary go_host_os go_host_arch
+prepare_offline_assets() {
+  local safe_tag go_host_os go_host_arch target target_os target_arch
+  local offline_binary offline_asset offline_asset_name existing duplicate
 
   GO=$(resolve_go_command "$GO_CHOICE")
-  GOOS=$("$GO" env GOOS) || fail "cannot resolve Go target OS"
-  GOARCH=$("$GO" env GOARCH) || fail "cannot resolve Go target architecture"
   go_host_os=$("$GO" env GOHOSTOS) || fail "cannot resolve Go host OS"
   go_host_arch=$("$GO" env GOHOSTARCH) || fail "cannot resolve Go host architecture"
-  [[ "$GOOS" =~ ^[a-z0-9._-]+$ ]] || fail "invalid Go target OS: $GOOS"
-  [[ "$GOARCH" =~ ^[a-z0-9._-]+$ ]] || fail "invalid Go target architecture: $GOARCH"
   [[ "$go_host_os" =~ ^[a-z0-9._-]+$ ]] || fail "invalid Go host OS: $go_host_os"
   [[ "$go_host_arch" =~ ^[a-z0-9._-]+$ ]] || fail "invalid Go host architecture: $go_host_arch"
 
-  OFFLINE_RUNTIME="$GOOS/$GOARCH"
   GO_HOST_RUNTIME="$go_host_os/$go_host_arch"
-  if [[ "$OFFLINE_RUNTIME" != "$GO_HOST_RUNTIME" ]]; then
-    fail "offline release target $OFFLINE_RUNTIME differs from Go host $GO_HOST_RUNTIME; run the release on the target platform"
+  OFFLINE_TARGETS=("$GO_HOST_RUNTIME" "linux/amd64" "windows/amd64")
+  OFFLINE_RUNTIMES=()
+  OFFLINE_ASSETS=()
+  OFFLINE_ASSET_NAMES=()
+  OFFLINE_EXPORTER="$TMP_DIR/polis-exporter-${go_host_os}-${go_host_arch}"
+  if [[ "$go_host_os" == "windows" ]]; then
+    OFFLINE_EXPORTER+='.exe'
   fi
+
+  if ! GOOS="$go_host_os" GOARCH="$go_host_arch" "$GO" build -trimpath -o "$OFFLINE_EXPORTER" ./cmd/polis; then
+    fail "cannot build POLIS release exporter for host runtime $GO_HOST_RUNTIME"
+  fi
+
   safe_tag=${TAG//\//-}
-  offline_binary="$TMP_DIR/polis-${safe_tag}-${GOOS}-${GOARCH}"
-  if [[ "$GOOS" == "windows" ]]; then
-    offline_binary+='.exe'
-  fi
-  OFFLINE_ASSET="$TMP_DIR/polis-${safe_tag}-offline-${GOOS}-${GOARCH}.zip"
+  for target in "${OFFLINE_TARGETS[@]}"; do
+    target_os=${target%%/*}
+    target_arch=${target#*/}
+    duplicate=false
+    for existing in "${OFFLINE_RUNTIMES[@]}"; do
+      if [[ "$existing" == "$target" ]]; then
+        duplicate=true
+        break
+      fi
+    done
+    [[ "$duplicate" == false ]] || continue
+    OFFLINE_RUNTIMES+=("$target")
 
-  if ! "$GO" build -trimpath -o "$offline_binary" ./cmd/polis; then
-    fail "cannot build POLIS executable for offline release asset"
-  fi
-  if ! "$offline_binary" export --out "$OFFLINE_ASSET" >/dev/null; then
-    fail "cannot export offline POLIS release asset"
-  fi
+    offline_binary="$OFFLINE_EXPORTER"
+    if [[ "$target" != "$GO_HOST_RUNTIME" ]]; then
+      offline_binary="$TMP_DIR/polis-${safe_tag}-${target_os}-${target_arch}"
+      if [[ "$target_os" == "windows" ]]; then
+        offline_binary+='.exe'
+      fi
+      if ! GOOS="$target_os" GOARCH="$target_arch" "$GO" build -trimpath -o "$offline_binary" ./cmd/polis; then
+        fail "cannot build POLIS offline runtime for $target"
+      fi
+    fi
 
-  assert_asset "$OFFLINE_ASSET"
-  OFFLINE_ASSET_NAME=$(basename "$OFFLINE_ASSET")
-  assert_unique_asset_name "$OFFLINE_ASSET_NAME"
+    offline_asset="$TMP_DIR/polis-${safe_tag}-offline-${target_os}-${target_arch}.zip"
+    if ! "$OFFLINE_EXPORTER" export --executable "$offline_binary" --runtime "$target" --out "$offline_asset" >/dev/null; then
+      fail "cannot export POLIS offline runtime for $target"
+    fi
+
+    assert_asset "$offline_asset"
+    offline_asset_name=$(basename "$offline_asset")
+    assert_unique_asset_name "$offline_asset_name"
+    OFFLINE_ASSETS+=("$offline_asset")
+    OFFLINE_ASSET_NAMES+=("$offline_asset_name")
+  done
 }
 
 GH_CHOICE=${POLIS_GH:-gh}
@@ -164,12 +189,12 @@ LATEST=automatic
 PUBLISH=false
 ASSETS=()
 GO=''
-GOOS=''
-GOARCH=''
 GO_HOST_RUNTIME=''
-OFFLINE_ASSET=''
-OFFLINE_ASSET_NAME=''
-OFFLINE_RUNTIME=''
+OFFLINE_TARGETS=()
+OFFLINE_RUNTIMES=()
+OFFLINE_ASSETS=()
+OFFLINE_ASSET_NAMES=()
+OFFLINE_EXPORTER=''
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -294,8 +319,8 @@ cleanup() {
 trap cleanup EXIT
 
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/polis-release.XXXXXX")
-prepare_offline_asset
-UPLOADS+=("$OFFLINE_ASSET")
+prepare_offline_assets
+UPLOADS+=("${OFFLINE_ASSETS[@]}")
 
 CHECKSUM_FILE="$TMP_DIR/SHA256SUMS"
 : > "$CHECKSUM_FILE"
@@ -312,8 +337,12 @@ printf 'Git remote: %s\n' "$REMOTE"
 printf 'GitHub CLI: %s\n' "$GH"
 printf 'Go: %s\n' "$GO"
 printf 'Go host: %s\n' "$GO_HOST_RUNTIME"
-printf 'Offline runtime: %s\n' "$OFFLINE_RUNTIME"
-printf 'Offline bundle: %s\n' "$OFFLINE_ASSET_NAME"
+for offline_runtime in "${OFFLINE_RUNTIMES[@]}"; do
+  printf 'Offline runtime: %s\n' "$offline_runtime"
+done
+for offline_asset_name in "${OFFLINE_ASSET_NAMES[@]}"; do
+  printf 'Offline bundle: %s\n' "$offline_asset_name"
+done
 printf 'Assets: %d\n' "${#UPLOADS[@]}"
 if [[ -n "$CHECKSUM_FILE" ]]; then
   printf 'Checksums:\n'

@@ -14,6 +14,12 @@ schemas needed to create and inspect POLIS inputs and outputs.
 After extraction, the executable is `bin/polis` on Unix-like systems and
 `bin/polis.exe` on Windows.
 
+`polis export` uses the current executable and runtime by default. Release
+automation may pass `--executable <file>` and `--runtime <GOOS/GOARCH>` to a
+host POLIS exporter so it can package a cross-compiled target binary without
+executing that binary. The runtime declaration is recorded in `manifest.json`
+and determines the executable member suffix.
+
 ## V6 workflow
 
 Run the executable directly from this bundle:

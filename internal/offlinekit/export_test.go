@@ -14,7 +14,7 @@ import (
 	"testing"
 )
 
-const testVersion = "6.4.0"
+const testVersion = "6.5.0"
 
 type testManifest struct {
 	FormatVersion int    `json:"format_version"`
@@ -91,6 +91,40 @@ func TestExportCreatesVerifiableOfflineBundle(t *testing.T) {
 	for name, member := range openArchiveMembers(t, bundle) {
 		if name == document.Executable && member.Mode().Perm() != 0o755 {
 			t.Fatalf("executable mode=%o want=755", member.Mode().Perm())
+		}
+	}
+}
+
+func TestExportSupportsExplicitTargetRuntime(t *testing.T) {
+	source := writeExecutableFixture(t, []byte("WINDOWS POLIS EXECUTABLE"))
+	bundle := filepath.Join(t.TempDir(), "windows-offline.zip")
+	result, err := Export(Options{Out: bundle, Executable: source, TargetRuntime: "windows/amd64", Version: testVersion})
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+	if result.Runtime != "windows/amd64" || result.Executable != "polis-offline/bin/polis.exe" {
+		t.Fatalf("result=%+v", result)
+	}
+
+	files := readArchive(t, bundle)
+	var document testManifest
+	if err := json.Unmarshal(files[manifestMember], &document); err != nil {
+		t.Fatalf("manifest JSON: %v", err)
+	}
+	if document.Runtime.OS != "windows" || document.Runtime.Architecture != "amd64" || document.Executable != "polis-offline/bin/polis.exe" {
+		t.Fatalf("manifest=%+v", document)
+	}
+	if string(files[document.Executable]) != "WINDOWS POLIS EXECUTABLE" {
+		t.Fatalf("embedded executable=%q", files[document.Executable])
+	}
+}
+
+func TestExportRejectsInvalidTargetRuntime(t *testing.T) {
+	source := writeExecutableFixture(t, []byte("source"))
+	for _, target := range []string{"windows", "windows/", "windows/amd64/extra", "../windows/amd64", "../amd64", "windows/amd_64", "WINDOWS/amd64"} {
+		_, err := Export(Options{Out: filepath.Join(t.TempDir(), "bundle.zip"), Executable: source, TargetRuntime: target, Version: testVersion})
+		if err == nil || !strings.Contains(err.Error(), "invalid target runtime") {
+			t.Errorf("target=%q error=%v", target, err)
 		}
 	}
 }

@@ -110,7 +110,7 @@ func TestRunDoctor(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "POLIS doctor 6.4.0") {
+	if !strings.Contains(out.String(), "POLIS doctor 6.5.0") {
 		t.Fatalf("doctor version mismatch: stdout=%q", out.String())
 	}
 }
@@ -208,6 +208,38 @@ func TestRunExportCreatesSelfContainedOfflineBundle(t *testing.T) {
 		if !present {
 			t.Errorf("offline bundle missing %s", name)
 		}
+	}
+}
+
+func TestRunExportSupportsTargetRuntime(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "polis-windows.exe")
+	if err := os.WriteFile(source, []byte("WINDOWS POLIS EXECUTABLE"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bundlePath := filepath.Join(t.TempDir(), "polis-windows-offline.zip")
+	var out, errOut bytes.Buffer
+	code := run([]string{"export", "--out", bundlePath, "--executable", source, "--runtime", "windows/amd64", "--format", "json"}, &out, &errOut)
+	if code != exitPass {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	var result struct {
+		Runtime    string `json:"runtime"`
+		Executable string `json:"executable"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("invalid export JSON: %v\n%s", err, out.String())
+	}
+	if result.Runtime != "windows/amd64" || result.Executable != "polis-offline/bin/polis.exe" {
+		t.Fatalf("export result=%+v", result)
+	}
+}
+
+func TestRunExportRejectsInvalidTargetRuntime(t *testing.T) {
+	bundlePath := filepath.Join(t.TempDir(), "polis-offline.zip")
+	var out, errOut bytes.Buffer
+	code := run([]string{"export", "--out", bundlePath, "--runtime", "windows"}, &out, &errOut)
+	if code != exitValidationFailed || !strings.Contains(errOut.String(), "invalid target runtime") {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
 	}
 }
 

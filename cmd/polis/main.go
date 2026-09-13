@@ -24,7 +24,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
-const version = "6.4.0"
+const version = "6.5.0"
 
 const (
 	outputFormatHelp   = "output format: text or json"
@@ -64,7 +64,7 @@ var commandHelpEntries = []commandHelpEntry{
 	{name: "preflight", usage: "polis preflight [--repo <path>] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate an artifact without applying it"},
 	{name: "apply", usage: "polis apply [--repo <path>] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate and apply an artifact transactionally"},
 	{name: "sign", usage: "polis sign --key <private.pem> --out <artifact.polis.sig> [--format text|json] <artifact.polis>", summary: "create a detached artifact signature"},
-	{name: "export", usage: "polis export --out <polis-offline.zip> [--format text|json]", summary: "create a self-contained offline runtime bundle"},
+	{name: "export", usage: "polis export --out <polis-offline.zip> [--format text|json] [--executable <file>] [--runtime <GOOS/GOARCH>]", summary: "create a self-contained offline runtime bundle"},
 }
 
 func rootUsageLine() string {
@@ -551,14 +551,16 @@ func runExport(args []string, out, errOut io.Writer) int {
 	fs.SetOutput(errOut)
 	outPath := fs.String("out", "", "self-contained POLIS V6 offline bundle output")
 	format := fs.String("format", "text", outputFormatHelp)
+	executable := fs.String("executable", "", "POLIS executable to embed (defaults to current executable)")
+	targetRuntime := fs.String("runtime", "", "target runtime as GOOS/GOARCH (defaults to current runtime)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() != 0 || *outPath == "" || !validFormat(*format) {
-		fmt.Fprintln(errOut, "usage: polis export --out <polis-offline.zip> [--format text|json]")
+		fmt.Fprintln(errOut, "usage: polis export --out <polis-offline.zip> [--format text|json] [--executable <file>] [--runtime <GOOS/GOARCH>]")
 		return exitUsage
 	}
-	result, err := offlinekit.Export(offlinekit.Options{Out: *outPath, Version: version})
+	result, err := offlinekit.Export(offlinekit.Options{Out: *outPath, Executable: *executable, TargetRuntime: *targetRuntime, Version: version})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS EXPORT", exitValidationFailed, err)
 	}

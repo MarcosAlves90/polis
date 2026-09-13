@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [6.5.0] - 2026-09-13
+
+### Added
+
+- Add Linux amd64 and Windows amd64 offline POLIS bundles to every release alongside the native host bundle.
+
+### Changed
+
+- Allow `polis export` to package an explicit executable and target runtime without executing the embedded binary.
+
 ## [6.4.0] - 2026-09-12
 
 ### Added
@@ -167,7 +177,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Aligned the Go module identity with the repository before the V4 semantic import-path migration.
 - Made Git-based CI fixtures deterministic across Windows line-ending behavior.
 
-[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.4.0...HEAD
+[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.5.0...HEAD
+[6.5.0]: https://github.com/MarcosAlves90/polis/compare/v6.4.0...v6.5.0
 [6.4.0]: https://github.com/MarcosAlves90/polis/compare/v6.3.1...v6.4.0
 [6.3.1]: https://github.com/MarcosAlves90/polis/compare/v6.3.0...v6.3.1
 [6.3.0]: https://github.com/MarcosAlves90/polis/compare/v6.2.0...v6.3.0

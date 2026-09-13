@@ -30,7 +30,7 @@ polis doctor
 For a reproducible installation, pin the release instead of using `@latest`:
 
 ```bash
-go install github.com/MarcosAlves90/polis/v6/cmd/polis@v6.4.0
+go install github.com/MarcosAlves90/polis/v6/cmd/polis@v6.5.0
 ```
 
 See the [installation guide](docs/installation.md) for `PATH` setup on Linux,
@@ -40,6 +40,7 @@ macOS, and Windows, plus upgrade, removal, and source-checkout instructions.
 
 Download the `polis-<tag>-offline-<GOOS>-<GOARCH>.zip` asset that matches your
 platform from the [latest release](https://github.com/MarcosAlves90/polis/releases/latest).
+Releases include native host builds plus Linux amd64 and Windows amd64 variants.
 Extract it and run `bin/polis` (or `bin/polis.exe` on Windows).
 
 The offline runtime requires Git and the matching OS/CPU architecture. It does

@@ -27,6 +27,10 @@ func TestGitHubReleaseDocumentationContract(t *testing.T) {
 		"POLIS_GO",
 		"--verify-tag",
 		"SHA256SUMS",
+		"linux/amd64",
+		"windows/amd64",
+		"--executable",
+		"--runtime",
 		"offline",
 	})
 }
@@ -61,7 +65,7 @@ func TestGitHubReleaseScriptPreflightUsesDefaultGHWithoutMutation(t *testing.T) 
 	}
 }
 
-func TestGitHubReleaseScriptPreflightBuildsOfflineAsset(t *testing.T) {
+func TestGitHubReleaseScriptPreflightBuildsOfflineVariants(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("release script is a Bash operator tool")
 	}
@@ -73,19 +77,35 @@ func TestGitHubReleaseScriptPreflightBuildsOfflineAsset(t *testing.T) {
 		t.Fatalf("offline asset preflight failed: %v\n%s", err, output)
 	}
 	for _, fragment := range []string{
+		"Offline runtime: darwin/arm64",
 		"Offline runtime: linux/amd64",
+		"Offline runtime: windows/amd64",
+		"Offline bundle: polis-v5.0.0-offline-darwin-arm64.zip",
 		"Offline bundle: polis-v5.0.0-offline-linux-amd64.zip",
-		"Assets: 2",
+		"Offline bundle: polis-v5.0.0-offline-windows-amd64.zip",
+		"Assets: 4",
 	} {
 		if !strings.Contains(output, fragment) {
-			t.Fatalf("offline asset evidence missing %q:\n%s", fragment, output)
+			t.Fatalf("offline variant evidence missing %q:\n%s", fragment, output)
 		}
 	}
 	goLog := fixture.readGoLog()
-	for _, fragment := range []string{"env GOOS", "env GOARCH", "build -trimpath -o"} {
+	for _, fragment := range []string{
+		"GOOS=darwin|GOARCH=arm64",
+		"GOOS=linux|GOARCH=amd64",
+		"GOOS=windows|GOARCH=amd64",
+		"build -trimpath -o",
+	} {
 		if !strings.Contains(goLog, fragment) {
-			t.Fatalf("offline asset did not invoke Go with %q:\n%s", fragment, goLog)
+			t.Fatalf("offline variants did not invoke Go with %q:\n%s", fragment, goLog)
 		}
+	}
+	execLog := fixture.readExecLog()
+	if got := strings.Count(execLog, "darwin/arm64"); got != 3 {
+		t.Fatalf("expected the host exporter to run once per offline variant, got %d executions:\n%s", got, execLog)
+	}
+	if strings.Contains(execLog, "linux/amd64") || strings.Contains(execLog, "windows/amd64") {
+		t.Fatalf("cross-compiled target binary was executed:\n%s", execLog)
 	}
 }
 
@@ -123,23 +143,29 @@ func TestGitHubReleaseScriptExplicitGoOverridesEnvironment(t *testing.T) {
 	}
 }
 
-func TestGitHubReleaseScriptRejectsCrossCompiledOfflineAsset(t *testing.T) {
+func TestGitHubReleaseScriptDeduplicatesHostOfflineVariant(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("release script is a Bash operator tool")
 	}
 	fixture := newReleaseScriptFixture(t)
 	customGH := fixture.writeFakeGH("custom-gh", "custom")
-	fixture.env = append(fixture.env, "POLIS_RELEASE_TEST_GOOS=darwin")
+	fixture.env = append(fixture.env, "POLIS_RELEASE_TEST_GOHOSTOS=linux", "POLIS_RELEASE_TEST_GOHOSTARCH=amd64")
 
 	output, err := fixture.run("--tag", "v5.0.0", "--gh", customGH)
-	if err == nil {
-		t.Fatalf("cross-compiled offline asset was accepted:\n%s", output)
+	if err != nil {
+		t.Fatalf("offline variant preflight failed: %v\n%s", err, output)
 	}
-	if !strings.Contains(output, "offline release target darwin/amd64 differs from Go host linux/amd64") {
-		t.Fatalf("unexpected cross-compilation error:\n%s", output)
+	if strings.Contains(output, "Offline runtime: darwin/arm64") {
+		t.Fatalf("test fixture host override was ignored:\n%s", output)
 	}
-	if strings.Contains(fixture.readGoLog(), "build -trimpath") {
-		t.Fatal("cross-target validation happened after the build")
+	for _, fragment := range []string{
+		"Offline runtime: linux/amd64",
+		"Offline runtime: windows/amd64",
+		"Assets: 3",
+	} {
+		if !strings.Contains(output, fragment) {
+			t.Fatalf("deduplicated release evidence missing %q:\n%s", fragment, output)
+		}
 	}
 }
 
@@ -257,8 +283,15 @@ func TestGitHubReleaseScriptPublishPushesExactTagAndUsesVerifyTag(t *testing.T) 
 	if strings.Contains(log, "--clobber") {
 		t.Fatalf("release flow must not clobber assets:\n%s", log)
 	}
-	if !strings.Contains(log, "polis-v5.0.0-offline-linux-amd64.zip") || !strings.Contains(log, "SHA256SUMS") {
-		t.Fatalf("release did not upload the offline bundle and release checksums:\n%s", log)
+	for _, asset := range []string{
+		"polis-v5.0.0-offline-darwin-arm64.zip",
+		"polis-v5.0.0-offline-linux-amd64.zip",
+		"polis-v5.0.0-offline-windows-amd64.zip",
+		"SHA256SUMS",
+	} {
+		if !strings.Contains(log, asset) {
+			t.Fatalf("release did not upload %s:\n%s", asset, log)
+		}
 	}
 }
 
@@ -285,6 +318,7 @@ type releaseScriptFixture struct {
 	ghState  string
 	ghAssets string
 	goLog    string
+	execLog  string
 	goPath   string
 	env      []string
 }
@@ -323,11 +357,13 @@ func newReleaseScriptFixture(t *testing.T) *releaseScriptFixture {
 		ghState:  filepath.Join(base, "gh.state"),
 		ghAssets: filepath.Join(base, "gh.assets"),
 		goLog:    filepath.Join(base, "go.log"),
+		execLog:  filepath.Join(base, "exec.log"),
 		env: append(os.Environ(),
 			"POLIS_RELEASE_TEST_LOG="+filepath.Join(base, "gh.log"),
 			"POLIS_RELEASE_TEST_STATE="+filepath.Join(base, "gh.state"),
 			"POLIS_RELEASE_TEST_ASSETS="+filepath.Join(base, "gh.assets"),
 			"POLIS_RELEASE_TEST_GO_LOG="+filepath.Join(base, "go.log"),
+			"POLIS_RELEASE_TEST_EXEC_LOG="+filepath.Join(base, "exec.log"),
 		),
 	}
 	fixture.goPath = fixture.writeFakeGo()
@@ -340,7 +376,7 @@ func (f *releaseScriptFixture) writeFakeGo() string {
 	path := filepath.Join(f.binDir, "fake-go")
 	script := `#!/usr/bin/env bash
 set -eu
-printf '%s\n' "$*" >> "$POLIS_RELEASE_TEST_GO_LOG"
+printf '%s|GOOS=%s|GOARCH=%s\n' "$*" "${GOOS:-}" "${GOARCH:-}" >> "$POLIS_RELEASE_TEST_GO_LOG"
 if [[ "${1:-}" == "env" && "${2:-}" == "GOOS" ]]; then
   echo "${POLIS_RELEASE_TEST_GOOS:-linux}"
   exit 0
@@ -350,11 +386,11 @@ if [[ "${1:-}" == "env" && "${2:-}" == "GOARCH" ]]; then
   exit 0
 fi
 if [[ "${1:-}" == "env" && "${2:-}" == "GOHOSTOS" ]]; then
-  echo linux
+  echo "${POLIS_RELEASE_TEST_GOHOSTOS:-darwin}"
   exit 0
 fi
 if [[ "${1:-}" == "env" && "${2:-}" == "GOHOSTARCH" ]]; then
-  echo amd64
+  echo "${POLIS_RELEASE_TEST_GOHOSTARCH:-arm64}"
   exit 0
 fi
 if [[ "${1:-}" == "build" ]]; then
@@ -369,12 +405,24 @@ if [[ "${1:-}" == "build" ]]; then
     fi
   done
   [[ -n "$output" ]]
-  cat > "$output" <<'BINARY'
+	cat > "$output" <<BINARY
 #!/usr/bin/env bash
 set -eu
-if [[ "${1:-}" == "export" && "${2:-}" == "--out" && $# -eq 3 ]]; then
-  printf 'offline bundle fixture\n' > "$3"
-  exit 0
+printf '%s\n' '${GOOS:-}/${GOARCH:-}' >> "\$POLIS_RELEASE_TEST_EXEC_LOG"
+if [[ "\${1:-}" == "export" ]]; then
+	export_out=''
+	while [[ \$# -gt 0 ]]; do
+		if [[ "\$1" == "--out" ]]; then
+			[[ \$# -ge 2 ]]
+				export_out=\$2
+			shift 2
+		else
+			shift
+		fi
+	done
+	[[ -n "\$export_out" ]]
+	printf 'offline bundle fixture\n' > "\$export_out"
+	exit 0
 fi
 exit 1
 BINARY
@@ -499,6 +547,15 @@ func (f *releaseScriptFixture) readGoLog() string {
 	raw, err := os.ReadFile(f.goLog)
 	if err != nil {
 		f.t.Fatalf("read go log: %v", err)
+	}
+	return string(raw)
+}
+
+func (f *releaseScriptFixture) readExecLog() string {
+	f.t.Helper()
+	raw, err := os.ReadFile(f.execLog)
+	if err != nil {
+		f.t.Fatalf("read executable log: %v", err)
 	}
 	return string(raw)
 }

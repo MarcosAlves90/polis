@@ -10,7 +10,11 @@ Allow an offline coding agent to use POLIS without downloading the source reposi
 
 ## Decision
 
-Add `polis export --out <bundle.zip>`. The command exports the executable that is currently running together with the minimum V6 documentation and machine-readable schemas required to create, validate, and understand POLIS inputs and outputs.
+Add `polis export --out <bundle.zip> [--executable <file>] [--runtime <GOOS/GOARCH>]`.
+The command exports the current executable by default, or packages a selected
+regular file as executable bytes, together with the minimum V6 documentation and
+machine-readable schemas required to create, validate, and understand POLIS
+inputs and outputs. It never executes a selected executable.
 
 The export is a deterministic ZIP runtime bundle with this layout:
 
@@ -31,7 +35,10 @@ polis-offline/
     signature.schema.json
 ```
 
-`manifest.json` records the POLIS version, native runtime, executable member, Git prerequisite, and the explicit `network_required: false` guarantee. `SHA256SUMS` covers every other member, and the exporter reads the archive back before publishing it.
+`manifest.json` records the POLIS version, declared target runtime, executable
+member, Git prerequisite, and the explicit `network_required: false` guarantee.
+`SHA256SUMS` covers every other member, and the exporter reads the archive back
+before publishing it.
 
 ## Rationale
 
@@ -50,14 +57,15 @@ The bundle is portable across hosts with the same operating system and CPU archi
 
 ## Release integration
 
-Every GitHub release prepared by `scripts/github-release.sh` includes a native
-offline bundle named `polis-<tag>-offline-<GOOS>-<GOARCH>.zip` and a release-level
-`SHA256SUMS` file. The script builds `./cmd/polis` from the exact clean `HEAD`,
-runs that executable's `export` command, and completes the same local
-self-validation before any tag or release mutation. A release runner must use a
-host matching the bundle's target OS and architecture; cross-compiled binaries
-cannot be executed by the exporter on the wrong host.
+Every GitHub release prepared by `scripts/github-release.sh` includes the host,
+`linux/amd64`, and `windows/amd64` offline bundles named
+`polis-<tag>-offline-<GOOS>-<GOARCH>.zip` (deduplicated when the host matches a
+target), plus a release-level `SHA256SUMS` file. The script builds a host
+exporter and cross-compiles each target from the exact clean `HEAD`, then uses
+the host exporter with `--executable` and `--runtime` to package and
+self-validate each bundle before any tag or release mutation. Cross-compiled
+binaries are embedded as bytes and never executed by the exporter.
 
 Additional `--asset` files are additive and cannot replace or disable the
-required offline bundle. A basename collision with the generated bundle is a
+required offline bundles. A basename collision with any generated bundle is a
 hard preflight failure.

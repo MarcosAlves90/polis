@@ -16,7 +16,7 @@ Compatibility MUST NOT weaken the canonical zero-residue producer path or author
 
 ## 2. Runtime identity
 
-The V6 CLI version is `6.4.0`.
+The V6 CLI version is `6.5.0`.
 
 The Go module path is:
 
@@ -174,11 +174,11 @@ Consumer isolation MUST NOT create persistent linked-worktree administration or 
 
 ## 8. Offline runtime bundle
 
-`polis export --out <bundle.zip>` MUST emit one self-contained ZIP bundle for offline POLIS V6 use. The bundle is a runtime distribution and is distinct from a delivery `.polis` package.
+`polis export --out <bundle.zip> [--executable <file>] [--runtime <GOOS/GOARCH>]` MUST emit one self-contained ZIP bundle for offline POLIS V6 use. The bundle is a runtime distribution and is distinct from a delivery `.polis` package. When `--executable` is omitted, the current executable is embedded; when `--runtime` is omitted, the current `GOOS/GOARCH` is recorded. An explicit target runtime MUST use the `GOOS/GOARCH` form and determines the executable member suffix without executing the embedded binary.
 
 The bundle MUST contain:
 
-- a native `polis` executable for the exporting `GOOS` and `GOARCH`;
+- a `polis` executable for the declared target `GOOS` and `GOARCH` (or the exporting runtime when no target is declared);
 - `POLIS-OFFLINE.md` with the offline operating instructions;
 - `spec/POLIS-SPEC-v6.md`;
 - the V6 policy, Change Contract v3/v4, package manifest, evidence-event, and signature schemas;

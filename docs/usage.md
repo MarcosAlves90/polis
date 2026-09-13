@@ -24,11 +24,15 @@ polis inspect [--format text|json] [--signature artifact.polis.sig --trusted-key
 polis preflight --repo /path/to/repo [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
 polis apply --repo /path/to/repo [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
 polis sign --key private.pem --out artifact.polis.sig [--format text|json] artifact.polis
-polis export --out /outside/polis-v6-offline.zip [--format text|json]
+polis export --out /outside/polis-v6-offline.zip [--format text|json] [--executable <file>] [--runtime <GOOS/GOARCH>]
 ```
 
 `polis help` lists all commands and can receive a command name to show its
 syntax. `polis -h` and `polis --help` are equivalent top-level aliases.
+
+`--executable` embeds a selected POLIS binary without executing it, and
+`--runtime` declares the target `GOOS/GOARCH` recorded in the bundle manifest.
+Both default to the current POLIS executable and runtime.
 
 `--regression-patch` is required for Red-to-Green defects and strict features.
 `preflight` validates without applying; `apply` validates again before mutation.
@@ -112,8 +116,8 @@ chooses its own trust root.
 
 ## Offline runtime
 
-`polis export` creates a deterministic, checksummed ZIP containing the native V6
-CLI, specification, schemas, manifest, and usage guide. It never reads target
+`polis export` creates a deterministic, checksummed ZIP containing the V6 CLI,
+specification, schemas, manifest, and usage guide. It never reads target
 repository data or project policy and never overwrites an existing output.
 
 The bundle is not a delivery `.polis` package and must not be passed to

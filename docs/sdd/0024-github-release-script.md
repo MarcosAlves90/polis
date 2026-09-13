@@ -15,7 +15,7 @@ The script MUST:
 - use `gh` from `PATH` by default;
 - allow an explicit GitHub CLI executable with `--gh <path-or-command>`;
 - allow `POLIS_GH` as an environment-level default overridden by `--gh`;
-- build the required native POLIS V6 offline runtime with Go, using `go` by default;
+- build the host exporter and required `linux/amd64` and `windows/amd64` POLIS V6 offline runtimes with Go, using `go` by default;
 - allow `POLIS_GO` as an environment-level Go default overridden by `--go <path-or-command>`;
 - require an explicit release tag;
 - resolve the source commit from `HEAD` and require a clean worktree before publication;
@@ -28,10 +28,10 @@ The script MUST:
 - fail when a GitHub Release already exists for the tag rather than overwriting or repairing it;
 - default to generated GitHub release notes while allowing `--notes-file`;
 - support draft, prerelease, explicit Latest policy, and additional optional prebuilt assets;
-- validate the generated offline asset and optional assets as regular non-empty files before mutation;
+- validate every generated offline asset and optional assets as regular non-empty files before mutation;
 - reject duplicate asset basenames;
 - compute SHA-256 for every upload asset before upload and include a generated `SHA256SUMS` asset;
-- upload the generated offline asset and exact supplied asset bytes without modifying supplied assets;
+- upload every generated offline asset and exact supplied asset bytes without modifying supplied assets;
 - query the created release independently after publication;
 - compare remote asset names, sizes, and SHA-256 digests when GitHub exposes asset digests;
 - verify GitHub release/asset attestations when the resulting release reports itself immutable and the selected `gh` supports those commands;
@@ -39,16 +39,17 @@ The script MUST:
 
 ## V6 extension
 
-Every V6 release includes one native `polis-<tag>-offline-<GOOS>-<GOARCH>.zip`
-asset. The script builds `./cmd/polis` from the exact clean `HEAD`, runs the
-resulting executable's `export` command, and adds the self-validating bundle to
-the release. The release host must match the Go target because the exporter is
-executed locally. A collision between the generated basename and a supplied
-asset is a hard failure.
+Every V6 release includes host, `linux/amd64`, and `windows/amd64`
+`polis-<tag>-offline-<GOOS>-<GOARCH>.zip` assets, deduplicated when the host
+matches a target. The script builds a host exporter and cross-compiles
+`./cmd/polis` from the exact clean `HEAD`, then passes each target binary to the
+host export command through `--executable` and `--runtime`. Target binaries are
+embedded as bytes and never executed. A collision between any generated basename
+and a supplied asset is a hard failure.
 
 ## Scope
 
-The current `.github/workflows/ci.yml` is validation-only and does not publish releases. This change does not add a GitHub Actions release workflow, package-manager publisher, general binary build matrix, cross-compilation policy, or signing key. The V6 extension deliberately builds only the native offline runtime; additional assets remain operator-supplied and their bytes are not rebuilt.
+The current `.github/workflows/ci.yml` is validation-only and does not publish releases. This change does not add a GitHub Actions release workflow, package-manager publisher, general binary build matrix, or signing key. The V6 extension deliberately builds only the fixed host/Linux/Windows offline matrix; additional assets remain operator-supplied and their bytes are not rebuilt.
 
 ## Safety invariants
 
