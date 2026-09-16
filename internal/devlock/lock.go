@@ -65,7 +65,7 @@ func SnapshotWithPolicy(ctx context.Context, repo string, specification *spec.De
 	return lock, nil
 }
 
-func ValidateBuildRepository(ctx context.Context, repo string, change spec.ChangeContract) error {
+func ValidateRepositoryBase(ctx context.Context, repo string, change spec.ChangeContract) error {
 	if change.SchemaVersion != spec.LockedChangeContractSchemaVersion {
 		return nil
 	}
@@ -98,6 +98,21 @@ func ValidateBuildRepository(ctx context.Context, repo string, change spec.Chang
 	if specificationSum != want.SpecificationSHA256 {
 		return fmt.Errorf("baseline specification_sha256 mismatch: got %s want %s", specificationSum, want.SpecificationSHA256)
 	}
+	return nil
+}
+
+func ValidateBuildRepository(ctx context.Context, repo string, change spec.ChangeContract) error {
+	if err := ValidateRepositoryBase(ctx, repo, change); err != nil {
+		return err
+	}
+	if change.SchemaVersion != spec.LockedChangeContractSchemaVersion {
+		return nil
+	}
+	root, err := gitutil.ResolveRoot(ctx, repo, gitutil.ResolveRootOptions{EmptyAsDot: true, GitError: "not a Git worktree"})
+	if err != nil {
+		return err
+	}
+	want := *change.BaselineLock
 	cmd := exec.CommandContext(ctx, "git", "-C", root, "merge-base", "--is-ancestor", want.BaseCommit, "HEAD")
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError

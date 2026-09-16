@@ -131,3 +131,23 @@ func TestWorkingTreeIDIncludesUnstagedAndUntrackedChanges(t *testing.T) {
 		t.Fatalf("working tree state changed unexpectedly: %q", status)
 	}
 }
+
+func TestParseBaselineMode(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  BaselineMode
+	}{
+		{"", BaselineModeStrict},
+		{"strict", BaselineModeStrict},
+		{"compatible", BaselineModeCompatible},
+		{"permissive", BaselineModePermissive},
+	} {
+		got, err := ParseBaselineMode(tc.input)
+		if err != nil || got != tc.want {
+			t.Fatalf("ParseBaselineMode(%q)=(%q,%v), want %q", tc.input, got, err, tc.want)
+		}
+	}
+	if _, err := ParseBaselineMode("force"); err == nil {
+		t.Fatal("expected invalid mode rejection")
+	}
+}

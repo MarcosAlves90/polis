@@ -22,13 +22,17 @@ var (
 )
 
 type Result struct {
-	Project         string
-	Change          string
-	TargetTree      string
-	ValidationLevel string
-	EnabledGates    []string
-	DisabledGates   []string
-	EvidencePath    string
+	Project               string
+	Change                string
+	TargetTree            string
+	ValidationLevel       string
+	EnabledGates          []string
+	DisabledGates         []string
+	EvidencePath          string
+	BaselineMode          BaselineMode
+	ConsumerBaseCommit    string
+	BaselineCompatibility string
+	Warnings              []string
 }
 
 const (
@@ -37,6 +41,10 @@ const (
 )
 
 func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
+	return ApplyWithOptions(ctx, artifact, repoPath, Options{BaselineMode: BaselineModeStrict})
+}
+
+func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Options) (Result, error) {
 	pkg, err := packageverify.Load(artifact)
 	if err != nil {
 		return Result{}, fmt.Errorf("verify package: %w", err)
@@ -45,10 +53,8 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if err := verifyBaseline(ctx, repo, pkg.Manifest); err != nil {
-		return Result{}, err
-	}
-	if err := verifyLockedBaseline(ctx, repo, pkg.Change); err != nil {
+	assessment, err := assessBaseline(ctx, repo, pkg, opts)
+	if err != nil {
 		return Result{}, err
 	}
 
@@ -61,7 +67,8 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 	if err := isolation.Validate(ctx, isolation.Validation{
 		Repo:                  repo,
 		BaseCommit:            pkg.Manifest.BaseCommit,
-		TargetTree:            pkg.Manifest.TargetTree,
+		TargetBaseCommit:      assessment.ConsumerHead,
+		TargetTree:            assessment.TargetTree,
 		Patch:                 pkg.Patch,
 		RegressionPatch:       pkg.RegressionPatch,
 		Change:                pkg.Change,
@@ -84,11 +91,8 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 		return Result{}, fmt.Errorf("cleanup temporary evidence: %w", err)
 	}
 
-	// Close the TOCTOU window as much as possible before touching consumer files.
-	if err := verifyBaseline(ctx, repo, pkg.Manifest); err != nil {
-		return Result{}, fmt.Errorf("baseline changed after isolated validation: %w", err)
-	}
-	if err := verifyLockedBaseline(ctx, repo, pkg.Change); err != nil {
+	// The real consumer state must still be the exact state that was validated.
+	if err := verifyAssessmentStable(ctx, repo, pkg, assessment); err != nil {
 		return Result{}, fmt.Errorf("baseline changed after isolated validation: %w", err)
 	}
 	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", gitApplyCheck, "-"); err != nil {
@@ -97,7 +101,7 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", "-"); err != nil {
 		return Result{}, fmt.Errorf("%w: real git apply failed: %v", ErrApplyFailed, err)
 	}
-	gotTree, err := workingTreeID(ctx, repo, pkg.Manifest.BaseCommit)
+	gotTree, err := workingTreeID(ctx, repo, assessment.ConsumerHead)
 	if err != nil {
 		rollbackErr := reversePatch(ctx, repo, pkg.Patch)
 		if rollbackErr != nil {
@@ -105,17 +109,21 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 		}
 		return Result{}, fmt.Errorf("compute post-apply tree: %w; patch reversed", err)
 	}
-	if gotTree != pkg.Manifest.TargetTree {
+	if gotTree != assessment.TargetTree {
 		rollbackErr := reversePatch(ctx, repo, pkg.Patch)
 		if rollbackErr != nil {
-			return Result{}, fmt.Errorf("post-apply target_tree mismatch: got %s want %s; rollback failed: %v", gotTree, pkg.Manifest.TargetTree, rollbackErr)
+			return Result{}, fmt.Errorf("post-apply target_tree mismatch: got %s want %s; rollback failed: %v", gotTree, assessment.TargetTree, rollbackErr)
 		}
-		return Result{}, fmt.Errorf("post-apply target_tree mismatch: got %s want %s; patch reversed", gotTree, pkg.Manifest.TargetTree)
+		return Result{}, fmt.Errorf("post-apply target_tree mismatch: got %s want %s; patch reversed", gotTree, assessment.TargetTree)
 	}
-	return resultForPackage(pkg, gotTree), nil
+	return resultForPackage(pkg, gotTree, assessment), nil
 }
 
 func Preflight(ctx context.Context, artifact, repoPath string) (Result, error) {
+	return PreflightWithOptions(ctx, artifact, repoPath, Options{BaselineMode: BaselineModeStrict})
+}
+
+func PreflightWithOptions(ctx context.Context, artifact, repoPath string, opts Options) (Result, error) {
 	pkg, err := packageverify.Load(artifact)
 	if err != nil {
 		return Result{}, fmt.Errorf("verify package: %w", err)
@@ -124,16 +132,15 @@ func Preflight(ctx context.Context, artifact, repoPath string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if err := verifyBaseline(ctx, repo, pkg.Manifest); err != nil {
-		return Result{}, err
-	}
-	if err := verifyLockedBaseline(ctx, repo, pkg.Change); err != nil {
+	assessment, err := assessBaseline(ctx, repo, pkg, opts)
+	if err != nil {
 		return Result{}, err
 	}
 	if err := isolation.Validate(ctx, isolation.Validation{
 		Repo:                  repo,
 		BaseCommit:            pkg.Manifest.BaseCommit,
-		TargetTree:            pkg.Manifest.TargetTree,
+		TargetBaseCommit:      assessment.ConsumerHead,
+		TargetTree:            assessment.TargetTree,
 		Patch:                 pkg.Patch,
 		RegressionPatch:       pkg.RegressionPatch,
 		Change:                pkg.Change,
@@ -148,28 +155,39 @@ func Preflight(ctx context.Context, artifact, repoPath string) (Result, error) {
 	}); err != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrValidationFailed, err)
 	}
-	if err := verifyBaseline(ctx, repo, pkg.Manifest); err != nil {
-		return Result{}, fmt.Errorf("baseline changed after preflight validation: %w", err)
-	}
-	if err := verifyLockedBaseline(ctx, repo, pkg.Change); err != nil {
+	if err := verifyAssessmentStable(ctx, repo, pkg, assessment); err != nil {
 		return Result{}, fmt.Errorf("baseline changed after preflight validation: %w", err)
 	}
 	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", gitApplyCheck, "-"); err != nil {
 		return Result{}, fmt.Errorf("%w: real git apply --check failed: %v", ErrValidationFailed, err)
 	}
-	return resultForPackage(pkg, pkg.Manifest.TargetTree), nil
+	return resultForPackage(pkg, assessment.TargetTree, assessment), nil
 }
 
-func resultForPackage(pkg packageverify.Package, targetTree string) Result {
+func resultForPackage(pkg packageverify.Package, targetTree string, assessment baselineAssessment) Result {
 	summary := pkg.Policy.ValidationSummary()
 	return Result{
-		Project:         pkg.Manifest.Project,
-		Change:          pkg.Manifest.Change,
-		TargetTree:      targetTree,
-		ValidationLevel: summary.Level,
-		EnabledGates:    append([]string{}, summary.EnabledGates...),
-		DisabledGates:   append([]string{}, summary.DisabledGates...),
+		Project:               pkg.Manifest.Project,
+		Change:                pkg.Manifest.Change,
+		TargetTree:            targetTree,
+		ValidationLevel:       summary.Level,
+		EnabledGates:          append([]string{}, summary.EnabledGates...),
+		DisabledGates:         append([]string{}, summary.DisabledGates...),
+		BaselineMode:          assessment.Mode,
+		ConsumerBaseCommit:    assessment.ConsumerHead,
+		BaselineCompatibility: baselineCompatibilitySummary(assessment),
+		Warnings:              append([]string{}, assessment.Warnings...),
 	}
+}
+
+func baselineCompatibilitySummary(assessment baselineAssessment) string {
+	if assessment.Exact {
+		return "accepted exact artifact baseline"
+	}
+	if assessment.Ancestor {
+		return "accepted divergent descendant after ancestry, exact-payload, and isolated target validation"
+	}
+	return "accepted with risk: artifact-base ancestry not proven; exact payload and complete isolated target validation passed"
 }
 
 func resolveRepo(ctx context.Context, repo string) (string, error) {
@@ -177,26 +195,12 @@ func resolveRepo(ctx context.Context, repo string) (string, error) {
 }
 
 func verifyBaseline(ctx context.Context, repo string, manifest spec.Manifest) error {
-	format, err := gitutil.Output(ctx, repo, nil, nil, gitRevParse, "--show-object-format")
+	head, err := verifyConsumerState(ctx, repo, manifest.GitObjectFormat)
 	if err != nil {
-		return fmt.Errorf("detect Git object format: %w", err)
-	}
-	if format != manifest.GitObjectFormat {
-		return fmt.Errorf("%w: git object format got %s want %s", ErrBaselineMismatch, format, manifest.GitObjectFormat)
-	}
-	head, err := gitutil.Output(ctx, repo, nil, nil, gitRevParse, "HEAD")
-	if err != nil {
-		return fmt.Errorf("resolve HEAD: %w", err)
+		return err
 	}
 	if head != manifest.BaseCommit {
 		return fmt.Errorf("%w: base_commit got %s want %s", ErrBaselineMismatch, head, manifest.BaseCommit)
-	}
-	status, err := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
-	if err != nil {
-		return fmt.Errorf("inspect consumer status: %w", err)
-	}
-	if status != "" {
-		return fmt.Errorf("%w: consumer working tree/index is not clean", ErrBaselineMismatch)
 	}
 	return nil
 }

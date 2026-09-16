@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [6.6.0] - 2026-09-16
+
+### Added
+
+- Add explicit consumer `--baseline-mode strict|compatible|permissive` to `polis preflight` and `polis apply`, preserving exact-base behavior by default while allowing controlled compatibility validation on divergent consumer commits.
+- Add deterministic rebased consumer target-tree validation, ancestry-aware compatible admission, explicit permissive risk reporting, and regression coverage for safe descendant, non-descendant, conflict, and read-only preflight scenarios.
+
+### Changed
+
+- Separate consumer baseline compatibility admission from isolated payload execution so relaxed modes retain locked-base development proof, scope validation, packaged-policy execution, `git apply --check`, clean-state requirements, and transactional post-apply tree verification.
+
 ## [6.5.0] - 2026-09-13
 
 ### Added
@@ -177,7 +188,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Aligned the Go module identity with the repository before the V4 semantic import-path migration.
 - Made Git-based CI fixtures deterministic across Windows line-ending behavior.
 
-[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.5.0...HEAD
+[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.6.0...HEAD
+[6.6.0]: https://github.com/MarcosAlves90/polis/compare/v6.5.0...v6.6.0
 [6.5.0]: https://github.com/MarcosAlves90/polis/compare/v6.4.0...v6.5.0
 [6.4.0]: https://github.com/MarcosAlves90/polis/compare/v6.3.1...v6.4.0
 [6.3.1]: https://github.com/MarcosAlves90/polis/compare/v6.3.0...v6.3.1

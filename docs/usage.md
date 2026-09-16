@@ -21,8 +21,8 @@ polis capture-red --repo /path/to/repo --contract /outside/change.json --out /ou
 polis build --repo /path/to/repo --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/change.json --regression-patch /outside/regression.patch --out /outside/output
 polis verify [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
 polis inspect [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
-polis preflight --repo /path/to/repo [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
-polis apply --repo /path/to/repo [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
+polis preflight --repo /path/to/repo [--baseline-mode strict|compatible|permissive] [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
+polis apply --repo /path/to/repo [--baseline-mode strict|compatible|permissive] [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
 polis sign --key private.pem --out artifact.polis.sig [--format text|json] artifact.polis
 polis export --out /outside/polis-v6-offline.zip [--format text|json] [--executable <file>] [--runtime <GOOS/GOARCH>]
 ```
@@ -36,6 +36,21 @@ Both default to the current POLIS executable and runtime.
 
 `--regression-patch` is required for Red-to-Green defects and strict features.
 `preflight` validates without applying; `apply` validates again before mutation.
+
+Consumer baseline handling is independent from Project Policy validation level. The
+baseline mode defaults to `strict`:
+
+- `strict` requires exact equality with the artifact base commit;
+- `compatible` accepts a different clean descendant `HEAD` only after ancestry,
+  payload-context, isolated target, scope, development-proof, and policy checks
+  pass;
+- `permissive` also permits non-descendant history when the locked artifact base
+  remains locally resolvable and every payload/validation check passes. It emits
+  an explicit warning when ancestry is not proven.
+
+Neither relaxed mode is a force-apply switch. Dirty state, missing locked base,
+patch conflicts, failed preconditions, scope violations, failing tests/policy,
+or post-apply tree mismatches still fail closed.
 
 ## Canonical V6 delivery flow
 
@@ -84,7 +99,7 @@ the guarantees provided or absent by the effective policy.
 - Evidence v2 records bounded-output counts and digests, not raw streams.
 - Detached Ed25519 signatures authenticate exact package bytes.
 - Coverage adapters are Go coverprofile, LCOV, and Cobertura.
-- Exact Git baseline and target-tree checks remain mandatory.
+- Strict consumer mode keeps exact Git baseline identity; compatible/permissive modes replace commit equality only with explicit compatibility admission while retaining a deterministic exact consumer target-tree check.
 - Consumer validation is isolated and `apply` is transactional.
 
 V6 can read supported historical V5 policies and Change Contracts for migration.

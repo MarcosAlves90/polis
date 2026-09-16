@@ -3,6 +3,7 @@ package packageapply
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
 	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
+	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -469,5 +471,222 @@ func TestApplyExternalPolicyLeavesNoToolGitMetadata(t *testing.T) {
 	status := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
 	if !strings.Contains(status, "M app.txt") || !strings.Contains(status, "?? new.txt") {
 		t.Fatalf("unexpected payload status: %q", status)
+	}
+}
+
+func commitFile(t *testing.T, repo, name, body, message string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, name), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", name)
+	git(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", message)
+	return git(t, repo, "rev-parse", "HEAD")
+}
+
+func TestApplyCompatibleAcceptsDescendantWithUnrelatedCommit(t *testing.T) {
+	repo, artifact, artifactTarget := repoWithArtifact(t)
+	base := git(t, repo, "rev-parse", "HEAD")
+	consumerHead := commitFile(t, repo, "consumer.txt", "consumer-only\n", "consumer unrelated change")
+	if consumerHead == base {
+		t.Fatal("consumer HEAD did not advance")
+	}
+
+	result, err := ApplyWithOptions(context.Background(), artifact, repo, Options{BaselineMode: BaselineModeCompatible})
+	if err != nil {
+		t.Fatalf("ApplyWithOptions() error = %v", err)
+	}
+	if result.BaselineMode != BaselineModeCompatible || result.ConsumerBaseCommit != consumerHead {
+		t.Fatalf("assessment result=%+v", result)
+	}
+	if result.TargetTree == artifactTarget {
+		t.Fatalf("rebased consumer target unexpectedly equals artifact target %s", artifactTarget)
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, "consumer.txt")); string(b) != "consumer-only\n" {
+		t.Fatalf("consumer.txt=%q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, "app.txt")); string(b) != "changed\n" {
+		t.Fatalf("app.txt=%q", b)
+	}
+	if got := git(t, repo, "rev-parse", "HEAD"); got != consumerHead {
+		t.Fatalf("HEAD changed: %s -> %s", consumerHead, got)
+	}
+}
+
+func TestApplyCompatibleRejectsConflictingDescendant(t *testing.T) {
+	repo, artifact, _ := repoWithArtifact(t)
+	commitFile(t, repo, "app.txt", "consumer-conflict\n", "consumer conflicting change")
+	before := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
+
+	_, err := ApplyWithOptions(context.Background(), artifact, repo, Options{BaselineMode: BaselineModeCompatible})
+	if err == nil || !errors.Is(err, ErrBaselineMismatch) || !strings.Contains(err.Error(), "payload is incompatible") {
+		t.Fatalf("expected compatible conflict rejection, got %v", err)
+	}
+	if after := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); after != before {
+		t.Fatalf("consumer state changed: before=%q after=%q", before, after)
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, "app.txt")); string(b) != "consumer-conflict\n" {
+		t.Fatalf("app.txt mutated after rejection: %q", b)
+	}
+}
+
+func TestApplyCompatibleRejectsNonDescendantHistory(t *testing.T) {
+	repo, artifact, _ := repoWithArtifact(t)
+	base := git(t, repo, "rev-parse", "HEAD")
+	git(t, repo, "checkout", "--orphan", "unrelated-compatible")
+	git(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qam", "unrelated root")
+	if cmd := exec.Command("git", "-C", repo, "merge-base", "--is-ancestor", base, "HEAD"); cmd.Run() == nil {
+		t.Fatal("fixture is unexpectedly descendant")
+	}
+
+	_, err := ApplyWithOptions(context.Background(), artifact, repo, Options{BaselineMode: BaselineModeCompatible})
+	if err == nil || !errors.Is(err, ErrBaselineMismatch) || !strings.Contains(err.Error(), "not a descendant") {
+		t.Fatalf("expected non-descendant rejection, got %v", err)
+	}
+}
+
+func TestApplyPermissiveAcceptsNonDescendantPatchCompatibleHistory(t *testing.T) {
+	repo, artifact, _ := repoWithArtifact(t)
+	base := git(t, repo, "rev-parse", "HEAD")
+	git(t, repo, "checkout", "--orphan", "unrelated-permissive")
+	if err := os.WriteFile(filepath.Join(repo, "consumer.txt"), []byte("consumer-only\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "unrelated compatible root")
+	consumerHead := git(t, repo, "rev-parse", "HEAD")
+	if cmd := exec.Command("git", "-C", repo, "merge-base", "--is-ancestor", base, "HEAD"); cmd.Run() == nil {
+		t.Fatal("fixture is unexpectedly descendant")
+	}
+
+	result, err := ApplyWithOptions(context.Background(), artifact, repo, Options{BaselineMode: BaselineModePermissive})
+	if err != nil {
+		t.Fatalf("permissive apply error = %v", err)
+	}
+	if result.BaselineMode != BaselineModePermissive || result.ConsumerBaseCommit != consumerHead {
+		t.Fatalf("assessment result=%+v", result)
+	}
+	if len(result.Warnings) == 0 || !strings.Contains(strings.Join(result.Warnings, " "), "not proven") {
+		t.Fatalf("expected explicit permissive warning, got %v", result.Warnings)
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, "app.txt")); string(b) != "changed\n" {
+		t.Fatalf("app.txt=%q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, "consumer.txt")); string(b) != "consumer-only\n" {
+		t.Fatalf("consumer.txt=%q", b)
+	}
+}
+
+func TestApplyPermissiveStillRejectsPatchConflict(t *testing.T) {
+	repo, artifact, _ := repoWithArtifact(t)
+	git(t, repo, "checkout", "--orphan", "unrelated-conflict")
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("consumer-conflict\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "unrelated conflicting root")
+
+	_, err := ApplyWithOptions(context.Background(), artifact, repo, Options{BaselineMode: BaselineModePermissive})
+	if err == nil || !errors.Is(err, ErrBaselineMismatch) || !strings.Contains(err.Error(), "payload is incompatible") {
+		t.Fatalf("expected permissive conflict rejection, got %v", err)
+	}
+}
+
+func TestPreflightCompatibleValidatesDescendantWithoutMutation(t *testing.T) {
+	repo, artifact, _ := repoWithArtifact(t)
+	consumerHead := commitFile(t, repo, "consumer.txt", "consumer-only\n", "consumer unrelated change")
+	beforeStatus := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
+	beforeObjects := git(t, repo, "count-objects", "-v")
+
+	result, err := PreflightWithOptions(context.Background(), artifact, repo, Options{BaselineMode: BaselineModeCompatible})
+	if err != nil {
+		t.Fatalf("compatible preflight error = %v", err)
+	}
+	if result.ConsumerBaseCommit != consumerHead || result.BaselineMode != BaselineModeCompatible {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := git(t, repo, "rev-parse", "HEAD"); got != consumerHead {
+		t.Fatalf("HEAD changed: %s -> %s", consumerHead, got)
+	}
+	if got := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); got != beforeStatus {
+		t.Fatalf("status changed: before=%q after=%q", beforeStatus, got)
+	}
+	if got := git(t, repo, "count-objects", "-v"); got != beforeObjects {
+		t.Fatalf("Git object state changed: before=%q after=%q", beforeObjects, got)
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, "app.txt")); string(b) != "base\n" {
+		t.Fatalf("preflight mutated app.txt: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("preflight created new.txt: %v", err)
+	}
+}
+
+func repoWithContextualArtifact(t *testing.T) (repo, artifact string) {
+	t.Helper()
+	repo = filepath.Join(t.TempDir(), "contextual-repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".polis"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "init", "-q")
+	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), policyBytes(t), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".polis", "coverage.out"), []byte("mode: set\nexample.com/polisfixture/calc.go:1.1,1.2 1 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"app.txt":      "line-1\nline-2\nline-3\nline-4\nline-5\nline-6\nline-7\nbase-line-8\nline-9\nline-10\n",
+		"go.mod":       "module example.com/polisfixture\n\ngo 1.23\n",
+		"calc.go":      "package polisfixture\n\nfunc Add(a, b int) int { return a + b }\n",
+		"calc_test.go": "package polisfixture\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) { if Add(2, 3) != 5 { t.Fatal(\"bad add\") } }\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, repo, "add", ".")
+	git(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "base")
+	contractPath := lockedApplyFixtureContract(t, repo)
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("line-1\nline-2\nline-3\nline-4\nline-5\nline-6\nline-7\nchanged-line-8\nline-9\nline-10\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	built, err := packagebuild.Build(context.Background(), packagebuild.Options{Repo: repo, Project: "gitrex", Change: "contextual-apply-test", Out: t.TempDir(), Contract: contractPath})
+	if err != nil {
+		t.Fatalf("build contextual fixture: %v", err)
+	}
+	git(t, repo, "restore", "--", "app.txt")
+	return repo, built.Path
+}
+
+func TestApplyCompatibleAcceptsNonOverlappingChangeInPayloadFile(t *testing.T) {
+	repo, artifact := repoWithContextualArtifact(t)
+	consumerBody := "consumer-line-1\nline-2\nline-3\nline-4\nline-5\nline-6\nline-7\nbase-line-8\nline-9\nline-10\n"
+	commitFile(t, repo, "app.txt", consumerBody, "consumer edits distant context")
+
+	if _, err := ApplyWithOptions(context.Background(), artifact, repo, Options{BaselineMode: BaselineModeCompatible}); err != nil {
+		t.Fatalf("compatible contextual apply error = %v", err)
+	}
+	want := "consumer-line-1\nline-2\nline-3\nline-4\nline-5\nline-6\nline-7\nchanged-line-8\nline-9\nline-10\n"
+	if b, _ := os.ReadFile(filepath.Join(repo, "app.txt")); string(b) != want {
+		t.Fatalf("app.txt=%q want=%q", b, want)
+	}
+}
+
+func TestVerifyAssessmentStableRejectsHeadChange(t *testing.T) {
+	repo, artifact, _ := repoWithArtifact(t)
+	commitFile(t, repo, "consumer.txt", "consumer-only\n", "consumer unrelated change")
+	pkg, err := packageverify.Load(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assessment, err := assessBaseline(context.Background(), repo, pkg, Options{BaselineMode: BaselineModeCompatible})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFile(t, repo, "later.txt", "changed-after-validation\n", "move consumer head")
+	if err := verifyAssessmentStable(context.Background(), repo, pkg, assessment); err == nil || !errors.Is(err, ErrBaselineMismatch) || !strings.Contains(err.Error(), "consumer HEAD changed") {
+		t.Fatalf("expected assessed HEAD drift rejection, got %v", err)
 	}
 }

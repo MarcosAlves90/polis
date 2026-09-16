@@ -15,6 +15,7 @@ import (
 type Validation struct {
 	Repo                  string
 	BaseCommit            string
+	TargetBaseCommit      string
 	TargetTree            string
 	Patch                 []byte
 	RegressionPatch       []byte
@@ -85,10 +86,14 @@ func validateRegression(ctx context.Context, validation Validation) (map[string]
 }
 
 func validateTarget(ctx context.Context, validation Validation, redProof map[string]string) error {
+	targetBaseCommit := validation.TargetBaseCommit
+	if targetBaseCommit == "" {
+		targetBaseCommit = validation.BaseCommit
+	}
 	worktree, cleanup, err := gitutil.DetachedWorktree(
 		ctx,
 		validation.Repo,
-		validation.BaseCommit,
+		targetBaseCommit,
 		validation.TargetWorktreePattern,
 		"create isolated worktree staging",
 		validation.CreateWorktreeError,
@@ -109,7 +114,7 @@ func validateTarget(ctx context.Context, validation Validation, redProof map[str
 	if err := gitutil.RequireTargetTree(ctx, worktree, validation.TargetTree); err != nil {
 		return err
 	}
-	changedPaths, err := gitutil.ChangedTreePaths(ctx, worktree, validation.BaseCommit, validation.TargetTree)
+	changedPaths, err := gitutil.ChangedTreePaths(ctx, worktree, targetBaseCommit, validation.TargetTree)
 	if err != nil {
 		return err
 	}

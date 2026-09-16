@@ -24,7 +24,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
-const version = "6.5.0"
+const version = "6.6.0"
 
 const (
 	outputFormatHelp   = "output format: text or json"
@@ -33,6 +33,7 @@ const (
 	targetRepoHelp     = "target Git worktree path"
 	preflightLabel     = "POLIS PREFLIGHT"
 	applyLabel         = "POLIS APPLY"
+	baselineModeHelp   = "consumer baseline mode: strict, compatible, or permissive"
 )
 
 const (
@@ -61,8 +62,8 @@ var commandHelpEntries = []commandHelpEntry{
 	{name: "build", usage: "polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] --out <directory>", summary: "build a .polis delivery package"},
 	{name: "verify", usage: "polis verify [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate a .polis artifact"},
 	{name: "inspect", usage: "polis inspect [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "inspect validated artifact metadata"},
-	{name: "preflight", usage: "polis preflight [--repo <path>] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate an artifact without applying it"},
-	{name: "apply", usage: "polis apply [--repo <path>] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate and apply an artifact transactionally"},
+	{name: "preflight", usage: "polis preflight [--repo <path>] [--baseline-mode strict|compatible|permissive] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate an artifact without applying it"},
+	{name: "apply", usage: "polis apply [--repo <path>] [--baseline-mode strict|compatible|permissive] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate and apply an artifact transactionally"},
 	{name: "sign", usage: "polis sign --key <private.pem> --out <artifact.polis.sig> [--format text|json] <artifact.polis>", summary: "create a detached artifact signature"},
 	{name: "export", usage: "polis export --out <polis-offline.zip> [--format text|json] [--executable <file>] [--runtime <GOOS/GOARCH>]", summary: "create a self-contained offline runtime bundle"},
 }
@@ -214,13 +215,18 @@ func runPreflight(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("preflight", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	repo := fs.String("repo", ".", targetRepoHelp)
+	baselineModeValue := fs.String("baseline-mode", string(packageapply.BaselineModeStrict), baselineModeHelp)
 	format := fs.String("format", "text", outputFormatHelp)
 	signaturePath, trustedKey := signatureFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	if fs.NArg() != 1 || !validFormat(*format) || !validSignaturePair(*signaturePath, *trustedKey) {
-		fmt.Fprintln(errOut, "usage: polis preflight [--repo <path>] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>")
+	baselineMode, modeErr := packageapply.ParseBaselineMode(*baselineModeValue)
+	if fs.NArg() != 1 || !validFormat(*format) || !validSignaturePair(*signaturePath, *trustedKey) || modeErr != nil {
+		if modeErr != nil {
+			fmt.Fprintln(errOut, modeErr)
+		}
+		fmt.Fprintln(errOut, "usage: polis preflight [--repo <path>] [--baseline-mode strict|compatible|permissive] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>")
 		return exitUsage
 	}
 	artifact := fs.Arg(0)
@@ -230,7 +236,7 @@ func runPreflight(args []string, out, errOut io.Writer) int {
 	if _, err := packageverify.Verify(artifact); err != nil {
 		return writeFailure(errOut, *format, preflightLabel, exitInvalidArtifact, err)
 	}
-	result, err := packageapply.Preflight(context.Background(), artifact, *repo)
+	result, err := packageapply.PreflightWithOptions(context.Background(), artifact, *repo, packageapply.Options{BaselineMode: baselineMode})
 	if err != nil {
 		code := exitValidationFailed
 		if errors.Is(err, packageapply.ErrBaselineMismatch) {
@@ -239,9 +245,12 @@ func runPreflight(args []string, out, errOut io.Writer) int {
 		return writeFailure(errOut, *format, preflightLabel, code, err)
 	}
 	if *format == "json" {
-		writeJSON(out, map[string]any{"status": "PASS", "safe_to_apply": true, "project": result.Project, "change": result.Change, "target_tree": result.TargetTree, "validation_level": result.ValidationLevel, "enabled_gates": result.EnabledGates, "disabled_gates": result.DisabledGates})
+		payload := map[string]any{"status": "PASS", "safe_to_apply": true, "project": result.Project, "change": result.Change, "target_tree": result.TargetTree, "validation_level": result.ValidationLevel, "enabled_gates": result.EnabledGates, "disabled_gates": result.DisabledGates}
+		addBaselineResultFields(payload, result)
+		writeJSON(out, payload)
 	} else {
 		fmt.Fprintf(out, preflightLabel+": PASS\nSafe to apply: yes\nProject: %s\nChange: %s\nTarget: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\n", result.Project, result.Change, result.TargetTree, result.ValidationLevel, strings.Join(result.EnabledGates, ", "), strings.Join(result.DisabledGates, ", "))
+		writeBaselineResultText(out, result)
 	}
 	return exitPass
 }
@@ -479,13 +488,18 @@ func runApply(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	repo := fs.String("repo", ".", targetRepoHelp)
+	baselineModeValue := fs.String("baseline-mode", string(packageapply.BaselineModeStrict), baselineModeHelp)
 	format := fs.String("format", "text", outputFormatHelp)
 	signaturePath, trustedKey := signatureFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	if fs.NArg() != 1 || !validFormat(*format) || !validSignaturePair(*signaturePath, *trustedKey) {
-		fmt.Fprintln(errOut, "usage: polis apply [--repo <path>] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>")
+	baselineMode, modeErr := packageapply.ParseBaselineMode(*baselineModeValue)
+	if fs.NArg() != 1 || !validFormat(*format) || !validSignaturePair(*signaturePath, *trustedKey) || modeErr != nil {
+		if modeErr != nil {
+			fmt.Fprintln(errOut, modeErr)
+		}
+		fmt.Fprintln(errOut, "usage: polis apply [--repo <path>] [--baseline-mode strict|compatible|permissive] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>")
 		return exitUsage
 	}
 	artifact := fs.Arg(0)
@@ -495,7 +509,7 @@ func runApply(args []string, out, errOut io.Writer) int {
 	if _, err := packageverify.Verify(artifact); err != nil {
 		return writeFailure(errOut, *format, applyLabel, exitInvalidArtifact, err)
 	}
-	result, err := packageapply.Apply(context.Background(), artifact, *repo)
+	result, err := packageapply.ApplyWithOptions(context.Background(), artifact, *repo, packageapply.Options{BaselineMode: baselineMode})
 	if err != nil {
 		code := exitApplyFailed
 		switch {
@@ -508,17 +522,41 @@ func runApply(args []string, out, errOut io.Writer) int {
 	}
 	if *format == "json" {
 		payload := map[string]any{"status": "PASS", "project": result.Project, "change": result.Change, "target_tree": result.TargetTree, "validation_level": result.ValidationLevel, "enabled_gates": result.EnabledGates, "disabled_gates": result.DisabledGates}
+		addBaselineResultFields(payload, result)
 		if result.EvidencePath != "" {
 			payload["evidence"] = result.EvidencePath
 		}
 		writeJSON(out, payload)
 	} else {
 		fmt.Fprintf(out, applyLabel+": PASS\nProject: %s\nChange: %s\nTarget: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\n", result.Project, result.Change, result.TargetTree, result.ValidationLevel, strings.Join(result.EnabledGates, ", "), strings.Join(result.DisabledGates, ", "))
+		writeBaselineResultText(out, result)
 		if result.EvidencePath != "" {
 			fmt.Fprintf(out, "Evidence: %s\n", result.EvidencePath)
 		}
 	}
 	return exitPass
+}
+
+func addBaselineResultFields(payload map[string]any, result packageapply.Result) {
+	if result.BaselineMode == packageapply.BaselineModeStrict {
+		return
+	}
+	payload["baseline_mode"] = result.BaselineMode
+	payload["consumer_base_commit"] = result.ConsumerBaseCommit
+	payload["baseline_compatibility"] = result.BaselineCompatibility
+	if len(result.Warnings) != 0 {
+		payload["warnings"] = result.Warnings
+	}
+}
+
+func writeBaselineResultText(out io.Writer, result packageapply.Result) {
+	if result.BaselineMode == packageapply.BaselineModeStrict {
+		return
+	}
+	fmt.Fprintf(out, "Baseline mode: %s\nConsumer base: %s\nBaseline compatibility: %s\n", result.BaselineMode, result.ConsumerBaseCommit, result.BaselineCompatibility)
+	for _, warning := range result.Warnings {
+		fmt.Fprintf(out, "Warning: %s\n", warning)
+	}
 }
 
 func runSign(args []string, out, errOut io.Writer) int {

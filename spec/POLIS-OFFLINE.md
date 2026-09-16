@@ -32,8 +32,8 @@ Run the executable directly from this bundle:
 ./bin/polis capture-red --repo /path/to/repository --contract /outside/locked-v4.json --out /outside/regression.patch
 ./bin/polis build --repo /path/to/repository --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/locked-v4.json --regression-patch /outside/regression.patch --out /outside/output
 ./bin/polis verify /outside/output/artifact.polis
-./bin/polis preflight --repo /path/to/repository /outside/output/artifact.polis
-./bin/polis apply --repo /path/to/repository /outside/output/artifact.polis
+./bin/polis preflight --repo /path/to/repository [--baseline-mode strict|compatible|permissive] /outside/output/artifact.polis
+./bin/polis apply --repo /path/to/repository [--baseline-mode strict|compatible|permissive] /outside/output/artifact.polis
 ```
 
 Use `polis sign` separately when a detached Ed25519 signature is required.
@@ -41,10 +41,16 @@ The external policy, locked contract, regression patch, package, and signature
 should remain outside the target worktree in the canonical zero-residue flow.
 
 `strict` is the default validation level. `standard` and `minimal` reduce only
-optional project-quality gates; policy, contract, path, baseline, integrity,
-security, development-proof, and transactional-apply invariants remain
-mandatory. `polis plan` and execution evidence show which gates are enabled or
-disabled.
+optional project-quality gates; policy, contract, path, baseline-compatibility,
+integrity, security, development-proof, and transactional-apply invariants
+remain mandatory. `polis plan` and execution evidence show which gates are
+enabled or disabled.
+
+Consumer baseline mode is a separate option. `strict` requires the exact artifact
+base, `compatible` accepts a different descendant only after complete
+compatibility validation, and `permissive` can attempt a non-descendant base only
+when the locked artifact base remains available and all patch, proof, scope, and
+policy checks still pass. Relaxed modes never suppress real conflicts.
 
 The bundle does not contain a target repository or project-specific policy.
 It can therefore be copied between projects without carrying project data.

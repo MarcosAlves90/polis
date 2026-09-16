@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for implementation.
+Implemented. Consumer-only exact-baseline clauses below were superseded by SDD-0036; the producer build contract remains authoritative.
 
 ## Problem
 
@@ -24,13 +24,13 @@ Keep the locked baseline exact while allowing `polis build` to package a target 
 6. `polis build` MUST continue to require matching Git object format, Specification digest, and effective Project Policy digest.
 7. `polis build` MUST continue to reject staged changes in the real index.
 8. A clean producer worktree is valid when descendant commits already contain the complete target; an empty base-to-target patch remains invalid.
-9. `preflight` and `apply` continue to require the consumer `HEAD` to equal the artifact base commit exactly and the consumer worktree/index to be clean.
+9. Historical consumer rule at the time of this SDD: `preflight` and `apply` required exact artifact-base equality. SDD-0036 supersedes only this consumer rule with explicit `strict|compatible|permissive` admission; clean worktree/index remains mandatory.
 10. A producer `HEAD` that is not descended from the locked base commit MUST fail closed before target construction.
 
 ## Invariants
 
 - The artifact manifest `base_commit` remains exactly equal to `baseline_lock.base_commit`.
-- Consumer baseline validation is not relaxed.
+- Consumer baseline validation was not relaxed by this producer change; subsequent consumer behavior is governed by SDD-0036.
 - Red capture ordering is not relaxed.
 - Scope, immutable captured-test, policy, target-tree, package verification, signature, and transactional apply semantics remain unchanged.
 - No automatic reset, checkout, rebase, merge, commit, or history mutation is introduced.
@@ -40,12 +40,12 @@ Keep the locked baseline exact while allowing `polis build` to package a target 
 - Missing/malformed locked baseline continues to fail.
 - Object-format, base-tree, Specification, or policy digest mismatch continues to fail.
 - Producer history that no longer contains the locked base commit as an ancestor fails as locked-baseline drift.
-- Consumer `HEAD != manifest.base_commit` remains a baseline mismatch.
+- Under this SDD alone, consumer `HEAD != manifest.base_commit` remained a baseline mismatch; SDD-0036 subsequently supersedes that rule for explicit non-strict consumer modes.
 - Empty base-to-target payload remains a build failure.
 
 ## Compatibility
 
-This changes only V6 producer `build` admission for schema-v4 locked contracts. Artifact format, schemas, reader compatibility, and consumer semantics are unchanged.
+This SDD changes only V6 producer `build` admission for schema-v4 locked contracts. Artifact format, schemas, and reader compatibility remain unchanged. Consumer semantics were unchanged by SDD-0031 itself and were later revised independently by SDD-0036.
 
 ## Validation
 

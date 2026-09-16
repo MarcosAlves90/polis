@@ -110,7 +110,7 @@ func TestRunDoctor(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "POLIS doctor 6.5.0") {
+	if !strings.Contains(out.String(), "POLIS doctor 6.6.0") {
 		t.Fatalf("doctor version mismatch: stdout=%q", out.String())
 	}
 }
@@ -957,5 +957,54 @@ func TestRunStartProducesLockedContract(t *testing.T) {
 	}
 	if locked.SchemaVersion != spec.LockedChangeContractSchemaVersion {
 		t.Fatalf("schema=%d", locked.SchemaVersion)
+	}
+}
+
+func TestRunConsumerBaselineModes(t *testing.T) {
+	repo, built := buildV6CLIArtifact(t)
+	if err := os.WriteFile(filepath.Join(repo, "consumer.txt"), []byte("consumer-only\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "consumer.txt"},
+		{"-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "consumer unrelated change"},
+	} {
+		if output, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+
+	var strictOut, strictErr bytes.Buffer
+	if code := run([]string{"preflight", "--repo", repo, built.Path}, &strictOut, &strictErr); code != exitBaselineMismatch {
+		t.Fatalf("strict code=%d stdout=%s stderr=%s", code, strictOut.String(), strictErr.String())
+	}
+
+	payload := runCLIJSON(t, "preflight", "--repo", repo, "--baseline-mode", "compatible", "--format", "json", built.Path)
+	assertJSONFields(t, payload, map[string]string{"status": "PASS", "baseline_mode": "compatible"})
+	if payload["consumer_base_commit"] == "" || payload["baseline_compatibility"] == "" {
+		t.Fatalf("missing compatibility details: %v", payload)
+	}
+
+	var out, errOut bytes.Buffer
+	if code := run([]string{"apply", "--repo", repo, "--baseline-mode", "compatible", built.Path}, &out, &errOut); code != exitPass {
+		t.Fatalf("compatible apply code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	for _, fragment := range []string{"POLIS APPLY: PASS", "Baseline mode: compatible", "Consumer base:", "Baseline compatibility:"} {
+		if !strings.Contains(out.String(), fragment) {
+			t.Fatalf("compatible output missing %q: %s", fragment, out.String())
+		}
+	}
+	assertFileContents(t, filepath.Join(repo, "app.txt"), "changed\n")
+}
+
+func TestRunRejectsInvalidBaselineMode(t *testing.T) {
+	for _, command := range []string{"preflight", "apply"} {
+		var out, errOut bytes.Buffer
+		if code := run([]string{command, "--baseline-mode", "force", "x.polis"}, &out, &errOut); code != exitUsage {
+			t.Fatalf("command=%s code=%d stdout=%s stderr=%s", command, code, out.String(), errOut.String())
+		}
+		if !strings.Contains(errOut.String(), "strict, compatible, or permissive") {
+			t.Fatalf("command=%s stderr=%q", command, errOut.String())
+		}
 	}
 }

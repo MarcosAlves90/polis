@@ -123,3 +123,51 @@ Observed repository validation on the current macOS arm64 host with Go 1.27.1 an
 - focused tests cover omitted-command behavior, disabled-command non-execution, enabled command execution, explicit evidence inventory, empty enabled inventories, invalid configurations, and strict compatibility — PASS.
 
 The installed `/Users/marcos.lopes/go/bin/polis` v6 was also exercised in an isolated clone: `doctor`, `start`, `build`, and `verify` passed, and `apply` passed with its embedded fail-closed preflight for the generated update artifact. The clone received the intended payload; the main worktree was not used as the apply target.
+
+## POLIS V6 consumer baseline compatibility modes — 2026-09-16
+
+This section records validation for SDD-0036. The change keeps exact consumer
+baseline identity as the default `strict` behavior and adds explicit
+`compatible` and `permissive` admission modes to `preflight` and `apply`.
+Package format v3, Project Policy schema v3, Change Contract schema v4, and
+Evidence v2 remain unchanged.
+
+The compatibility mechanism does not force-apply a payload. For a divergent
+consumer `HEAD`, POLIS records the observed clean commit, checks the exact patch
+against that tree, computes the deterministic consumer target tree in a
+temporary index, repeats development proof on the artifact's locked base, then
+runs target behavior, scope, Project Policy, and exact target-tree validation on
+an isolated worktree based on the observed consumer commit. `apply` requires the
+same `HEAD` and clean state immediately before real mutation.
+
+Focused regression coverage establishes:
+
+- strict mode still rejects a different consumer `HEAD`;
+- compatible mode accepts a descendant with unrelated changes;
+- compatible mode preserves a non-overlapping committed change in a payload
+  file when the exact patch context still applies;
+- compatible mode rejects conflicting payload context and non-descendant
+  history;
+- permissive mode can accept non-descendant but patch-compatible history only
+  while the locked artifact base remains available for development proof;
+- permissive mode still rejects actual patch conflicts;
+- compatible preflight remains read-only;
+- a consumer `HEAD` change after assessment invalidates the result before real
+  mutation;
+- invalid CLI modes are rejected and successful non-strict execution reports
+  the admitted base, compatibility reason, and risk warnings.
+
+Observed validation on Linux x86_64, Go 1.23.2, Git 2.47.3:
+
+- `go test ./... -count=1` — PASS.
+- `go test -coverpkg=./... ./... -coverprofile=/tmp/polis-coverage.out` — PASS.
+- `go tool cover -func=/tmp/polis-coverage.out | tail -1` — 86.1% statements.
+- `go vet ./...` — PASS.
+- `go build ./...` — PASS.
+- `go mod verify` — PASS (`all modules verified`).
+- `git diff --check` — PASS.
+
+The repository policy still requires coverage strictly greater than 80.0%; the
+observed instrumented suite remains above that threshold. No policy threshold,
+package schema, signature rule, dirty-worktree protection, scope check, or
+development-proof requirement was weakened for this feature.

@@ -16,7 +16,7 @@ Compatibility MUST NOT weaken the canonical zero-residue producer path or author
 
 ## 2. Runtime identity
 
-The V6 CLI version is `6.5.0`.
+The V6 CLI version is `6.6.0`.
 
 The Go module path is:
 
@@ -80,7 +80,7 @@ All project gates remain present in the canonical registry and each gate's mode 
 
 `polis init --validation-level standard` generates the Go profile with coverage disabled by an explicit reason. `polis init --validation-level minimal` generates all project-quality gates as explicitly not applicable. Repeated `--disable-gate <id>` selectively disables generated project gates; it MUST reject unknown gates and attempts to disable required gates at an incompatible level.
 
-Validation reinforcement levels apply only to project-quality gates. They MUST NOT disable policy/contract validation, path and environment safety, baseline or exact-tree checks, required development proof, package and evidence integrity, signature checks, isolated consumer validation, or transactional apply protections.
+Validation reinforcement levels apply only to project-quality gates. They MUST NOT disable policy/contract validation, path and environment safety, the selected consumer baseline-compatibility contract, deterministic target-tree checks, required development proof, package and evidence integrity, signature checks, isolated consumer validation, or transactional apply protections.
 
 ### 4.2.1 Read-only execution plan
 
@@ -166,11 +166,19 @@ Temporary target-tree construction MUST keep temporary index object writes outsi
 
 For schema-v4 artifacts, package verification MUST prove that the packaged Project Policy SHA-256 equals `baseline_lock.policy_sha256`. Consumer `preflight` and `apply` therefore MUST NOT require `.polis/policy.json` in the target repository.
 
-At consumer boundaries, `preflight` and `apply` revalidate repository-dependent baseline facts, execute validation with the packaged effective policy, validate the exact target tree and scope, and perform the existing fail-closed patch checks. Consumer `HEAD` MUST still equal the artifact/locked base commit exactly; descendant producer-HEAD admission does not apply to consumers.
+At consumer boundaries, `preflight` and `apply` revalidate repository-dependent baseline facts, execute validation with the packaged effective policy, validate deterministic target-tree identity and scope, and perform fail-closed patch checks. The consumer baseline mode is explicit and defaults to `strict`:
+
+- `strict` requires consumer `HEAD` to equal the artifact/locked base commit exactly and preserves the historical V6 behavior;
+- `compatible` permits a different clean consumer `HEAD` only when the artifact base is an ancestor of that `HEAD`, the exact payload applies cleanly to the observed consumer tree, and complete isolated target validation passes;
+- `permissive` may admit a clean consumer `HEAD` whose ancestry from the artifact base cannot be proven, but it MUST still resolve the locked artifact base locally, repeat required baseline development proof there, require the exact payload to apply cleanly, and pass the same complete isolated target validation. A non-ancestral admission MUST be surfaced as an explicit risk notice.
+
+For non-exact consumer baselines, the package's `target_tree` remains an integrity claim about applying the payload to the artifact base. POLIS MUST compute a separate deterministic consumer target tree by applying the exact payload to the observed consumer `HEAD` in isolated Git state. Isolated target validation and the real post-apply check MUST require that computed consumer target tree exactly. Change scope is evaluated relative to the observed consumer `HEAD`, so pre-existing consumer commits are not misclassified as payload changes.
+
+All consumer modes require matching Git object format and a clean real worktree/index. `compatible` MUST reject non-descendant history. `permissive` MUST NOT skip artifact verification, locked-base availability, development proof, scope validation, project validation, conflict detection, or transactional post-apply verification. A missing locked base, patch conflict, failed precondition, or validation failure remains fail-closed.
 
 Consumer isolation MUST NOT create persistent linked-worktree administration or tool-created Git objects in the target repository. Isolated validation may use temporary external/shared clones or equivalent isolation whose cleanup is outside the target repository.
 
-`preflight` remains read-only with respect to the target. `apply` repeats validation and MUST NOT reuse a cached preflight PASS.
+`preflight` remains read-only with respect to the target. `apply` repeats validation and MUST NOT reuse a cached preflight PASS. Immediately before real mutation, `apply` MUST require the real consumer `HEAD` and clean status to remain exactly the state that completed isolated validation; a newly changed but otherwise compatible `HEAD` requires a fresh validation pass.
 
 ## 8. Offline runtime bundle
 
@@ -230,7 +238,7 @@ V6 does not change:
 - bounded stdout/stderr retention and full-stream digests;
 - direct argv execution and declared environments;
 - detached Ed25519 signature model;
-- exact baseline/target-tree validation;
+- explicit consumer baseline-compatibility admission with `strict` default and deterministic exact target-tree validation for the admitted consumer base;
 - transactional apply preserving HEAD and the real index;
 - package/member resource limits.
 

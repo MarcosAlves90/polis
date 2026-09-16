@@ -27,7 +27,7 @@ Reinforcement levels never disable:
 - policy and contract decoding/invariant validation;
 - declared command argv, path, environment, timeout, and resource limits;
 - change scope and test-scope enforcement;
-- baseline identity and exact target-tree validation;
+- the selected consumer baseline-compatibility contract and deterministic target-tree validation;
 - required Red-to-Green or Green-to-Green development proof;
 - package member, digest, checksum, evidence, signature, and locked-baseline verification;
 - consumer clean-baseline, isolated validation, `git apply --check`, transactional apply, and HEAD/index preservation.
