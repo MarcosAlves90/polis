@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/MarcosAlves90/polis/v6/internal/baselineproof"
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
 	"github.com/MarcosAlves90/polis/v6/internal/fileutil"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
@@ -61,6 +62,7 @@ type buildArtifact struct {
 	regressionPatch []byte
 	patch           []byte
 	evidence        []byte
+	baseline        []byte
 }
 
 func Build(ctx context.Context, opts Options) (Result, error) {
@@ -115,11 +117,21 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	if err := changeContract.ValidateChangedPaths(changedPaths); err != nil {
 		return Result{}, fmt.Errorf("change scope validation: %w", err)
 	}
+	baseline, err := baselineproof.Build(ctx, repo, baseCommit, spec.MaxBaselineMemberBytes)
+	if err != nil {
+		return Result{}, fmt.Errorf("build embedded baseline: %w", err)
+	}
+	baselineRepo, cleanupBaseline, err := baselineproof.Materialize(ctx, baseline, objectFormat, baseCommit, changeContract.BaselineLock.BaseTree)
+	if err != nil {
+		return Result{}, fmt.Errorf("materialize embedded baseline for producer replay: %w", err)
+	}
+	defer cleanupBaseline()
 
 	var evidence bytes.Buffer
 	validation := isolation.Validation{
-		Repo:                  repo,
-		BaseCommit:            baseCommit,
+		BaselineRepo:          baselineRepo,
+		BaselineCommit:        baseCommit,
+		TargetRepo:            repo,
 		TargetTree:            targetTree,
 		Patch:                 patch,
 		RegressionPatch:       regressionPatch,
@@ -139,7 +151,7 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 
 	artifact := buildArtifact{
 		opts: opts, objectFormat: objectFormat, baseCommit: baseCommit, targetTree: targetTree,
-		policyRaw: policyRaw, policy: policy, changeRaw: changeRaw, regressionPatch: regressionPatch, patch: patch, evidence: evidence.Bytes(),
+		policyRaw: policyRaw, policy: policy, changeRaw: changeRaw, regressionPatch: regressionPatch, patch: patch, evidence: evidence.Bytes(), baseline: baseline,
 	}
 	manifestRaw, err := encodeManifest(artifact)
 	if err != nil {
@@ -225,7 +237,7 @@ func encodeManifest(artifact buildArtifact) ([]byte, error) {
 		FormatVersion: spec.FormatVersion, Project: artifact.opts.Project, Change: artifact.opts.Change,
 		GitObjectFormat: artifact.objectFormat, BaseCommit: artifact.baseCommit, TargetTree: artifact.targetTree,
 		PolicySHA256: sha256Hex(artifact.policyRaw), ChangeContractSHA256: sha256Hex(artifact.changeRaw),
-		RegressionPatchSHA256: sha256Hex(artifact.regressionPatch), PayloadSHA256: sha256Hex(artifact.patch),
+		RegressionPatchSHA256: sha256Hex(artifact.regressionPatch), PayloadSHA256: sha256Hex(artifact.patch), BaselineSHA256: sha256Hex(artifact.baseline),
 	}
 	if err := manifest.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid build identity: %w", err)
@@ -246,10 +258,10 @@ func finalizeArtifact(artifact buildArtifact, manifestRaw []byte) (Result, error
 	if err := os.MkdirAll(artifact.opts.Out, 0o755); err != nil {
 		return Result{}, fmt.Errorf("create output directory: %w", err)
 	}
-	candidate, err := writeCandidateArchive(
-		artifact.opts.Out, manifestRaw, artifact.policyRaw, artifact.changeRaw,
-		artifact.regressionPatch, artifact.patch, artifact.evidence,
-	)
+	candidate, err := writeCandidateArchive(artifact.opts.Out, candidateArchiveContents{
+		Manifest: manifestRaw, Policy: artifact.policyRaw, Change: artifact.changeRaw,
+		Regression: artifact.regressionPatch, Payload: artifact.patch, Evidence: artifact.evidence, Baseline: artifact.baseline,
+	})
 	if err != nil {
 		return Result{}, err
 	}
@@ -333,14 +345,25 @@ func buildTargetWithTemporaryIndex(ctx context.Context, repo, baseCommit string)
 	return targetTree, patch, changedPaths, nil
 }
 
-func writeCandidateArchive(out string, manifest, policy, change, regression, payload, evidence []byte) (string, error) {
+type candidateArchiveContents struct {
+	Manifest   []byte
+	Policy     []byte
+	Change     []byte
+	Regression []byte
+	Payload    []byte
+	Evidence   []byte
+	Baseline   []byte
+}
+
+func writeCandidateArchive(out string, contents candidateArchiveContents) (string, error) {
 	members := map[string][]byte{
-		"polis/polis-manifest.json":    manifest,
-		"polis/polis-policy.json":      policy,
-		"polis/polis-change.json":      change,
-		"polis/polis-regression.patch": regression,
-		"polis/polis-payload.patch":    payload,
-		"polis/polis-evidence.ndjson":  evidence,
+		spec.MemberManifest:   contents.Manifest,
+		spec.MemberPolicy:     contents.Policy,
+		spec.MemberChange:     contents.Change,
+		spec.MemberRegression: contents.Regression,
+		spec.MemberPayload:    contents.Payload,
+		spec.MemberEvidence:   contents.Evidence,
+		spec.MemberBaseline:   contents.Baseline,
 	}
 	names := make([]string, 0, len(members))
 	for name := range members {
@@ -355,7 +378,7 @@ func writeCandidateArchive(out string, manifest, policy, change, regression, pay
 		checksums.WriteString(name)
 		checksums.WriteByte('\n')
 	}
-	members["polis/polis-checksums.sha256"] = []byte(checksums.String())
+	members[spec.MemberChecksums] = []byte(checksums.String())
 
 	f, err := os.CreateTemp(out, ".polis-candidate-*.tmp")
 	if err != nil {

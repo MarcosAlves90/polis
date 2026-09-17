@@ -1,12 +1,17 @@
 package packageapply
 
 import (
+	"archive/zip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -137,6 +142,358 @@ func repoWithArtifact(t *testing.T) (repo, artifact, target string) {
 		t.Fatalf("fixture not clean: %q", status)
 	}
 	return repo, artifact, target
+}
+
+func independentConsumerFromRepo(t *testing.T, producer string) string {
+	t.Helper()
+	consumer := filepath.Join(t.TempDir(), "independent-consumer")
+	if err := os.MkdirAll(consumer, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	objectFormat := git(t, producer, "rev-parse", "--show-object-format")
+	git(t, consumer, "init", "-q", "--object-format="+objectFormat)
+
+	cmd := exec.Command("git", "-C", producer, "ls-files", "-z")
+	raw, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("list producer files: %v", err)
+	}
+	for _, item := range strings.Split(string(raw), "\x00") {
+		if item == "" {
+			continue
+		}
+		source := filepath.Join(producer, filepath.FromSlash(item))
+		target := filepath.Join(consumer, filepath.FromSlash(item))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(link, target); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		body, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, body, info.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, consumer, "add", ".")
+	git(t, consumer, "-c", "user.name=Independent Consumer", "-c", "user.email=consumer@example.invalid", "commit", "-qm", "independent baseline")
+	if got, want := git(t, consumer, "rev-parse", "HEAD^{tree}"), git(t, producer, "rev-parse", "HEAD^{tree}"); got != want {
+		t.Fatalf("independent consumer tree=%s want producer tree=%s", got, want)
+	}
+	return consumer
+}
+
+func readArtifactMembers(t *testing.T, artifact string) map[string][]byte {
+	t.Helper()
+	zr, err := zip.OpenReader(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	members := make(map[string][]byte, len(zr.File))
+	for _, file := range zr.File {
+		r, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, readErr := io.ReadAll(r)
+		closeErr := r.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		members[file.Name] = body
+	}
+	return members
+}
+
+func writeArtifactMembers(t *testing.T, members map[string][]byte, filename string) string {
+	t.Helper()
+	delete(members, spec.MemberChecksums)
+	names := make([]string, 0, len(members))
+	for name := range members {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var checksums strings.Builder
+	for _, name := range names {
+		sum := sha256.Sum256(members[name])
+		checksums.WriteString(hex.EncodeToString(sum[:]))
+		checksums.WriteString("  ")
+		checksums.WriteString(name)
+		checksums.WriteByte('\n')
+	}
+	members[spec.MemberChecksums] = []byte(checksums.String())
+
+	path := filepath.Join(t.TempDir(), filename)
+	out, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(out)
+	names = names[:0]
+	for name := range members {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		header := &zip.FileHeader{Name: name, Method: zip.Store}
+		header.SetMode(0o644)
+		w, err := zw.CreateHeader(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(members[name]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func legacyV3Artifact(t *testing.T, artifact string) string {
+	t.Helper()
+	members := readArtifactMembers(t, artifact)
+	delete(members, spec.MemberBaseline)
+
+	var manifest spec.Manifest
+	if err := json.Unmarshal(members[spec.MemberManifest], &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.FormatVersion = spec.PreviousFormatVersion
+	manifest.BaselineSHA256 = ""
+	manifestRaw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members[spec.MemberManifest] = manifestRaw
+
+	path := writeArtifactMembers(t, members, "legacy-v3.polis")
+	if _, err := packageverify.Verify(path); err != nil {
+		t.Fatalf("generated legacy v3 artifact is invalid: %v", err)
+	}
+	return path
+}
+
+func semanticallyCorruptedV4Artifact(t *testing.T, artifact string) string {
+	t.Helper()
+	members := readArtifactMembers(t, artifact)
+	baseline := append([]byte(nil), members[spec.MemberBaseline]...)
+	if len(baseline) <= 512 {
+		t.Fatalf("baseline member unexpectedly small: %d", len(baseline))
+	}
+	baseline[512] ^= 0x01
+	members[spec.MemberBaseline] = baseline
+
+	var manifest spec.Manifest
+	if err := json.Unmarshal(members[spec.MemberManifest], &manifest); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(baseline)
+	manifest.BaselineSHA256 = hex.EncodeToString(sum[:])
+	manifestRaw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members[spec.MemberManifest] = manifestRaw
+	return writeArtifactMembers(t, members, "corrupted-v4.polis")
+}
+
+func assertCommitMissing(t *testing.T, repo, commit string) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repo, "cat-file", "-e", commit+"^{commit}")
+	if err := cmd.Run(); err == nil {
+		t.Fatalf("commit %s unexpectedly exists in independent consumer object database", commit)
+	}
+}
+
+func TestPreflightPermissiveUsesEmbeddedBaselineAcrossIndependentObjectDatabase(t *testing.T) {
+	producer, artifact, _ := repoWithArtifact(t)
+	producerBase := git(t, producer, "rev-parse", "HEAD")
+	consumer := independentConsumerFromRepo(t, producer)
+	consumerHead := git(t, consumer, "rev-parse", "HEAD")
+	if consumerHead == producerBase {
+		t.Fatal("independent consumer unexpectedly reused producer commit")
+	}
+	assertCommitMissing(t, consumer, producerBase)
+
+	beforeHead := consumerHead
+	beforeIndex := git(t, consumer, "write-tree")
+	beforeRefs := git(t, consumer, "for-each-ref", "--format=%(refname) %(objectname)")
+	beforeWorktrees := git(t, consumer, "worktree", "list", "--porcelain")
+	beforeObjects := git(t, consumer, "count-objects", "-v")
+	beforeStatus := git(t, consumer, "status", "--porcelain=v1", "--untracked-files=all")
+	beforeConfig, err := os.ReadFile(filepath.Join(consumer, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := PreflightWithOptions(context.Background(), artifact, consumer, Options{BaselineMode: BaselineModePermissive})
+	if err != nil {
+		t.Fatalf("embedded permissive preflight: %v", err)
+	}
+	if result.BaselineSource != BaselineSourceEmbedded || result.BaselineAncestry != BaselineAncestryUnproven || result.OverrideActive {
+		t.Fatalf("unexpected baseline result: %+v", result)
+	}
+	if len(result.BypassedGuarantees) != 0 {
+		t.Fatalf("embedded proof unexpectedly bypassed guarantees: %v", result.BypassedGuarantees)
+	}
+	if got := git(t, consumer, "rev-parse", "HEAD"); got != beforeHead {
+		t.Fatalf("HEAD changed: %s -> %s", beforeHead, got)
+	}
+	if got := git(t, consumer, "write-tree"); got != beforeIndex {
+		t.Fatalf("index changed: %s -> %s", beforeIndex, got)
+	}
+	if got := git(t, consumer, "for-each-ref", "--format=%(refname) %(objectname)"); got != beforeRefs {
+		t.Fatalf("refs changed\nbefore=%s\nafter=%s", beforeRefs, got)
+	}
+	if got := git(t, consumer, "worktree", "list", "--porcelain"); got != beforeWorktrees {
+		t.Fatalf("linked-worktree administration changed\nbefore=%s\nafter=%s", beforeWorktrees, got)
+	}
+	if got := git(t, consumer, "count-objects", "-v"); got != beforeObjects {
+		t.Fatalf("persistent object database changed\nbefore=%s\nafter=%s", beforeObjects, got)
+	}
+	if got := git(t, consumer, "status", "--porcelain=v1", "--untracked-files=all"); got != beforeStatus {
+		t.Fatalf("status changed: before=%q after=%q", beforeStatus, got)
+	}
+	afterConfig, err := os.ReadFile(filepath.Join(consumer, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterConfig) != string(beforeConfig) {
+		t.Fatal("git config changed")
+	}
+	assertCommitMissing(t, consumer, producerBase)
+}
+
+func TestApplyPermissiveUsesEmbeddedBaselineAcrossIndependentObjectDatabase(t *testing.T) {
+	producer, artifact, _ := repoWithArtifact(t)
+	producerBase := git(t, producer, "rev-parse", "HEAD")
+	consumer := independentConsumerFromRepo(t, producer)
+	consumerHead := git(t, consumer, "rev-parse", "HEAD")
+	assertCommitMissing(t, consumer, producerBase)
+
+	result, err := ApplyWithOptions(context.Background(), artifact, consumer, Options{BaselineMode: BaselineModePermissive})
+	if err != nil {
+		t.Fatalf("embedded permissive apply: %v", err)
+	}
+	if result.BaselineSource != BaselineSourceEmbedded || result.ConsumerBaseCommit != consumerHead || result.OverrideActive {
+		t.Fatalf("unexpected baseline result: %+v", result)
+	}
+	if b, _ := os.ReadFile(filepath.Join(consumer, "app.txt")); string(b) != "changed\n" {
+		t.Fatalf("app.txt=%q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(consumer, "new.txt")); string(b) != "new\n" {
+		t.Fatalf("new.txt=%q", b)
+	}
+	if got := git(t, consumer, "rev-parse", "HEAD"); got != consumerHead {
+		t.Fatalf("HEAD changed: %s -> %s", consumerHead, got)
+	}
+	assertCommitMissing(t, consumer, producerBase)
+}
+
+func TestLegacyV3MissingBaselineRequiresExplicitOverrideOnPreflightAndApply(t *testing.T) {
+	producer, currentArtifact, _ := repoWithArtifact(t)
+	producerBase := git(t, producer, "rev-parse", "HEAD")
+	artifact := legacyV3Artifact(t, currentArtifact)
+	consumer := independentConsumerFromRepo(t, producer)
+	consumerHead := git(t, consumer, "rev-parse", "HEAD")
+	assertCommitMissing(t, consumer, producerBase)
+
+	if _, err := PreflightWithOptions(context.Background(), artifact, consumer, Options{BaselineMode: BaselineModePermissive}); err == nil || !errors.Is(err, ErrBaselineMismatch) {
+		t.Fatalf("normal permissive preflight should fail without baseline, got %v", err)
+	}
+	preflight, err := PreflightWithOptions(context.Background(), artifact, consumer, Options{BaselineMode: BaselineModePermissive, AllowMissingBaselineProof: true})
+	if err != nil {
+		t.Fatalf("explicit override preflight: %v", err)
+	}
+	if preflight.BaselineSource != BaselineSourceOverridden || !preflight.OverrideActive || len(preflight.BypassedGuarantees) == 0 {
+		t.Fatalf("override state not reported: %+v", preflight)
+	}
+	if got := git(t, consumer, "rev-parse", "HEAD"); got != consumerHead {
+		t.Fatalf("preflight changed HEAD: %s -> %s", consumerHead, got)
+	}
+	if _, err := ApplyWithOptions(context.Background(), artifact, consumer, Options{BaselineMode: BaselineModePermissive}); err == nil || !errors.Is(err, ErrBaselineMismatch) {
+		t.Fatalf("apply without repeated override should fail, got %v", err)
+	}
+	applied, err := ApplyWithOptions(context.Background(), artifact, consumer, Options{BaselineMode: BaselineModePermissive, AllowMissingBaselineProof: true})
+	if err != nil {
+		t.Fatalf("explicit override apply: %v", err)
+	}
+	if applied.BaselineSource != BaselineSourceOverridden || !applied.OverrideActive || len(applied.BypassedGuarantees) == 0 {
+		t.Fatalf("override state not reported after apply: %+v", applied)
+	}
+	if b, _ := os.ReadFile(filepath.Join(consumer, "app.txt")); string(b) != "changed\n" {
+		t.Fatalf("app.txt=%q", b)
+	}
+	if got := git(t, consumer, "rev-parse", "HEAD"); got != consumerHead {
+		t.Fatalf("apply changed HEAD: %s -> %s", consumerHead, got)
+	}
+}
+
+func TestMissingBaselineOverrideDoesNotBypassPayloadConflict(t *testing.T) {
+	producer, currentArtifact, _ := repoWithArtifact(t)
+	artifact := legacyV3Artifact(t, currentArtifact)
+	consumer := independentConsumerFromRepo(t, producer)
+	if err := os.WriteFile(filepath.Join(consumer, "app.txt"), []byte("consumer-conflict\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, consumer, "add", "app.txt")
+	git(t, consumer, "-c", "user.name=Independent Consumer", "-c", "user.email=consumer@example.invalid", "commit", "-qm", "conflicting consumer state")
+
+	_, err := PreflightWithOptions(context.Background(), artifact, consumer, Options{BaselineMode: BaselineModePermissive, AllowMissingBaselineProof: true})
+	if err == nil || !errors.Is(err, ErrBaselineMismatch) || !strings.Contains(err.Error(), "payload is incompatible") {
+		t.Fatalf("override accepted payload conflict: %v", err)
+	}
+}
+
+func TestMissingBaselineOverrideCannotBypassMalformedEmbeddedBaseline(t *testing.T) {
+	producer, artifact, _ := repoWithArtifact(t)
+	consumer := independentConsumerFromRepo(t, producer)
+	corrupted := semanticallyCorruptedV4Artifact(t, artifact)
+
+	if _, err := packageverify.Verify(corrupted); err == nil {
+		t.Fatal("expected semantic embedded baseline corruption to invalidate package")
+	}
+	_, err := PreflightWithOptions(context.Background(), corrupted, consumer, Options{BaselineMode: BaselineModePermissive, AllowMissingBaselineProof: true})
+	if err == nil || errors.Is(err, ErrBaselineMismatch) || !strings.Contains(err.Error(), "verify package") {
+		t.Fatalf("override converted malformed embedded baseline into an admission decision: %v", err)
+	}
+}
+
+func TestMissingBaselineOverrideDoesNotBypassDirtyConsumer(t *testing.T) {
+	producer, currentArtifact, _ := repoWithArtifact(t)
+	artifact := legacyV3Artifact(t, currentArtifact)
+	consumer := independentConsumerFromRepo(t, producer)
+	if err := os.WriteFile(filepath.Join(consumer, "local-untracked.txt"), []byte("user work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := PreflightWithOptions(context.Background(), artifact, consumer, Options{BaselineMode: BaselineModePermissive, AllowMissingBaselineProof: true})
+	if err == nil || !errors.Is(err, ErrBaselineMismatch) || !strings.Contains(err.Error(), "not clean") {
+		t.Fatalf("override accepted dirty consumer: %v", err)
+	}
 }
 
 func TestApplyExactBaselinePreservesIndexAndUsesEphemeralEvidence(t *testing.T) {

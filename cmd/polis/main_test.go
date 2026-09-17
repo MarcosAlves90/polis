@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
+	"github.com/MarcosAlves90/polis/v6/internal/packageapply"
 	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
 	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
@@ -980,9 +981,18 @@ func TestRunConsumerBaselineModes(t *testing.T) {
 	}
 
 	payload := runCLIJSON(t, "preflight", "--repo", repo, "--baseline-mode", "compatible", "--format", "json", built.Path)
-	assertJSONFields(t, payload, map[string]string{"status": "PASS", "baseline_mode": "compatible"})
+	assertJSONFields(t, payload, map[string]string{"status": "PASS", "baseline_mode": "compatible", "baseline_source": "local", "baseline_ancestry": "proven_descendant"})
 	if payload["consumer_base_commit"] == "" || payload["baseline_compatibility"] == "" {
 		t.Fatalf("missing compatibility details: %v", payload)
+	}
+	if active, ok := payload["override_active"].(bool); !ok || active {
+		t.Fatalf("compatible preflight override_active=%v", payload["override_active"])
+	}
+
+	permissivePayload := runCLIJSON(t, "preflight", "--repo", repo, "--baseline-mode", "permissive", "--allow-missing-baseline-proof", "--format", "json", built.Path)
+	assertJSONFields(t, permissivePayload, map[string]string{"status": "PASS", "baseline_mode": "permissive", "baseline_source": "local", "baseline_ancestry": "proven_descendant"})
+	if active, ok := permissivePayload["override_active"].(bool); !ok || active {
+		t.Fatalf("override should not activate while local proof exists: %v", permissivePayload)
 	}
 
 	var out, errOut bytes.Buffer
@@ -995,6 +1005,80 @@ func TestRunConsumerBaselineModes(t *testing.T) {
 		}
 	}
 	assertFileContents(t, filepath.Join(repo, "app.txt"), "changed\n")
+}
+
+func TestRunRejectsMissingBaselineOverrideOutsidePermissiveMode(t *testing.T) {
+	for _, command := range []string{"preflight", "apply"} {
+		for _, mode := range []string{"strict", "compatible"} {
+			var out, errOut bytes.Buffer
+			code := run([]string{command, "--baseline-mode", mode, "--allow-missing-baseline-proof", "x.polis"}, &out, &errOut)
+			if code != exitUsage {
+				t.Fatalf("command=%s mode=%s code=%d stdout=%s stderr=%s", command, mode, code, out.String(), errOut.String())
+			}
+			if !strings.Contains(errOut.String(), "requires --baseline-mode permissive") {
+				t.Fatalf("command=%s mode=%s stderr=%q", command, mode, errOut.String())
+			}
+		}
+	}
+}
+
+func TestBaselineReportingIncludesStrictMode(t *testing.T) {
+	result := packageapply.Result{
+		BaselineMode:          packageapply.BaselineModeStrict,
+		BaselineSource:        packageapply.BaselineSourceLocal,
+		BaselineAncestry:      packageapply.BaselineAncestryExact,
+		ConsumerBaseCommit:    "consumer",
+		BaselineCompatibility: "accepted exact artifact baseline",
+	}
+	payload := map[string]any{}
+	addBaselineResultFields(payload, result)
+	if payload["baseline_mode"] != packageapply.BaselineModeStrict || payload["baseline_source"] != packageapply.BaselineSourceLocal || payload["baseline_ancestry"] != packageapply.BaselineAncestryExact {
+		t.Fatalf("strict baseline fields missing or incorrect: %v", payload)
+	}
+	if active, ok := payload["override_active"].(bool); !ok || active {
+		t.Fatalf("strict override_active=%v", payload["override_active"])
+	}
+
+	var out bytes.Buffer
+	writeBaselineResultText(&out, result)
+	for _, fragment := range []string{"Baseline mode: strict", "Baseline source: local", "Baseline ancestry: exact"} {
+		if !strings.Contains(out.String(), fragment) {
+			t.Fatalf("strict text output missing %q: %s", fragment, out.String())
+		}
+	}
+}
+
+func TestBaselineOverrideReportingIsExplicit(t *testing.T) {
+	result := packageapply.Result{
+		BaselineMode:          packageapply.BaselineModePermissive,
+		BaselineSource:        packageapply.BaselineSourceOverridden,
+		BaselineAncestry:      packageapply.BaselineAncestryUnproven,
+		ConsumerBaseCommit:    "consumer",
+		BaselineCompatibility: "accepted with reduced baseline proof",
+		OverrideActive:        true,
+		BypassedGuarantees:    []string{"locked baseline behavior replay", "Red proof reconstruction"},
+		Warnings:              []string{"locked producer baseline proof is unavailable and explicitly waived"},
+	}
+	payload := map[string]any{}
+	addBaselineResultFields(payload, result)
+	if payload["baseline_mode"] != packageapply.BaselineModePermissive || payload["baseline_source"] != packageapply.BaselineSourceOverridden || payload["baseline_ancestry"] != packageapply.BaselineAncestryUnproven {
+		t.Fatalf("unexpected baseline fields: %v", payload)
+	}
+	if active, ok := payload["override_active"].(bool); !ok || !active {
+		t.Fatalf("override_active=%v", payload["override_active"])
+	}
+	bypassed, ok := payload["bypassed_guarantees"].([]string)
+	if !ok || len(bypassed) != 2 {
+		t.Fatalf("bypassed_guarantees=%T %v", payload["bypassed_guarantees"], payload["bypassed_guarantees"])
+	}
+
+	var out bytes.Buffer
+	writeBaselineResultText(&out, result)
+	for _, fragment := range []string{"Baseline source: overridden", "Baseline ancestry: unproven", "WARNING: USER SAFETY OVERRIDE ACTIVE", "Bypassed guarantee: locked baseline behavior replay", "Warning: locked producer baseline proof is unavailable"} {
+		if !strings.Contains(out.String(), fragment) {
+			t.Fatalf("text output missing %q: %s", fragment, out.String())
+		}
+	}
 }
 
 func TestRunRejectsInvalidBaselineMode(t *testing.T) {

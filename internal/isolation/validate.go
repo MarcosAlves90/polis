@@ -13,9 +13,11 @@ import (
 )
 
 type Validation struct {
-	Repo                  string
-	BaseCommit            string
+	BaselineRepo          string
+	BaselineCommit        string
+	TargetRepo            string
 	TargetBaseCommit      string
+	SkipBaselineProof     bool
 	TargetTree            string
 	Patch                 []byte
 	RegressionPatch       []byte
@@ -39,13 +41,13 @@ func Validate(ctx context.Context, validation Validation) error {
 }
 
 func validateRegression(ctx context.Context, validation Validation) (map[string]string, error) {
-	if !validation.Change.RequiresBaselineProof() {
+	if validation.SkipBaselineProof || !validation.Change.RequiresBaselineProof() {
 		return nil, nil
 	}
 	worktree, cleanup, err := gitutil.DetachedWorktree(
 		ctx,
-		validation.Repo,
-		validation.BaseCommit,
+		validation.BaselineRepo,
+		validation.BaselineCommit,
 		validation.RedWorktreePattern,
 		"create isolated worktree staging",
 		validation.CreateWorktreeError,
@@ -55,29 +57,9 @@ func validateRegression(ctx context.Context, validation Validation) (map[string]
 	}
 	defer cleanup()
 
-	var redProof map[string]string
-	if validation.Change.RequiresRegressionPatch() {
-		if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(validation.RegressionPatch), "apply", "--check", "-"); err != nil {
-			return nil, fmt.Errorf("regression probe apply check failed: %w", err)
-		}
-		if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(validation.RegressionPatch), "apply", "--index", "-"); err != nil {
-			return nil, fmt.Errorf("regression probe apply failed: %w", err)
-		}
-		changedPaths, err := gitutil.ChangedIndexPaths(ctx, worktree, "--cached")
-		if err != nil {
-			return nil, err
-		}
-		redProof = make(map[string]string, len(changedPaths))
-		for path := range changedPaths {
-			redProof[path] = ""
-			if validation.Change.IsStrictDevelopment() {
-				blob, err := indexBlobID(ctx, worktree, path)
-				if err != nil {
-					return nil, fmt.Errorf("capture strict Red proof path %q: %w", path, err)
-				}
-				redProof[path] = blob
-			}
-		}
+	redProof, err := prepareRegressionProof(ctx, validation, worktree)
+	if err != nil {
+		return nil, err
 	}
 	if err := changeexec.ExecuteBaseline(validation.Change, worktree, validation.Evidence); err != nil {
 		return nil, fmt.Errorf("regression baseline validation: %w", err)
@@ -85,14 +67,61 @@ func validateRegression(ctx context.Context, validation Validation) (map[string]
 	return redProof, nil
 }
 
+func prepareRegressionProof(ctx context.Context, validation Validation, worktree string) (map[string]string, error) {
+	if !validation.Change.RequiresRegressionPatch() {
+		return nil, nil
+	}
+	if err := applyRegressionPatch(ctx, worktree, validation.RegressionPatch); err != nil {
+		return nil, err
+	}
+	return captureRegressionProof(ctx, worktree, validation.Change.IsStrictDevelopment())
+}
+
+func applyRegressionPatch(ctx context.Context, worktree string, patch []byte) error {
+	if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(patch), "apply", "--check", "-"); err != nil {
+		return fmt.Errorf("regression probe apply check failed: %w", err)
+	}
+	if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(patch), "apply", "--index", "-"); err != nil {
+		return fmt.Errorf("regression probe apply failed: %w", err)
+	}
+	return nil
+}
+
+func captureRegressionProof(ctx context.Context, worktree string, strict bool) (map[string]string, error) {
+	changedPaths, err := gitutil.ChangedIndexPaths(ctx, worktree, "--cached")
+	if err != nil {
+		return nil, err
+	}
+	redProof := make(map[string]string, len(changedPaths))
+	for path := range changedPaths {
+		blob, err := regressionBlobID(ctx, worktree, path, strict)
+		if err != nil {
+			return nil, err
+		}
+		redProof[path] = blob
+	}
+	return redProof, nil
+}
+
+func regressionBlobID(ctx context.Context, worktree, path string, strict bool) (string, error) {
+	if !strict {
+		return "", nil
+	}
+	blob, err := indexBlobID(ctx, worktree, path)
+	if err != nil {
+		return "", fmt.Errorf("capture strict Red proof path %q: %w", path, err)
+	}
+	return blob, nil
+}
+
 func validateTarget(ctx context.Context, validation Validation, redProof map[string]string) error {
 	targetBaseCommit := validation.TargetBaseCommit
 	if targetBaseCommit == "" {
-		targetBaseCommit = validation.BaseCommit
+		targetBaseCommit = validation.BaselineCommit
 	}
 	worktree, cleanup, err := gitutil.DetachedWorktree(
 		ctx,
-		validation.Repo,
+		validation.TargetRepo,
 		targetBaseCommit,
 		validation.TargetWorktreePattern,
 		"create isolated worktree staging",

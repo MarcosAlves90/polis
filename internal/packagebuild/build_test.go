@@ -116,12 +116,21 @@ func newV6Repo(t *testing.T, failingPolicy bool) string {
 
 func lockedCharacterizationContract(t *testing.T, repo string, allowedPaths ...string) string {
 	t.Helper()
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	regression := spec.CommandSpec{Argv: []string{"go", "test", "-p=1", "./...", "-run", "TestAdd"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	return lockedCharacterizationContractWithRegression(t, repo, regression, allowedPaths...)
+}
+
+func lockedCharacterizationContractWithRegression(t *testing.T, repo string, regression spec.CommandSpec, allowedPaths ...string) string {
+	t.Helper()
 	if len(allowedPaths) == 0 {
 		allowedPaths = []string{"."}
 	}
 	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
 	pass := spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}
-	regression := spec.CommandSpec{Argv: []string{"go", "test", "-p=1", "./...", "-run", "TestAdd"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	if regression.Environment == nil {
+		regression.Environment = env
+	}
 	clause := func(id, statement string) spec.SpecificationClause {
 		return spec.SpecificationClause{ID: id, Statement: statement}
 	}
@@ -192,6 +201,20 @@ func TestBuildCreatesVerifiedPackageWithoutMutatingSourceState(t *testing.T) {
 	}
 	if got := runGit(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); got != beforeStatus {
 		t.Fatalf("source status changed:\nBEFORE %q\nAFTER  %q", beforeStatus, got)
+	}
+}
+
+func TestBuildRejectsBaselineProofThatEmbeddedSnapshotCannotReplay(t *testing.T) {
+	repo := newV6Repo(t, false)
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	regression := spec.CommandSpec{Argv: []string{"git", "cat-file", "-e", "HEAD^"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	contract := lockedCharacterizationContractWithRegression(t, repo, regression, ".")
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Build(context.Background(), Options{Repo: repo, Project: "gitrex", Change: "embedded-proof-replay", Out: t.TempDir(), Contract: contract})
+	if err == nil || !strings.Contains(err.Error(), "regression baseline validation") {
+		t.Fatalf("expected non-replayable embedded baseline rejection, got %v", err)
 	}
 }
 

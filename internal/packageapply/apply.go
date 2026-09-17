@@ -30,8 +30,12 @@ type Result struct {
 	DisabledGates         []string
 	EvidencePath          string
 	BaselineMode          BaselineMode
+	BaselineSource        BaselineSource
+	BaselineAncestry      BaselineAncestry
 	ConsumerBaseCommit    string
 	BaselineCompatibility string
+	OverrideActive        bool
+	BypassedGuarantees    []string
 	Warnings              []string
 }
 
@@ -57,6 +61,11 @@ func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Optio
 	if err != nil {
 		return Result{}, err
 	}
+	baselineRepo, cleanupBaseline, err := prepareBaselineRepo(ctx, repo, pkg, assessment)
+	if err != nil {
+		return Result{}, err
+	}
+	defer cleanupBaseline()
 
 	evidenceFile, err := os.CreateTemp("", "polis-apply-evidence-*.ndjson")
 	if err != nil {
@@ -65,9 +74,11 @@ func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Optio
 	evidencePath := evidenceFile.Name()
 
 	if err := isolation.Validate(ctx, isolation.Validation{
-		Repo:                  repo,
-		BaseCommit:            pkg.Manifest.BaseCommit,
+		BaselineRepo:          baselineRepo,
+		BaselineCommit:        pkg.Manifest.BaseCommit,
+		TargetRepo:            repo,
 		TargetBaseCommit:      assessment.ConsumerHead,
+		SkipBaselineProof:     assessment.SkipBaselineProof,
 		TargetTree:            assessment.TargetTree,
 		Patch:                 pkg.Patch,
 		RegressionPatch:       pkg.RegressionPatch,
@@ -136,10 +147,17 @@ func PreflightWithOptions(ctx context.Context, artifact, repoPath string, opts O
 	if err != nil {
 		return Result{}, err
 	}
+	baselineRepo, cleanupBaseline, err := prepareBaselineRepo(ctx, repo, pkg, assessment)
+	if err != nil {
+		return Result{}, err
+	}
+	defer cleanupBaseline()
 	if err := isolation.Validate(ctx, isolation.Validation{
-		Repo:                  repo,
-		BaseCommit:            pkg.Manifest.BaseCommit,
+		BaselineRepo:          baselineRepo,
+		BaselineCommit:        pkg.Manifest.BaseCommit,
+		TargetRepo:            repo,
 		TargetBaseCommit:      assessment.ConsumerHead,
+		SkipBaselineProof:     assessment.SkipBaselineProof,
 		TargetTree:            assessment.TargetTree,
 		Patch:                 pkg.Patch,
 		RegressionPatch:       pkg.RegressionPatch,
@@ -174,8 +192,12 @@ func resultForPackage(pkg packageverify.Package, targetTree string, assessment b
 		EnabledGates:          append([]string{}, summary.EnabledGates...),
 		DisabledGates:         append([]string{}, summary.DisabledGates...),
 		BaselineMode:          assessment.Mode,
+		BaselineSource:        assessment.Source,
+		BaselineAncestry:      assessment.Ancestry,
 		ConsumerBaseCommit:    assessment.ConsumerHead,
 		BaselineCompatibility: baselineCompatibilitySummary(assessment),
+		OverrideActive:        assessment.OverrideActive,
+		BypassedGuarantees:    append([]string{}, assessment.BypassedGuarantees...),
 		Warnings:              append([]string{}, assessment.Warnings...),
 	}
 }
@@ -192,17 +214,6 @@ func baselineCompatibilitySummary(assessment baselineAssessment) string {
 
 func resolveRepo(ctx context.Context, repo string) (string, error) {
 	return gitutil.ResolveRoot(ctx, repo, gitutil.ResolveRootOptions{EmptyAsDot: true, PathError: "resolve repo path", GitError: "not a Git worktree"})
-}
-
-func verifyBaseline(ctx context.Context, repo string, manifest spec.Manifest) error {
-	head, err := verifyConsumerState(ctx, repo, manifest.GitObjectFormat)
-	if err != nil {
-		return err
-	}
-	if head != manifest.BaseCommit {
-		return fmt.Errorf("%w: base_commit got %s want %s", ErrBaselineMismatch, head, manifest.BaseCommit)
-	}
-	return nil
 }
 
 func verifyLockedBaseline(ctx context.Context, repo string, change spec.ChangeContract) error {

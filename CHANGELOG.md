@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Add package format v4 with an authenticated, bounded `polis/polis-baseline.tar` containing the locked producer commit and complete tree/blob closure so permissive consumers can replay development proof without importing producer history into their repository.
+- Validate v4 baseline portability during producer build by replaying locked development proof from the materialized embedded snapshot; commands that require omitted refs or parent history now fail before artifact publication.
+- Validate embedded Git objects with native Git semantics and reject projected baseline members over 32 MiB before loading full object payloads.
+- Align the canonical manifest JSON Schema with package format v4 and mandatory `baseline_sha256`.
+- Add explicit `--allow-missing-baseline-proof` authorization for exceptional permissive consumption of historical artifacts whose producer baseline cannot be established, with stable text/JSON reporting of the proof source, override state, and bypassed guarantees.
+
+### Changed
+
+- Separate baseline-proof storage from consumer target validation so embedded producer proof can execute in temporary Git state while target validation continues against the actual consumer repository.
+- Centralize version-specific package member inventories and size limits while retaining exact seven-member v2/v3 compatibility.
+
+### Security
+
+- Keep malformed embedded baselines, dirty consumers, payload conflicts, scope failures, target-validation failures, and transactional post-apply mismatches fail-closed even when the missing-baseline override is explicitly supplied.
+- Verify embedded object identity, complete tree/blob closure, canonical tar encoding, SHA-1/SHA-256 object format, manifest/checksum binding, and the locked base tree before baseline material is used.
+
 ## [6.6.0] - 2026-09-16
 
 ### Added
