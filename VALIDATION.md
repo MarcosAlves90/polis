@@ -171,3 +171,73 @@ The repository policy still requires coverage strictly greater than 80.0%; the
 observed instrumented suite remains above that threshold. No policy threshold,
 package schema, signature rule, dirty-worktree protection, scope check, or
 development-proof requirement was weakened for this feature.
+
+## POLIS V6 self-contained baseline proof and explicit missing-proof override — 2026-09-17
+
+This section records validation for SDD-0037 and Issue #1. New producer builds use
+package format v4 with an authenticated `polis/polis-baseline.tar`; historical
+v2/v3 seven-member artifacts remain readable without redefining their package
+semantics. The embedded member carries the locked producer commit plus its complete
+tree/blob closure as canonical raw Git objects. Consumer target validation remains
+separate from producer baseline-proof storage.
+
+The representation design gate compared the selected raw-object TAR with an actual
+Git-pack prototype on Linux amd64 / Git 2.47.3. Repeated `git pack-objects` runs were
+byte-identical for SHA-1 and SHA-256 fixtures containing symlink, executable and
+binary content. On the repository baseline sampled during implementation, 194
+objects contained 3,216,899 raw payload bytes; the pack occupied 2,489,738 bytes
+while the equivalent canonical TAR size was approximately 3,370,496 bytes. Pack
+transport therefore demonstrated a real size advantage, but it would add compressed
+and delta-object expansion as a separately bounded parser/resource surface. The
+raw-object representation was selected to keep authenticated resource accounting
+direct and semantics smaller; the 32 MiB embedded-baseline cap remains fail-closed.
+
+Focused regression coverage establishes:
+
+- a consumer in a genuinely independent Git object database can use permissive
+  preflight/apply without possessing the producer baseline commit when v4 embedded
+  proof is valid;
+- embedded proof leaves consumer HEAD, real index, refs, Git configuration,
+  persistent object database, linked-worktree administration and working tree
+  unchanged during preflight;
+- SHA-1 and SHA-256 embedded baselines preserve native tree identity, symlinks,
+  executable bits and binary blobs;
+- missing tree/blob closure, unrelated objects, truncation, object tampering, wrong
+  commit/tree identity and malformed embedded material fail closed; native Git object
+  validation rejects a hash-consistent but structurally invalid commit before `verify` PASS;
+- producer build replays locked development proof from the materialized embedded
+  snapshot itself; a baseline command that depends on omitted parent history (for
+  example `HEAD^`) is rejected during build rather than creating a non-portable artifact;
+- baseline TAR size is projected from `git cat-file -s` metadata before full object
+  payloads are loaded, and exact encoded-size accounting is checked against that projection;
+- the canonical manifest JSON Schema declares format v4 and mandatory
+  `baseline_sha256`, matching the manifest emitted by current builds;
+- v3 artifacts with a genuinely missing producer baseline still fail normally and
+  can proceed only when `--allow-missing-baseline-proof` is explicitly supplied;
+- apply does not inherit preflight override authorization;
+- a requested override is not activated when local proof is available;
+- malformed v4 embedded proof remains an invalid package even when the override
+  flag is supplied;
+- dirty consumers and payload conflicts remain fatal under override;
+- strict and compatible modes reject the missing-proof override flag;
+- strict, compatible and permissive successful results expose stable baseline
+  source/ancestry/override reporting.
+
+Observed validation on Linux amd64, Go 1.23.2, Git 2.47.3:
+
+- `gofmt` check over tracked and newly added Go files — PASS, no files reported.
+- `git diff --check` — PASS.
+- `go test ./... -count=1` — PASS.
+- `go vet ./...` — PASS.
+- `go mod verify` — PASS (`all modules verified`).
+- `go build -trimpath ./cmd/polis` — PASS.
+- `./polis doctor` — PASS; reports POLIS 6.6.0, Linux amd64, Go 1.23.2 and Git 2.47.3.
+- authoritative coverage command `go test -coverpkg=./... ./... -count=1 -coverprofile=/tmp/polis-issue1-coverage.out` — PASS.
+- normative CI line-union metric: `5109 / 6216 = 82.191119691120%`, strictly greater than `80.0%` — PASS.
+- race detector: `go test -race ./internal/packageapply -count=1` plus `go test -race` over every remaining `go list ./...` package — PASS. The single aggregated `go test -race ./...` invocation was interrupted by the external execution-time limit before completion and is therefore not itself claimed as a PASS; the two exhaustive package partitions completed successfully.
+
+No macOS or Windows execution was performed for this uncommitted Issue #1 work in
+this Linux workspace. The repository CI still defines those platform jobs, but a
+fresh cross-platform result requires the change to run in those environments; no
+remote workflow was triggered because publication/push/remote mutation was outside
+the authorized scope.

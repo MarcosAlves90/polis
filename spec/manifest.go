@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	FormatVersion       = 3
-	LegacyFormatVersion = 2
+	FormatVersion         = 4
+	PreviousFormatVersion = 3
+	LegacyFormatVersion   = 2
 )
 
 var (
@@ -30,6 +31,7 @@ type Manifest struct {
 	ChangeContractSHA256  string `json:"change_contract_sha256"`
 	RegressionPatchSHA256 string `json:"regression_patch_sha256"`
 	PayloadSHA256         string `json:"payload_sha256"`
+	BaselineSHA256        string `json:"baseline_sha256,omitempty"`
 }
 
 func DecodeManifest(raw []byte) (Manifest, error) {
@@ -49,7 +51,7 @@ func DecodeManifest(raw []byte) (Manifest, error) {
 }
 
 func (m Manifest) Validate() error {
-	if m.FormatVersion != FormatVersion && m.FormatVersion != LegacyFormatVersion {
+	if m.FormatVersion != FormatVersion && m.FormatVersion != PreviousFormatVersion && m.FormatVersion != LegacyFormatVersion {
 		return fmt.Errorf("unsupported format_version %d", m.FormatVersion)
 	}
 	if !projectPattern.MatchString(m.Project) {
@@ -84,6 +86,13 @@ func (m Manifest) Validate() error {
 	}
 	if !sha256Pattern.MatchString(m.PayloadSHA256) {
 		return errors.New("payload_sha256 must be 64 lowercase hexadecimal characters")
+	}
+	if m.FormatVersion == FormatVersion {
+		if !sha256Pattern.MatchString(m.BaselineSHA256) {
+			return errors.New("baseline_sha256 must be 64 lowercase hexadecimal characters for format v4")
+		}
+	} else if m.BaselineSHA256 != "" {
+		return errors.New("baseline_sha256 is not valid before format v4")
 	}
 	return nil
 }

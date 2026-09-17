@@ -8,14 +8,13 @@ import (
 	"testing"
 
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
-	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 func TestFailurePathCoverageMargin(t *testing.T) {
 	ctx := context.Background()
 	nonRepo := t.TempDir()
-	if err := verifyBaseline(ctx, nonRepo, spec.Manifest{}); err == nil {
-		t.Fatal("expected baseline inspection failure outside repository")
+	if _, err := verifyConsumerState(ctx, nonRepo, "sha1"); err == nil {
+		t.Fatal("expected consumer-state inspection failure outside repository")
 	}
 	if _, err := gitutil.ChangedIndexPaths(ctx, nonRepo, "--cached"); err == nil {
 		t.Fatal("expected changed-index inspection failure outside repository")

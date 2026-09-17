@@ -1,0 +1,73 @@
+package spec
+
+import "fmt"
+
+const (
+	MemberBaseline   = "polis/polis-baseline.tar"
+	MemberChange     = "polis/polis-change.json"
+	MemberChecksums  = "polis/polis-checksums.sha256"
+	MemberEvidence   = "polis/polis-evidence.ndjson"
+	MemberManifest   = "polis/polis-manifest.json"
+	MemberPayload    = "polis/polis-payload.patch"
+	MemberPolicy     = "polis/polis-policy.json"
+	MemberRegression = "polis/polis-regression.patch"
+)
+
+const (
+	MaxArchiveBytes           int64  = 64 << 20
+	MaxTotalUncompressedBytes uint64 = 64 << 20
+	MaxContractMemberBytes    uint64 = 1 << 20
+	MaxEvidenceMemberBytes    uint64 = 16 << 20
+	MaxPatchMemberBytes       uint64 = 32 << 20
+	MaxBaselineMemberBytes    uint64 = 32 << 20
+	MaxChecksumsMemberBytes   uint64 = 64 << 10
+)
+
+var legacyPackageMembers = []string{
+	MemberChange,
+	MemberChecksums,
+	MemberEvidence,
+	MemberManifest,
+	MemberPayload,
+	MemberPolicy,
+	MemberRegression,
+}
+
+var currentPackageMembers = []string{
+	MemberBaseline,
+	MemberChange,
+	MemberChecksums,
+	MemberEvidence,
+	MemberManifest,
+	MemberPayload,
+	MemberPolicy,
+	MemberRegression,
+}
+
+func PackageMembers(formatVersion int) ([]string, error) {
+	switch formatVersion {
+	case LegacyFormatVersion, PreviousFormatVersion:
+		return append([]string(nil), legacyPackageMembers...), nil
+	case FormatVersion:
+		return append([]string(nil), currentPackageMembers...), nil
+	default:
+		return nil, fmt.Errorf("unsupported format_version %d", formatVersion)
+	}
+}
+
+func PackageMemberLimit(name string) (uint64, bool) {
+	switch name {
+	case MemberManifest, MemberPolicy, MemberChange:
+		return MaxContractMemberBytes, true
+	case MemberEvidence:
+		return MaxEvidenceMemberBytes, true
+	case MemberPayload, MemberRegression:
+		return MaxPatchMemberBytes, true
+	case MemberBaseline:
+		return MaxBaselineMemberBytes, true
+	case MemberChecksums:
+		return MaxChecksumsMemberBytes, true
+	default:
+		return 0, false
+	}
+}

@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
-	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 func simpleRepo(t *testing.T) string {
@@ -27,14 +26,13 @@ func simpleRepo(t *testing.T) string {
 	return repo
 }
 
-func TestVerifyBaselineRejectsObjectFormatMismatch(t *testing.T) {
+func TestVerifyConsumerStateRejectsObjectFormatMismatch(t *testing.T) {
 	repo := simpleRepo(t)
 	head := git(t, repo, "rev-parse", "HEAD")
-	manifest := spec.Manifest{GitObjectFormat: "sha256", BaseCommit: strings.Repeat("a", 64)}
-	if head == manifest.BaseCommit {
+	if head == strings.Repeat("a", 64) {
 		t.Fatal("fixture unexpectedly matches")
 	}
-	err := verifyBaseline(context.Background(), repo, manifest)
+	_, err := verifyConsumerState(context.Background(), repo, "sha256")
 	if err == nil || !errors.Is(err, ErrBaselineMismatch) || !strings.Contains(err.Error(), "git object format") {
 		t.Fatalf("error=%v", err)
 	}

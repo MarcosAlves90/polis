@@ -14,37 +14,28 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/MarcosAlves90/polis/v6/internal/baselineproof"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 const (
-	MaxArchiveBytes           int64  = 64 << 20
-	MaxTotalUncompressedBytes uint64 = 64 << 20
-	MaxContractMemberBytes    uint64 = 1 << 20
-	MaxEvidenceMemberBytes    uint64 = 16 << 20
-	MaxPatchMemberBytes       uint64 = 32 << 20
-	MaxChecksumsMemberBytes   uint64 = 64 << 10
-)
+	MaxArchiveBytes           = spec.MaxArchiveBytes
+	MaxTotalUncompressedBytes = spec.MaxTotalUncompressedBytes
+	MaxContractMemberBytes    = spec.MaxContractMemberBytes
+	MaxEvidenceMemberBytes    = spec.MaxEvidenceMemberBytes
+	MaxPatchMemberBytes       = spec.MaxPatchMemberBytes
+	MaxBaselineMemberBytes    = spec.MaxBaselineMemberBytes
+	MaxChecksumsMemberBytes   = spec.MaxChecksumsMemberBytes
 
-const (
-	memberChange     = "polis/polis-change.json"
-	memberChecksums  = "polis/polis-checksums.sha256"
-	memberEvidence   = "polis/polis-evidence.ndjson"
-	memberManifest   = "polis/polis-manifest.json"
-	memberPayload    = "polis/polis-payload.patch"
-	memberPolicy     = "polis/polis-policy.json"
-	memberRegression = "polis/polis-regression.patch"
+	memberBaseline   = spec.MemberBaseline
+	memberChange     = spec.MemberChange
+	memberChecksums  = spec.MemberChecksums
+	memberEvidence   = spec.MemberEvidence
+	memberManifest   = spec.MemberManifest
+	memberPayload    = spec.MemberPayload
+	memberPolicy     = spec.MemberPolicy
+	memberRegression = spec.MemberRegression
 )
-
-var expectedMembers = []string{
-	memberChange,
-	memberChecksums,
-	memberEvidence,
-	memberManifest,
-	memberPayload,
-	memberPolicy,
-	memberRegression,
-}
 
 var lowerSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
@@ -84,6 +75,7 @@ type Package struct {
 	Patch           []byte
 	RegressionPatch []byte
 	Evidence        []byte
+	Baseline        []byte
 }
 
 type decodedContracts struct {
@@ -147,6 +139,9 @@ func Load(filename string) (Package, error) {
 	if err != nil {
 		return Package{}, err
 	}
+	if err := validateInventory(contents, contracts.manifest.FormatVersion); err != nil {
+		return Package{}, err
+	}
 	regressionPatch := contents[memberRegression]
 	if err := validateRegressionPatch(contracts.change, regressionPatch); err != nil {
 		return Package{}, err
@@ -155,6 +150,9 @@ func Load(filename string) (Package, error) {
 		return Package{}, err
 	}
 	if err := verifyLockedDevelopmentBaseline(contracts.manifest, contracts.change, contents); err != nil {
+		return Package{}, err
+	}
+	if err := verifyEmbeddedBaseline(contracts.manifest, contracts.change, contents); err != nil {
 		return Package{}, err
 	}
 	return packageFromContents(contents, contracts, regressionPatch), nil
@@ -180,16 +178,10 @@ func loadArchiveContents(filename string) (map[string][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := validateInventory(files); err != nil {
-		return nil, err
-	}
 	return readArchiveContents(files)
 }
 
 func indexArchiveFiles(entries []*zip.File) (map[string]*zip.File, error) {
-	if len(entries) != len(expectedMembers) {
-		return nil, fmt.Errorf("invalid archive inventory: got %d members, want %d", len(entries), len(expectedMembers))
-	}
 	files := make(map[string]*zip.File, len(entries))
 	var total uint64
 	for _, f := range entries {
@@ -213,18 +205,7 @@ func indexArchiveFiles(entries []*zip.File) (map[string]*zip.File, error) {
 }
 
 func memberLimit(name string) (uint64, bool) {
-	switch name {
-	case memberManifest, memberPolicy, memberChange:
-		return MaxContractMemberBytes, true
-	case memberEvidence:
-		return MaxEvidenceMemberBytes, true
-	case memberPayload, memberRegression:
-		return MaxPatchMemberBytes, true
-	case memberChecksums:
-		return MaxChecksumsMemberBytes, true
-	default:
-		return 0, false
-	}
+	return spec.PackageMemberLimit(name)
 }
 
 func validateArchiveFile(f *zip.File, indexed map[string]*zip.File) error {
@@ -296,6 +277,19 @@ func verifyLockedDevelopmentBaseline(manifest spec.Manifest, change spec.ChangeC
 	return nil
 }
 
+func verifyEmbeddedBaseline(manifest spec.Manifest, change spec.ChangeContract, contents map[string][]byte) error {
+	if manifest.FormatVersion != spec.FormatVersion {
+		return nil
+	}
+	if change.BaselineLock == nil {
+		return errors.New("format v4 package requires baseline_lock")
+	}
+	if err := baselineproof.Verify(contents[memberBaseline], manifest.GitObjectFormat, manifest.BaseCommit, change.BaselineLock.BaseTree); err != nil {
+		return fmt.Errorf("verify embedded baseline: %w", err)
+	}
+	return nil
+}
+
 func validateRegressionPatch(change spec.ChangeContract, regressionPatch []byte) error {
 	if change.RequiresRedGreen() && len(regressionPatch) == 0 {
 		if change.Kind == spec.ChangeKindDefect {
@@ -314,10 +308,10 @@ func validateEvidenceAndIntegrity(contents map[string][]byte, contracts decodedC
 	if err != nil {
 		return err
 	}
-	if contracts.manifest.FormatVersion == spec.FormatVersion {
+	if contracts.manifest.FormatVersion >= spec.PreviousFormatVersion {
 		for i, event := range events {
 			if event.Event == "command_finished" && (event.Stdout != nil || event.Stderr != nil) {
-				return fmt.Errorf("evidence event %d stores raw command output in format v3", i)
+				return fmt.Errorf("evidence event %d stores raw command output in package format v3+", i)
 			}
 		}
 	}
@@ -342,6 +336,7 @@ func packageFromContents(contents map[string][]byte, contracts decodedContracts,
 		Patch:           append([]byte(nil), contents[memberPayload]...),
 		RegressionPatch: append([]byte(nil), regressionPatch...),
 		Evidence:        append([]byte(nil), contents[memberEvidence]...),
+		Baseline:        append([]byte(nil), contents[memberBaseline]...),
 	}
 }
 
@@ -386,12 +381,16 @@ func hasProhibitedPathSegment(name string) bool {
 	return false
 }
 
-func validateInventory(files map[string]*zip.File) error {
-	if len(files) != len(expectedMembers) {
-		return fmt.Errorf("invalid archive inventory: got %d members, want %d", len(files), len(expectedMembers))
+func validateInventory(contents map[string][]byte, formatVersion int) error {
+	expected, err := spec.PackageMembers(formatVersion)
+	if err != nil {
+		return err
 	}
-	for _, name := range expectedMembers {
-		if _, ok := files[name]; !ok {
+	if len(contents) != len(expected) {
+		return fmt.Errorf("invalid archive inventory: got %d members, want %d for format v%d", len(contents), len(expected), formatVersion)
+	}
+	for _, name := range expected {
+		if _, ok := contents[name]; !ok {
 			return fmt.Errorf("missing required archive member %q", name)
 		}
 	}
@@ -424,6 +423,9 @@ func verifyManifestDigests(m spec.Manifest, contents map[string][]byte) error {
 		{memberChange, m.ChangeContractSHA256},
 		{memberRegression, m.RegressionPatchSHA256},
 		{memberPayload, m.PayloadSHA256},
+	}
+	if m.FormatVersion == spec.FormatVersion {
+		checks = append(checks, struct{ name, want string }{memberBaseline, m.BaselineSHA256})
 	}
 	for _, check := range checks {
 		if err := verifyDigest(contents[check.name], check.want, check.name); err != nil {

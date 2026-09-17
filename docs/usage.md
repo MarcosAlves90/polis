@@ -21,8 +21,8 @@ polis capture-red --repo /path/to/repo --contract /outside/change.json --out /ou
 polis build --repo /path/to/repo --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/change.json --regression-patch /outside/regression.patch --out /outside/output
 polis verify [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
 polis inspect [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
-polis preflight --repo /path/to/repo [--baseline-mode strict|compatible|permissive] [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
-polis apply --repo /path/to/repo [--baseline-mode strict|compatible|permissive] [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
+polis preflight --repo /path/to/repo [--baseline-mode strict|compatible|permissive] [--allow-missing-baseline-proof] [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
+polis apply --repo /path/to/repo [--baseline-mode strict|compatible|permissive] [--allow-missing-baseline-proof] [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
 polis sign --key private.pem --out artifact.polis.sig [--format text|json] artifact.polis
 polis export --out /outside/polis-v6-offline.zip [--format text|json] [--executable <file>] [--runtime <GOOS/GOARCH>]
 ```
@@ -44,13 +44,23 @@ baseline mode defaults to `strict`:
 - `compatible` accepts a different clean descendant `HEAD` only after ancestry,
   payload-context, isolated target, scope, development-proof, and policy checks
   pass;
-- `permissive` also permits non-descendant history when the locked artifact base
-  remains locally resolvable and every payload/validation check passes. It emits
-  an explicit warning when ancestry is not proven.
+- `permissive` also permits non-descendant history. Required locked development
+  proof uses the local baseline when available, otherwise the authenticated
+  format-v4 embedded baseline. It emits an explicit warning when ancestry is not
+  proven.
 
-Neither relaxed mode is a force-apply switch. Dirty state, missing locked base,
-patch conflicts, failed preconditions, scope violations, failing tests/policy,
-or post-apply tree mismatches still fail closed.
+New format-v4 artifacts carry `polis/polis-baseline.tar`, so permissive consumption
+can replay locked development proof even when the consumer object database does
+not contain the producer base commit. Valid embedded proof is not an override and
+does not reduce guarantees.
+The embedded baseline carries the locked commit and complete tree/blob closure, not refs or parent history. `polis build` replays the locked baseline proof from that exact embedded state, so a baseline command that requires unavailable history is rejected during build rather than producing a non-portable v4 artifact.
+
+For historical artifacts without embedded baseline proof,
+`--allow-missing-baseline-proof` may be supplied only with `permissive`. It must be
+repeated for `apply`, is never inherited from preflight, and visibly reports every
+waived guarantee. It does not bypass package integrity, dirty-state rejection,
+patch conflicts, scope, complete target/project validation, or transactional
+post-apply verification.
 
 ## Canonical V6 delivery flow
 
@@ -93,13 +103,13 @@ the guarantees provided or absent by the effective policy.
 
 ## V6 contract summary
 
-- Package format v3 has exactly seven regular members under `polis/`.
+- New builds use package format v4 with eight regular members under `polis/`, including the authenticated `polis/polis-baseline.tar`; valid historical v2/v3 seven-member artifacts remain readable.
 - Project Policy uses schema v3 with command environments and gate configuration.
 - New builds require locked Change Contract schema v4 from `polis start`.
 - Evidence v2 records bounded-output counts and digests, not raw streams.
 - Detached Ed25519 signatures authenticate exact package bytes.
 - Coverage adapters are Go coverprofile, LCOV, and Cobertura.
-- Strict consumer mode keeps exact Git baseline identity; compatible/permissive modes replace commit equality only with explicit compatibility admission while retaining a deterministic exact consumer target-tree check.
+- Strict consumer mode keeps exact Git baseline identity; compatible retains ancestry proof; permissive can source locked development proof from local or embedded baseline state while retaining deterministic exact consumer target-tree validation. Missing proof can be waived only through the explicit permissive-only override.
 - Consumer validation is isolated and `apply` is transactional.
 
 V6 can read supported historical V5 policies and Change Contracts for migration.
