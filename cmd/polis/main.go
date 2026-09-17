@@ -24,7 +24,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
-const version = "6.6.0"
+const version = "6.7.0"
 
 const captureRedCommand = "capture-red"
 

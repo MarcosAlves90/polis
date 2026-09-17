@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [6.7.0] - 2026-09-17
+
 ### Added
 
 - Add package format v4 with an authenticated, bounded `polis/polis-baseline.tar` containing the locked producer commit and complete tree/blob closure so permissive consumers can replay development proof without importing producer history into their repository.
@@ -206,7 +208,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Aligned the Go module identity with the repository before the V4 semantic import-path migration.
 - Made Git-based CI fixtures deterministic across Windows line-ending behavior.
 
-[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.6.0...HEAD
+[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.7.0...HEAD
+[6.7.0]: https://github.com/MarcosAlves90/polis/compare/v6.6.0...v6.7.0
 [6.6.0]: https://github.com/MarcosAlves90/polis/compare/v6.5.0...v6.6.0
 [6.5.0]: https://github.com/MarcosAlves90/polis/compare/v6.4.0...v6.5.0
 [6.4.0]: https://github.com/MarcosAlves90/polis/compare/v6.3.1...v6.4.0
