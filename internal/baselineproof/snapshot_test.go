@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -41,6 +42,8 @@ func testRepo(t *testing.T, objectFormat string) string {
 		t.Fatal(err)
 	}
 	runGit(t, repo, "add", ".")
+	// Git tracks executable mode independently of Windows filesystem permissions.
+	runGit(t, repo, "update-index", "--chmod=+x", "run.sh")
 	runGit(t, repo, "commit", "-qm", "baseline")
 	return repo
 }
@@ -71,11 +74,23 @@ func TestBuildVerifyAndMaterializePreservesNativeBaseline(t *testing.T) {
 			worktree := filepath.Join(t.TempDir(), "checkout")
 			runGit(t, baselineRepo, "clone", "--quiet", "--no-checkout", "--shared", ".", worktree)
 			runGit(t, worktree, "checkout", "--quiet", "--detach", base)
-			if info, err := os.Lstat(filepath.Join(worktree, "link.txt")); err != nil || info.Mode()&os.ModeSymlink == 0 {
-				t.Fatalf("symlink not preserved: info=%v err=%v", info, err)
+			symlinkEntry := runGit(t, worktree, "ls-files", "--stage", "--", "link.txt")
+			if !strings.HasPrefix(symlinkEntry, "120000 ") {
+				t.Fatalf("Git symlink mode not preserved: %q", symlinkEntry)
 			}
-			if info, err := os.Stat(filepath.Join(worktree, "run.sh")); err != nil || info.Mode()&0o111 == 0 {
-				t.Fatalf("executable bit not preserved: info=%v err=%v", info, err)
+			if runtime.GOOS != "windows" {
+				if info, err := os.Lstat(filepath.Join(worktree, "link.txt")); err != nil || info.Mode()&os.ModeSymlink == 0 {
+					t.Fatalf("filesystem symlink not preserved: info=%v err=%v", info, err)
+				}
+			}
+			executableEntry := runGit(t, worktree, "ls-files", "--stage", "--", "run.sh")
+			if !strings.HasPrefix(executableEntry, "100755 ") {
+				t.Fatalf("Git executable mode not preserved: %q", executableEntry)
+			}
+			if runtime.GOOS != "windows" {
+				if info, err := os.Stat(filepath.Join(worktree, "run.sh")); err != nil || info.Mode()&0o111 == 0 {
+					t.Fatalf("filesystem executable bit not preserved: info=%v err=%v", info, err)
+				}
 			}
 			gotBinary, err := os.ReadFile(filepath.Join(worktree, "binary.dat"))
 			if err != nil {
