@@ -38,6 +38,7 @@ func TestBuildTransportsLockedCommitIntent(t *testing.T) {
 func TestApplyAutoCommitsExactArtifactIntent(t *testing.T) {
 	message := "Feature: keep this exact message\n\nsecond line with spaces  \n"
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
+	configureCommitTestIdentity(t, repo)
 	parent := git(t, repo, "rev-parse", "HEAD")
 	installCommitTripwires(t, repo)
 
@@ -78,6 +79,7 @@ func TestApplyAutoCommitsExactArtifactIntent(t *testing.T) {
 func TestApplyAutoCommitsMessageWithoutFinalNewline(t *testing.T) {
 	message := "feat(apply): preserve a message without its final newline"
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
+	configureCommitTestIdentity(t, repo)
 	parent := git(t, repo, "rev-parse", "HEAD")
 
 	result, err := ApplyWithOptions(context.Background(), artifact, repo, Options{BaselineMode: BaselineModeStrict, CommitMode: CommitModeAuto})
@@ -98,6 +100,7 @@ func TestApplyAutoCommitsMessageWithoutFinalNewline(t *testing.T) {
 func TestApplyPromptDeclineLeavesRepositoryUnchanged(t *testing.T) {
 	message := "Feature: ask before committing\n"
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
+	configureCommitTestIdentity(t, repo)
 	headBefore := git(t, repo, "rev-parse", "HEAD")
 	indexBefore := git(t, repo, "write-tree")
 	called := false
@@ -136,6 +139,7 @@ func TestApplyPromptDeclineLeavesRepositoryUnchanged(t *testing.T) {
 func TestApplyPromptAcceptanceCommitsExactArtifactIntent(t *testing.T) {
 	message := "feat(apply): confirm the artifact-backed commit"
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
+	configureCommitTestIdentity(t, repo)
 	parent := git(t, repo, "rev-parse", "HEAD")
 	confirmed := false
 
@@ -272,6 +276,7 @@ func TestApplyPromptChecksGitIdentityBeforeConfirmation(t *testing.T) {
 func TestApplyCommitFailureAfterRefUpdateRestoresRepositoryState(t *testing.T) {
 	message := "Feature: restore after ref update\n"
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
+	configureCommitTestIdentity(t, repo)
 	pkg, err := packageverify.Load(artifact)
 	if err != nil {
 		t.Fatal(err)
@@ -314,6 +319,7 @@ func TestApplyCommitFailureAfterRefUpdateRestoresRepositoryState(t *testing.T) {
 func TestApplyCommitConstructionAndFinalVerificationFailuresRollback(t *testing.T) {
 	message := "feat(apply): rollback injected failures"
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
+	configureCommitTestIdentity(t, repo)
 	pkg, err := packageverify.Load(artifact)
 	if err != nil {
 		t.Fatal(err)
@@ -370,6 +376,7 @@ func TestApplyCommitConstructionAndFinalVerificationFailuresRollback(t *testing.
 func TestApplyCommitRefCASConflictDoesNotOverwriteConcurrentRef(t *testing.T) {
 	message := "feat(apply): lose a ref compare-and-swap safely"
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
+	configureCommitTestIdentity(t, repo)
 	pkg, err := packageverify.Load(artifact)
 	if err != nil {
 		t.Fatal(err)
@@ -403,6 +410,12 @@ func TestApplyCommitRefCASConflictDoesNotOverwriteConcurrentRef(t *testing.T) {
 	if got := git(t, repo, "rev-parse", "HEAD"); got != concurrentRef {
 		t.Fatalf("concurrent HEAD=%s want preserved ref %s", got, concurrentRef)
 	}
+}
+
+func configureCommitTestIdentity(t *testing.T, repo string) {
+	t.Helper()
+	git(t, repo, "config", "user.name", "POLIS Test Consumer")
+	git(t, repo, "config", "user.email", "polis-consumer@example.invalid")
 }
 
 func clearGitIdentity(t *testing.T) {
