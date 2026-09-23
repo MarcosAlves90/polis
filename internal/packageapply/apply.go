@@ -131,6 +131,10 @@ func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Optio
 	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", gitApplyCheck, "-"); err != nil {
 		return Result{}, fmt.Errorf("%w: real git apply --check failed: %v", ErrApplyFailed, err)
 	}
+	originalIndexTree, err := gitutil.Output(ctx, repo, nil, nil, "write-tree")
+	if err != nil {
+		return Result{}, fmt.Errorf("capture consumer index before apply: %w", err)
+	}
 	var commitSnapshot *artifactCommitSnapshot
 	if commitMode != CommitModeNone {
 		if err := validateArtifactCommitIdentity(ctx, repo); err != nil {
@@ -140,6 +144,7 @@ func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Optio
 		if err != nil {
 			return Result{}, fmt.Errorf("%w: capture commit baseline: %v", ErrApplyFailed, err)
 		}
+		originalIndexTree = snapshot.indexTree
 		commitSnapshot = &snapshot
 	}
 	if commitMode == CommitModePrompt {
@@ -162,18 +167,18 @@ func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Optio
 	}
 	gotTree, err := workingTreeID(ctx, repo, assessment.ConsumerHead)
 	if err != nil {
-		rollbackErr := reversePatch(ctx, repo, pkg.Patch)
+		rollbackErr := rollbackAppliedPatchAndVerify(ctx, repo, assessment.ConsumerHead, originalIndexTree, pkg.Patch)
 		if rollbackErr != nil {
 			return Result{}, fmt.Errorf("compute post-apply tree: %v; rollback failed: %v", err, rollbackErr)
 		}
-		return Result{}, fmt.Errorf("compute post-apply tree: %w; patch reversed", err)
+		return Result{}, fmt.Errorf("compute post-apply tree: %w; patch reversed and repository state verified", err)
 	}
 	if gotTree != assessment.TargetTree {
-		rollbackErr := reversePatch(ctx, repo, pkg.Patch)
+		rollbackErr := rollbackAppliedPatchAndVerify(ctx, repo, assessment.ConsumerHead, originalIndexTree, pkg.Patch)
 		if rollbackErr != nil {
 			return Result{}, fmt.Errorf("post-apply target_tree mismatch: got %s want %s; rollback failed: %v", gotTree, assessment.TargetTree, rollbackErr)
 		}
-		return Result{}, fmt.Errorf("post-apply target_tree mismatch: got %s want %s; patch reversed", gotTree, assessment.TargetTree)
+		return Result{}, fmt.Errorf("post-apply target_tree mismatch: got %s want %s; patch reversed and repository state verified", gotTree, assessment.TargetTree)
 	}
 	result := resultForPackage(pkg, gotTree, assessment, consumerPolicyResult)
 	if commitSnapshot != nil {
@@ -350,4 +355,19 @@ func workingTreeID(ctx context.Context, repo, baseCommit string) (string, error)
 func reversePatch(ctx context.Context, repo string, patch []byte) error {
 	_, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(patch), "apply", "--reverse", "-")
 	return err
+}
+
+func rollbackAppliedPatchAndVerify(ctx context.Context, repo, originalHead, originalIndexTree string, patch []byte) error {
+	if err := reversePatch(ctx, repo, patch); err != nil {
+		return fmt.Errorf("reverse applied payload: %w", err)
+	}
+	head, headErr := gitutil.Output(ctx, repo, nil, nil, "rev-parse", "HEAD")
+	indexTree, indexErr := gitutil.Output(ctx, repo, nil, nil, "write-tree")
+	baseTree, baseErr := gitutil.Output(ctx, repo, nil, nil, "rev-parse", originalHead+"^{tree}")
+	worktreeTree, worktreeErr := workingTreeID(ctx, repo, originalHead)
+	status, statusErr := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
+	if headErr != nil || indexErr != nil || baseErr != nil || worktreeErr != nil || statusErr != nil || head != originalHead || indexTree != originalIndexTree || worktreeTree != baseTree || status != "" {
+		return fmt.Errorf("repository rollback verification failed: HEAD=%q index=%q worktree=%q base=%q status=%q errors=%v", head, indexTree, worktreeTree, baseTree, status, errors.Join(headErr, indexErr, baseErr, worktreeErr, statusErr))
+	}
+	return nil
 }

@@ -133,8 +133,8 @@ func createArtifactCommitWithOperations(ctx context.Context, repo string, snapsh
 	if _, err := gitutil.Bytes(ctx, repo, indexEnv, nil, "read-tree", snapshot.head); err != nil {
 		return fail(fmt.Errorf("prepare temporary commit index: %w", err), "", false, false)
 	}
-	if _, err := gitutil.Bytes(ctx, repo, indexEnv, nil, "add", "-A", "--", "."); err != nil {
-		return fail(fmt.Errorf("stage applied payload in temporary index: %w", err), "", false, false)
+	if _, err := gitutil.Bytes(ctx, repo, indexEnv, bytes.NewReader(patch), "apply", "--cached", "-"); err != nil {
+		return fail(fmt.Errorf("apply validated payload to temporary commit index: %w", err), "", false, false)
 	}
 	stagedTree, err := gitutil.Output(ctx, repo, indexEnv, nil, "write-tree")
 	if err != nil {
@@ -156,6 +156,9 @@ func createArtifactCommitWithOperations(ctx context.Context, repo string, snapsh
 	if err := cleanupTemp(); err != nil {
 		return fail(err, commit, false, false)
 	}
+	if err := verifyArtifactCommitPreRefState(ctx, repo, snapshot, targetTree); err != nil {
+		return fail(fmt.Errorf("consumer state changed before commit ref update: %w", err), commit, false, false)
+	}
 	if err := operations.updateRef(ctx, repo, snapshot.ref, commit, snapshot.head); err != nil {
 		current, readErr := gitutil.Output(ctx, repo, nil, nil, "rev-parse", "--verify", snapshot.ref)
 		if readErr == nil && current == commit {
@@ -168,8 +171,14 @@ func createArtifactCommitWithOperations(ctx context.Context, repo string, snapsh
 		}
 		return fail(fmt.Errorf("update HEAD reference: %w", err), commit, false, false)
 	}
+	if err := verifyArtifactCommitIndexBeforeUpdate(ctx, repo, snapshot, commit); err != nil {
+		return fail(fmt.Errorf("consumer state changed before commit index update: %w", err), commit, true, false)
+	}
 	if err := operations.updateIndex(ctx, repo, commit); err != nil {
-		return fail(fmt.Errorf("update real index to committed tree: %w", err), commit, true, false)
+		return fail(fmt.Errorf("update real index to committed tree: %w", err), commit, true, true)
+	}
+	if err := verifyArtifactCommitRef(ctx, repo, snapshot.ref, commit); err != nil {
+		return fail(fmt.Errorf("verify committed HEAD reference: %w", err), commit, true, true)
 	}
 	if err := operations.verifyRepository(ctx, repo, commit, targetTree); err != nil {
 		return fail(fmt.Errorf("verify committed repository state: %w", err), commit, true, true)
@@ -188,6 +197,70 @@ func createArtifactCommitObject(ctx context.Context, repo, tree, parent, message
 func updateArtifactCommitIndex(ctx context.Context, repo, commit string) error {
 	_, err := gitutil.Bytes(ctx, repo, nil, nil, "read-tree", commit)
 	return err
+}
+
+func verifyArtifactCommitPreRefState(ctx context.Context, repo string, snapshot artifactCommitSnapshot, targetTree string) error {
+	head, err := gitutil.Output(ctx, repo, nil, nil, "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("resolve HEAD: %w", err)
+	}
+	if head != snapshot.head {
+		return fmt.Errorf("HEAD changed: got %s want %s", head, snapshot.head)
+	}
+	ref, err := gitutil.Output(ctx, repo, nil, nil, "rev-parse", "--symbolic-full-name", "HEAD")
+	if err != nil {
+		return fmt.Errorf("resolve current HEAD reference: %w", err)
+	}
+	if ref != snapshot.ref {
+		return fmt.Errorf("HEAD reference changed: got %s want %s", ref, snapshot.ref)
+	}
+	indexTree, err := gitutil.Output(ctx, repo, nil, nil, "write-tree")
+	if err != nil {
+		return fmt.Errorf("inspect real index: %w", err)
+	}
+	if indexTree != snapshot.indexTree {
+		return fmt.Errorf("real index changed: got tree %s want %s", indexTree, snapshot.indexTree)
+	}
+	worktreeTree, err := workingTreeID(ctx, repo, snapshot.head)
+	if err != nil {
+		return fmt.Errorf("inspect worktree: %w", err)
+	}
+	if worktreeTree != targetTree {
+		return fmt.Errorf("worktree tree changed: got %s want %s", worktreeTree, targetTree)
+	}
+	return nil
+}
+
+func verifyArtifactCommitIndexBeforeUpdate(ctx context.Context, repo string, snapshot artifactCommitSnapshot, commit string) error {
+	if err := verifyArtifactCommitRef(ctx, repo, snapshot.ref, commit); err != nil {
+		return err
+	}
+	indexTree, err := gitutil.Output(ctx, repo, nil, nil, "write-tree")
+	if err != nil {
+		return fmt.Errorf("inspect real index: %w", err)
+	}
+	if indexTree != snapshot.indexTree {
+		return fmt.Errorf("real index changed: got tree %s want %s", indexTree, snapshot.indexTree)
+	}
+	return nil
+}
+
+func verifyArtifactCommitRef(ctx context.Context, repo, expectedRef, commit string) error {
+	ref, err := gitutil.Output(ctx, repo, nil, nil, "rev-parse", "--symbolic-full-name", "HEAD")
+	if err != nil {
+		return fmt.Errorf("resolve current HEAD reference: %w", err)
+	}
+	if ref != expectedRef {
+		return fmt.Errorf("HEAD reference changed: got %s want %s", ref, expectedRef)
+	}
+	value, err := gitutil.Output(ctx, repo, nil, nil, "rev-parse", "--verify", expectedRef)
+	if err != nil {
+		return fmt.Errorf("resolve expected HEAD reference %s: %w", expectedRef, err)
+	}
+	if value != commit {
+		return fmt.Errorf("HEAD reference %s points to %s want %s", expectedRef, value, commit)
+	}
+	return nil
 }
 
 func rollbackArtifactCommit(ctx context.Context, repo string, snapshot artifactCommitSnapshot, targetTree string, patch []byte, commit string, refChanged, indexChanged bool, cause error) error {
@@ -216,7 +289,7 @@ func rollbackArtifactCommit(ctx context.Context, repo string, snapshot artifactC
 		return fmt.Errorf("%v; rollback stopped because checked out HEAD changed to %s", cause, head)
 	}
 	if indexChanged {
-		if err := restoreArtifactIndex(ctx, repo, snapshot); err != nil {
+		if err := restoreArtifactIndex(ctx, repo, snapshot, targetTree); err != nil {
 			return fmt.Errorf("%v; rollback failed to restore index: %w", cause, err)
 		}
 	}
@@ -238,18 +311,26 @@ func rollbackArtifactCommit(ctx context.Context, repo string, snapshot artifactC
 		return fmt.Errorf("%v; rollback stopped because worktree tree is %s, expected applied tree %s or original tree %s", cause, currentTree, targetTree, baseTree)
 	}
 	head, headErr := gitutil.Output(ctx, repo, nil, nil, "rev-parse", "HEAD")
+	ref, refErr := gitutil.Output(ctx, repo, nil, nil, "rev-parse", "--symbolic-full-name", "HEAD")
 	indexTree, indexErr := gitutil.Output(ctx, repo, nil, nil, "write-tree")
 	status, statusErr := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
-	if headErr != nil || indexErr != nil || statusErr != nil || head != snapshot.head || indexTree != snapshot.indexTree || status != "" {
-		return fmt.Errorf("%v; rollback state verification failed: HEAD=%q index=%q status=%q errors=%v", cause, head, indexTree, status, errors.Join(headErr, indexErr, statusErr))
+	if headErr != nil || refErr != nil || indexErr != nil || statusErr != nil || head != snapshot.head || ref != snapshot.ref || indexTree != snapshot.indexTree || status != "" {
+		return fmt.Errorf("%v; rollback state verification failed: HEAD=%q ref=%q index=%q status=%q errors=%v", cause, head, ref, indexTree, status, errors.Join(headErr, refErr, indexErr, statusErr))
 	}
 	return cause
 }
 
-func restoreArtifactIndex(ctx context.Context, repo string, snapshot artifactCommitSnapshot) error {
+func restoreArtifactIndex(ctx context.Context, repo string, snapshot artifactCommitSnapshot, targetTree string) error {
 	indexTree, err := gitutil.Output(ctx, repo, nil, nil, "write-tree")
-	if err == nil && indexTree == snapshot.indexTree {
+	if err != nil {
+		return fmt.Errorf("inspect index before restore: %w", err)
+	}
+	switch indexTree {
+	case snapshot.indexTree:
 		return nil
+	case targetTree:
+	default:
+		return fmt.Errorf("refusing to overwrite concurrently changed index tree %s", indexTree)
 	}
 	if _, err := gitutil.Bytes(ctx, repo, nil, nil, "read-tree", snapshot.head); err != nil {
 		return fmt.Errorf("read original HEAD tree into index: %w", err)

@@ -536,6 +536,108 @@ func TestApplyCommitRefCASConflictDoesNotOverwriteConcurrentRef(t *testing.T) {
 	}
 }
 
+func TestArtifactCommitCandidateUsesValidatedPatch(t *testing.T) {
+	message := commitIntentFixtureMessage
+	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
+	configureCommitTestIdentity(t, repo)
+	pkg, err := packageverify.Load(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headBefore := git(t, repo, "rev-parse", "HEAD")
+	snapshot, err := captureArtifactCommitSnapshot(context.Background(), repo, headBefore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitutil.Bytes(context.Background(), repo, nil, bytes.NewReader(pkg.Patch), "apply", "-"); err != nil {
+		t.Fatalf("apply payload before commit transaction: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "concurrent.txt"), []byte("concurrent change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var candidateTree string
+	operations := artifactCommitOperations{
+		createObject: func(ctx context.Context, repo, tree, parent, message string) (string, error) {
+			candidateTree = tree
+			return createArtifactCommitObject(ctx, repo, tree, parent, message)
+		},
+	}
+	_, err = createArtifactCommitWithOperations(context.Background(), repo, snapshot, targetTree, message, pkg.Patch, operations)
+	if err == nil {
+		t.Fatal("concurrent worktree change was accepted during commit construction")
+	}
+	if candidateTree != targetTree {
+		t.Fatalf("candidate tree=%s want tree derived from the exact validated patch %s", candidateTree, targetTree)
+	}
+	if got := git(t, repo, "rev-parse", "HEAD"); got != headBefore {
+		t.Fatalf("HEAD moved after worktree change: got %s want %s", got, headBefore)
+	}
+}
+
+func TestArtifactCommitRejectsConcurrentIndexChangeBeforeRefUpdate(t *testing.T) {
+	message := commitIntentFixtureMessage
+	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
+	configureCommitTestIdentity(t, repo)
+	pkg, err := packageverify.Load(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headBefore := git(t, repo, "rev-parse", "HEAD")
+	snapshot, err := captureArtifactCommitSnapshot(context.Background(), repo, headBefore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitutil.Bytes(context.Background(), repo, nil, bytes.NewReader(pkg.Patch), "apply", "-"); err != nil {
+		t.Fatalf("apply payload before commit transaction: %v", err)
+	}
+	operations := artifactCommitOperations{
+		createObject: func(ctx context.Context, repo, tree, parent, message string) (string, error) {
+			if tree != targetTree {
+				t.Fatalf("candidate tree=%s want validated target %s", tree, targetTree)
+			}
+			if _, err := gitutil.Bytes(ctx, repo, nil, nil, "add", "-A", "--", "."); err != nil {
+				return "", err
+			}
+			return createArtifactCommitObject(ctx, repo, tree, parent, message)
+		},
+	}
+	_, err = createArtifactCommitWithOperations(context.Background(), repo, snapshot, targetTree, message, pkg.Patch, operations)
+	if err == nil {
+		t.Fatal("concurrent real-index change was overwritten by commit mode")
+	}
+	if got := git(t, repo, "rev-parse", "HEAD"); got != headBefore {
+		t.Fatalf("HEAD moved after concurrent index change: got %s want %s", got, headBefore)
+	}
+	if got := git(t, repo, "write-tree"); got != targetTree {
+		t.Fatalf("concurrent index tree=%s want preserved tree %s", got, targetTree)
+	}
+}
+
+func TestRollbackAppliedPatchVerifiesOriginalRepositoryState(t *testing.T) {
+	repo, artifact, _ := repoWithCommitArtifact(t, commitIntentFixtureMessage)
+	pkg, err := packageverify.Load(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headBefore := git(t, repo, "rev-parse", "HEAD")
+	indexBefore := git(t, repo, "write-tree")
+	if _, err := gitutil.Bytes(context.Background(), repo, nil, bytes.NewReader(pkg.Patch), "apply", "-"); err != nil {
+		t.Fatalf("apply payload before rollback: %v", err)
+	}
+	if err := rollbackAppliedPatchAndVerify(context.Background(), repo, headBefore, indexBefore, pkg.Patch); err != nil {
+		t.Fatalf("rollback applied payload: %v", err)
+	}
+	if got := git(t, repo, "rev-parse", "HEAD"); got != headBefore {
+		t.Fatalf("HEAD after rollback=%s want %s", got, headBefore)
+	}
+	if got := git(t, repo, "write-tree"); got != indexBefore {
+		t.Fatalf("index after rollback=%s want %s", got, indexBefore)
+	}
+	if got := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); got != "" {
+		t.Fatalf("worktree after rollback is not clean: %q", got)
+	}
+}
+
 func configureCommitTestIdentity(t *testing.T, repo string) {
 	t.Helper()
 	git(t, repo, "config", "user.name", "POLIS Test Consumer")
