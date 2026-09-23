@@ -14,8 +14,10 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
 )
 
+const commitIntentFixtureMessage = "feat(apply): preserve the artifact message\n\nsecond line with spaces  \n"
+
 func TestBuildTransportsLockedCommitIntent(t *testing.T) {
-	message := "Feature: preserve the artifact message\n\nsecond line with spaces  \n"
+	message := commitIntentFixtureMessage
 	_, artifact, _ := repoWithCommitArtifact(t, message)
 
 	pkg, err := packageverify.Load(artifact)
@@ -36,7 +38,7 @@ func TestBuildTransportsLockedCommitIntent(t *testing.T) {
 }
 
 func TestApplyAutoCommitsExactArtifactIntent(t *testing.T) {
-	message := "Feature: keep this exact message\n\nsecond line with spaces  \n"
+	message := commitIntentFixtureMessage
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
 	configureCommitTestIdentity(t, repo)
 	pkg, err := packageverify.Load(artifact)
@@ -109,7 +111,7 @@ func TestApplyAutoCommitsMessageWithoutFinalNewline(t *testing.T) {
 }
 
 func TestApplyPromptDeclineLeavesRepositoryUnchanged(t *testing.T) {
-	message := "Feature: ask before committing\n"
+	message := commitIntentFixtureMessage
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
 	configureCommitTestIdentity(t, repo)
 	headBefore := git(t, repo, "rev-parse", "HEAD")
@@ -148,7 +150,7 @@ func TestApplyPromptDeclineLeavesRepositoryUnchanged(t *testing.T) {
 }
 
 func TestApplyPromptAcceptanceCommitsExactArtifactIntent(t *testing.T) {
-	message := "feat(apply): confirm the artifact-backed commit"
+	message := commitIntentFixtureMessage
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
 	configureCommitTestIdentity(t, repo)
 	parent := git(t, repo, "rev-parse", "HEAD")
@@ -189,7 +191,7 @@ func TestApplyPromptAcceptanceCommitsExactArtifactIntent(t *testing.T) {
 }
 
 func TestApplyCommitIntentDefaultModeDoesNotCommit(t *testing.T) {
-	message := "Feature: commit is opt in\n"
+	message := commitIntentFixtureMessage
 	repo, artifact, _ := repoWithCommitArtifact(t, message)
 	headBefore := git(t, repo, "rev-parse", "HEAD")
 	if _, err := Apply(context.Background(), artifact, repo); err != nil {
@@ -204,7 +206,7 @@ func TestApplyCommitIntentDefaultModeDoesNotCommit(t *testing.T) {
 }
 
 func TestApplyCommitModesPreserveConsumerBaselinesAndRemoteRefs(t *testing.T) {
-	message := "feat(apply): preserve each consumer commit invariant"
+	message := commitIntentFixtureMessage
 	producer, artifact, _ := repoWithCommitArtifact(t, message)
 	producerBase := git(t, producer, "rev-parse", "HEAD")
 
@@ -305,7 +307,7 @@ func assertArtifactCommitParentTreeAndClean(t *testing.T, repo string, result Re
 }
 
 func TestApplyMissingGitIdentityDoesNotMutateRepository(t *testing.T) {
-	message := "Feature: missing committer identity fails safely\n"
+	message := commitIntentFixtureMessage
 	repo, artifact, _ := repoWithCommitArtifact(t, message)
 	headBefore := git(t, repo, "rev-parse", "HEAD")
 	indexBefore := git(t, repo, "write-tree")
@@ -353,7 +355,7 @@ func TestApplyCommitModeRequiresArtifactIntent(t *testing.T) {
 }
 
 func TestApplyPromptChecksGitIdentityBeforeConfirmation(t *testing.T) {
-	message := "feat(apply): identity is a precondition"
+	message := commitIntentFixtureMessage
 	repo, artifact, _ := repoWithCommitArtifact(t, message)
 	headBefore := git(t, repo, "rev-parse", "HEAD")
 	indexBefore := git(t, repo, "write-tree")
@@ -386,7 +388,7 @@ func TestApplyPromptChecksGitIdentityBeforeConfirmation(t *testing.T) {
 }
 
 func TestApplyCommitFailureAfterRefUpdateRestoresRepositoryState(t *testing.T) {
-	message := "Feature: restore after ref update\n"
+	message := commitIntentFixtureMessage
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
 	configureCommitTestIdentity(t, repo)
 	pkg, err := packageverify.Load(artifact)
@@ -429,7 +431,7 @@ func TestApplyCommitFailureAfterRefUpdateRestoresRepositoryState(t *testing.T) {
 }
 
 func TestApplyCommitConstructionAndFinalVerificationFailuresRollback(t *testing.T) {
-	message := "feat(apply): rollback injected failures"
+	message := commitIntentFixtureMessage
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
 	configureCommitTestIdentity(t, repo)
 	pkg, err := packageverify.Load(artifact)
@@ -496,7 +498,7 @@ func TestApplyCommitConstructionAndFinalVerificationFailuresRollback(t *testing.
 }
 
 func TestApplyCommitRefCASConflictDoesNotOverwriteConcurrentRef(t *testing.T) {
-	message := "feat(apply): lose a ref compare-and-swap safely"
+	message := commitIntentFixtureMessage
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
 	configureCommitTestIdentity(t, repo)
 	pkg, err := packageverify.Load(artifact)

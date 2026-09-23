@@ -1,6 +1,7 @@
 package packageapply
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -27,7 +28,19 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(count+1)); err != nil {
 		panic(err)
 	}
-	os.Exit(m.Run())
+	fixtureRoot, err := os.MkdirTemp("", "polis-packageapply-fixtures-")
+	if err != nil {
+		panic(err)
+	}
+	commitArtifactFixtureRoot = fixtureRoot
+	exitCode := m.Run()
+	if err := os.RemoveAll(fixtureRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "remove packageapply test fixtures: %v\n", err)
+		if exitCode == 0 {
+			exitCode = 1
+		}
+	}
+	os.Exit(exitCode)
 }
 
 func TestGitFixtureLineEndingsAreDeterministic(t *testing.T) {
