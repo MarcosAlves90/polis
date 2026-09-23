@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	PlanVersion = 1
+	PlanVersion = 2
 
 	PolicySourceCommitted = "committed"
 	PolicySourceExternal  = "external"
@@ -21,30 +21,44 @@ const (
 	GateStateEnabled  = "enabled"
 	GateStateDisabled = "disabled"
 
+	ProducerActionExecute       = "execute"
+	ProducerActionDeferred      = "deferred"
+	ProducerActionNotApplicable = "not_applicable"
+
+	ConsumerRequirementRequired    = "required"
+	ConsumerRequirementNotRequired = "not_required"
+
 	GuaranteeProvided    = "provided"
 	GuaranteeNotProvided = "not_provided"
 )
 
 type Options struct {
-	Repo   string
-	Policy string
+	Repo          string
+	Policy        string
+	DeferredGates []string
+}
+
+type CompileOptions struct {
+	DeferredGates []string
 }
 
 type Plan struct {
-	PlanVersion         int                     `json:"plan_version"`
-	PolicySchemaVersion int                     `json:"policy_schema_version"`
-	PolicySource        string                  `json:"policy_source"`
-	PolicySHA256        string                  `json:"policy_sha256"`
-	Runtime             Runtime                 `json:"runtime"`
-	ValidationLevel     string                  `json:"validation_level"`
-	EnabledGates        []string                `json:"enabled_gates"`
-	DisabledGates       []string                `json:"disabled_gates"`
-	DependencyEdges     []spec.PolicyDependency `json:"dependency_edges"`
-	ExecutionOrder      []string                `json:"execution_order"`
-	Gates               []Gate                  `json:"gates"`
-	MandatoryInvariants []Invariant             `json:"mandatory_invariants"`
-	Guarantees          []Guarantee             `json:"guarantees"`
-	gatePolicies        []spec.GatePolicy
+	PlanVersion                int                     `json:"plan_version"`
+	PolicySchemaVersion        int                     `json:"policy_schema_version"`
+	PolicySource               string                  `json:"policy_source"`
+	PolicySHA256               string                  `json:"policy_sha256"`
+	Runtime                    Runtime                 `json:"runtime"`
+	ValidationLevel            string                  `json:"validation_level"`
+	EnabledGates               []string                `json:"enabled_gates"`
+	DisabledGates              []string                `json:"disabled_gates"`
+	DeferredGates              []string                `json:"deferred_gates"`
+	ConsumerValidationRequired bool                    `json:"consumer_validation_required"`
+	DependencyEdges            []spec.PolicyDependency `json:"dependency_edges"`
+	ExecutionOrder             []string                `json:"execution_order"`
+	Gates                      []Gate                  `json:"gates"`
+	MandatoryInvariants        []Invariant             `json:"mandatory_invariants"`
+	Guarantees                 []Guarantee             `json:"guarantees"`
+	gatePolicies               []spec.GatePolicy
 }
 
 type Runtime struct {
@@ -54,16 +68,18 @@ type Runtime struct {
 }
 
 type Gate struct {
-	ID               string            `json:"id"`
-	State            string            `json:"state"`
-	Mode             string            `json:"mode"`
-	Command          *spec.CommandSpec `json:"command,omitempty"`
-	Reason           *string           `json:"reason,omitempty"`
-	DependsOn        []string          `json:"depends_on,omitempty"`
-	Adapter          string            `json:"adapter,omitempty"`
-	Report           string            `json:"report,omitempty"`
-	Operator         string            `json:"operator,omitempty"`
-	ThresholdPercent *float64          `json:"threshold_percent,omitempty"`
+	ID                  string            `json:"id"`
+	State               string            `json:"state"`
+	Mode                string            `json:"mode"`
+	ProducerAction      string            `json:"producer_action"`
+	ConsumerRequirement string            `json:"consumer_requirement"`
+	Command             *spec.CommandSpec `json:"command,omitempty"`
+	Reason              *string           `json:"reason,omitempty"`
+	DependsOn           []string          `json:"depends_on,omitempty"`
+	Adapter             string            `json:"adapter,omitempty"`
+	Report              string            `json:"report,omitempty"`
+	Operator            string            `json:"operator,omitempty"`
+	ThresholdPercent    *float64          `json:"threshold_percent,omitempty"`
 }
 
 type Invariant struct {
@@ -90,7 +106,7 @@ func Load(ctx context.Context, opts Options) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	plan, err := Compile(policy)
+	plan, err := CompileWithOptions(policy, CompileOptions{DeferredGates: opts.DeferredGates})
 	if err != nil {
 		return Plan{}, err
 	}
@@ -102,6 +118,10 @@ func Load(ctx context.Context, opts Options) (Plan, error) {
 }
 
 func Compile(policy spec.Policy) (Plan, error) {
+	return CompileWithOptions(policy, CompileOptions{})
+}
+
+func CompileWithOptions(policy spec.Policy, opts CompileOptions) (Plan, error) {
 	if err := policy.Validate(); err != nil {
 		return Plan{}, fmt.Errorf("compile execution plan: %w", err)
 	}
@@ -114,21 +134,30 @@ func Compile(policy spec.Policy) (Plan, error) {
 	for _, edge := range lint.Dependencies {
 		dependencies[edge.Gate] = append(dependencies[edge.Gate], edge.DependsOn)
 	}
+	deferredGates, deferredSet, err := canonicalDeferredGates(policy, opts.DeferredGates)
+	if err != nil {
+		return Plan{}, fmt.Errorf("compile execution plan: %w", err)
+	}
+	if err := validateDeferredDependencies(policy, lint.ExecutionOrder, dependencies, deferredSet); err != nil {
+		return Plan{}, fmt.Errorf("compile execution plan: %w", err)
+	}
 	plan := Plan{
-		PlanVersion:         PlanVersion,
-		PolicySchemaVersion: policy.SchemaVersion,
-		ValidationLevel:     summary.Level,
-		EnabledGates:        append([]string{}, summary.EnabledGates...),
-		DisabledGates:       append([]string{}, summary.DisabledGates...),
-		DependencyEdges:     append([]spec.PolicyDependency{}, lint.Dependencies...),
-		ExecutionOrder:      append([]string{}, lint.ExecutionOrder...),
-		Gates:               make([]Gate, 0, len(policy.Gates)),
-		MandatoryInvariants: mandatoryInvariants(),
-		Guarantees:          make([]Guarantee, 0, len(policy.Gates)),
-		gatePolicies:        make([]spec.GatePolicy, 0, len(policy.Gates)),
+		PlanVersion:                PlanVersion,
+		PolicySchemaVersion:        policy.SchemaVersion,
+		ValidationLevel:            summary.Level,
+		EnabledGates:               append([]string{}, summary.EnabledGates...),
+		DisabledGates:              append([]string{}, summary.DisabledGates...),
+		DeferredGates:              deferredGates,
+		ConsumerValidationRequired: len(deferredGates) > 0,
+		DependencyEdges:            append([]spec.PolicyDependency{}, lint.Dependencies...),
+		ExecutionOrder:             append([]string{}, lint.ExecutionOrder...),
+		Gates:                      make([]Gate, 0, len(policy.Gates)),
+		MandatoryInvariants:        mandatoryInvariants(),
+		Guarantees:                 make([]Guarantee, 0, len(policy.Gates)),
+		gatePolicies:               make([]spec.GatePolicy, 0, len(policy.Gates)),
 	}
 	for _, policyGate := range policy.Gates {
-		plan.Gates = append(plan.Gates, describeGate(policyGate, dependencies[policyGate.ID]))
+		plan.Gates = append(plan.Gates, describeGate(policyGate, dependencies[policyGate.ID], deferredSet))
 		plan.Guarantees = append(plan.Guarantees, describeGuarantee(policyGate))
 	}
 	gateByID := make(map[string]spec.GatePolicy, len(policy.Gates))
@@ -141,6 +170,66 @@ func Compile(policy spec.Policy) (Plan, error) {
 		plan.gatePolicies = append(plan.gatePolicies, gate)
 	}
 	return plan, nil
+}
+
+func canonicalDeferredGates(policy spec.Policy, requested []string) ([]string, map[string]struct{}, error) {
+	gateByID := make(map[string]spec.GatePolicy, len(policy.Gates))
+	for _, gate := range policy.Gates {
+		gateByID[gate.ID] = gate
+	}
+	requestedSet := make(map[string]struct{}, len(requested))
+	for _, id := range requested {
+		if !spec.IsProjectGate(id) {
+			return nil, nil, fmt.Errorf("unknown project gate %q cannot be deferred", id)
+		}
+		if _, exists := requestedSet[id]; exists {
+			return nil, nil, fmt.Errorf("project gate %q was requested for deferral more than once", id)
+		}
+		requestedSet[id] = struct{}{}
+		gate := gateByID[id]
+		if gate.Mode == spec.GateModeNotApplicable {
+			return nil, nil, fmt.Errorf("project gate %q cannot be deferred because it is not applicable", id)
+		}
+	}
+	ordered := make([]string, 0, len(requestedSet))
+	for _, id := range spec.ProjectGateOrder {
+		if _, ok := requestedSet[id]; ok {
+			ordered = append(ordered, id)
+		}
+	}
+	return ordered, requestedSet, nil
+}
+
+func validateDeferredDependencies(policy spec.Policy, executionOrder []string, dependencies map[string][]string, deferred map[string]struct{}) error {
+	gateByID := make(map[string]spec.GatePolicy, len(policy.Gates))
+	for _, gate := range policy.Gates {
+		gateByID[gate.ID] = gate
+	}
+	for _, gateID := range executionOrder {
+		gate := gateByID[gateID]
+		if gate.Mode == spec.GateModeNotApplicable {
+			continue
+		}
+		if _, isDeferred := deferred[gateID]; isDeferred {
+			continue
+		}
+		stack := append([]string(nil), dependencies[gateID]...)
+		visited := make(map[string]struct{}, len(stack))
+		for len(stack) > 0 {
+			last := len(stack) - 1
+			dependency := stack[last]
+			stack = stack[:last]
+			if _, seen := visited[dependency]; seen {
+				continue
+			}
+			visited[dependency] = struct{}{}
+			if _, isDeferred := deferred[dependency]; isDeferred {
+				return fmt.Errorf("producer gate %q depends on deferred prerequisite %q", gateID, dependency)
+			}
+			stack = append(stack, dependencies[dependency]...)
+		}
+	}
+	return nil
 }
 
 func (p Plan) GatePolicies() []spec.GatePolicy {
@@ -160,22 +249,30 @@ func loadPolicy(ctx context.Context, root, policyPath string) ([]byte, spec.Poli
 	return raw, policy, PolicySourceCommitted, err
 }
 
-func describeGate(policyGate spec.GatePolicy, dependencies []string) Gate {
+func describeGate(policyGate spec.GatePolicy, dependencies []string, deferred map[string]struct{}) Gate {
 	state := GateStateEnabled
+	producerAction := ProducerActionExecute
+	consumerRequirement := ConsumerRequirementRequired
 	if policyGate.Mode == spec.GateModeNotApplicable {
 		state = GateStateDisabled
+		producerAction = ProducerActionNotApplicable
+		consumerRequirement = ConsumerRequirementNotRequired
+	} else if _, ok := deferred[policyGate.ID]; ok {
+		producerAction = ProducerActionDeferred
 	}
 	return Gate{
-		ID:               policyGate.ID,
-		State:            state,
-		Mode:             policyGate.Mode,
-		Command:          cloneCommand(policyGate.Command),
-		Reason:           cloneString(policyGate.Reason),
-		DependsOn:        append([]string{}, dependencies...),
-		Adapter:          policyGate.Adapter,
-		Report:           policyGate.Report,
-		Operator:         policyGate.Operator,
-		ThresholdPercent: cloneFloat(policyGate.ThresholdPercent),
+		ID:                  policyGate.ID,
+		State:               state,
+		Mode:                policyGate.Mode,
+		ProducerAction:      producerAction,
+		ConsumerRequirement: consumerRequirement,
+		Command:             cloneCommand(policyGate.Command),
+		Reason:              cloneString(policyGate.Reason),
+		DependsOn:           append([]string{}, dependencies...),
+		Adapter:             policyGate.Adapter,
+		Report:              policyGate.Report,
+		Operator:            policyGate.Operator,
+		ThresholdPercent:    cloneFloat(policyGate.ThresholdPercent),
 	}
 }
 

@@ -9,18 +9,27 @@ import (
 )
 
 type evidenceValidator struct {
-	events []EvidenceEvent
-	index  int
+	events        []EvidenceEvent
+	index         int
+	version       EvidenceVersion
+	deferredGates map[string]struct{}
 }
 
 func ValidatePassEvidence(events []EvidenceEvent, change ChangeContract, policy Policy) error {
+	return ValidatePassEvidenceForVersion(events, change, policy, EvidenceVersionV2)
+}
+
+func ValidatePassEvidenceForVersion(events []EvidenceEvent, change ChangeContract, policy Policy, version EvidenceVersion) error {
+	if version != EvidenceVersionV2 && version != EvidenceVersionV3 {
+		return fmt.Errorf("unsupported evidence version %d", version)
+	}
 	if err := change.Validate(); err != nil {
 		return err
 	}
 	if err := policy.Validate(); err != nil {
 		return err
 	}
-	validator := evidenceValidator{events: events}
+	validator := evidenceValidator{events: events, version: version, deferredGates: make(map[string]struct{})}
 	if err := validator.validateRegression(change); err != nil {
 		return err
 	}
@@ -44,7 +53,7 @@ func ValidatePassEvidence(events []EvidenceEvent, change ChangeContract, policy 
 
 func (v *evidenceValidator) validateValidationConfiguration(policy Policy) error {
 	if v.index >= len(v.events) || v.events[v.index].Event != "validation_configured" {
-		if policy.ValidationLevel != "" {
+		if v.version == EvidenceVersionV3 || policy.ValidationLevel != "" {
 			return errors.New("evidence is missing validation_configured for an explicit validation level")
 		}
 		return nil
@@ -54,6 +63,48 @@ func (v *evidenceValidator) validateValidationConfiguration(policy Policy) error
 	summary := policy.ValidationSummary()
 	if e.Gate != "policy" || e.ValidationLevel != summary.Level || !reflect.DeepEqual(e.EnabledGates, summary.EnabledGates) || !reflect.DeepEqual(e.DisabledGates, summary.DisabledGates) {
 		return fmt.Errorf("event %d: validation configuration does not match policy", v.index-1)
+	}
+	if v.version == EvidenceVersionV2 {
+		if len(e.DeferredGates) != 0 {
+			return fmt.Errorf("event %d: Evidence v2 cannot contain deferred gates", v.index-1)
+		}
+		return nil
+	}
+	if e.DeferredGates == nil {
+		return fmt.Errorf("event %d: Evidence v3 validation configuration is missing deferred_gates", v.index-1)
+	}
+	if err := validateDeferredGateSlice(e.DeferredGates, summary.EnabledGates); err != nil {
+		return fmt.Errorf("event %d: %w", v.index-1, err)
+	}
+	for _, gate := range e.DeferredGates {
+		v.deferredGates[gate] = struct{}{}
+	}
+	return nil
+}
+
+func validateDeferredGateSlice(deferred, enabled []string) error {
+	enabledSet := make(map[string]struct{}, len(enabled))
+	for _, id := range enabled {
+		enabledSet[id] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(deferred))
+	lastIndex := -1
+	for _, id := range deferred {
+		if !IsProjectGate(id) {
+			return fmt.Errorf("deferred_gates contains unknown project gate %q", id)
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return fmt.Errorf("deferred_gates contains duplicate project gate %q", id)
+		}
+		seen[id] = struct{}{}
+		if _, ok := enabledSet[id]; !ok {
+			return fmt.Errorf("deferred gate %q is not enabled", id)
+		}
+		index := projectGateIndex(id)
+		if index <= lastIndex {
+			return errors.New("deferred_gates must use project gate order")
+		}
+		lastIndex = index
 	}
 	return nil
 }
@@ -275,6 +326,9 @@ func (v *evidenceValidator) expectProjectGateStart(gate string) error {
 }
 
 func (v *evidenceValidator) validateProjectGate(gate GatePolicy) error {
+	if _, deferred := v.deferredGates[gate.ID]; deferred {
+		return v.validateDeferredGate(gate)
+	}
 	switch gate.Mode {
 	case GateModeNotApplicable:
 		return v.validateNotApplicableGate(gate)
@@ -288,6 +342,21 @@ func (v *evidenceValidator) validateProjectGate(gate GatePolicy) error {
 	default:
 		return fmt.Errorf("unsupported policy mode %s", gate.Mode)
 	}
+}
+
+func (v *evidenceValidator) validateDeferredGate(gate GatePolicy) error {
+	if gate.Mode == GateModeNotApplicable {
+		return fmt.Errorf("not_applicable project gate %s cannot be deferred", gate.ID)
+	}
+	e, err := v.next()
+	if err != nil {
+		return err
+	}
+	if e.Event != "gate_finished" || e.Gate != gate.ID || e.Status != StatusDeferred {
+		return fmt.Errorf("event %d: deferred project gate %s must finish DEFERRED", v.index-1, gate.ID)
+	}
+	reason := DeferredReasonToConsumer
+	return validateFinishReason(e, &reason, v.index-1, gate.ID)
 }
 
 func (v *evidenceValidator) validateNotApplicableGate(gate GatePolicy) error {

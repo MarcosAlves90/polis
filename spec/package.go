@@ -46,12 +46,27 @@ var currentPackageMembers = []string{
 
 func PackageMembers(formatVersion int) ([]string, error) {
 	switch formatVersion {
-	case LegacyFormatVersion, PreviousFormatVersion:
+	case LegacyFormatVersion, IntermediateFormatVersion:
 		return append([]string(nil), legacyPackageMembers...), nil
-	case FormatVersion:
+	case PreviousFormatVersion, FormatVersion:
 		return append([]string(nil), currentPackageMembers...), nil
 	default:
 		return nil, fmt.Errorf("unsupported format_version %d", formatVersion)
+	}
+}
+
+func FormatHasEmbeddedBaseline(formatVersion int) bool {
+	return formatVersion == PreviousFormatVersion || formatVersion == FormatVersion
+}
+
+func EvidenceVersionForFormat(formatVersion int) (EvidenceVersion, error) {
+	switch formatVersion {
+	case LegacyFormatVersion, IntermediateFormatVersion, PreviousFormatVersion:
+		return EvidenceVersionV2, nil
+	case FormatVersion:
+		return EvidenceVersionV3, nil
+	default:
+		return 0, fmt.Errorf("unsupported format_version %d", formatVersion)
 	}
 }
 

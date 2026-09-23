@@ -59,10 +59,10 @@ var commandHelpEntries = []commandHelpEntry{
 	{name: "help", usage: "polis help [command]", summary: "show general or command-specific help"},
 	{name: "doctor", usage: "polis doctor [--format text|json]", summary: "check Git and runtime prerequisites"},
 	{name: "init", usage: "polis init [--repo <path>] [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]", summary: "create or preview a Project Policy"},
-	{name: "plan", usage: "polis plan [--repo <path>] [--policy <policy-v3.json>] [--format text|json]", summary: "compile and report the effective Project Policy"},
+	{name: "plan", usage: "polis plan [--repo <path>] [--policy <policy-v3.json>] [--defer-gate <id> ...] [--format text|json]", summary: "compile and report the effective Project Policy"},
 	{name: "start", usage: "polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3.json> --out <locked-v4.json>", summary: "lock a strict Change Contract baseline"},
 	{name: captureRedCommand, usage: "polis capture-red --repo <path> --contract <change.json> --out <regression.patch>", summary: "capture the required Red proof"},
-	{name: "build", usage: "polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] --out <directory>", summary: "build a .polis delivery package"},
+	{name: "build", usage: "polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--defer-gate <id> ...] [--format text|json] --out <directory>", summary: "build a .polis delivery package"},
 	{name: "verify", usage: "polis verify [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate a .polis artifact"},
 	{name: "inspect", usage: "polis inspect [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "inspect validated artifact metadata"},
 	{name: "preflight", usage: "polis preflight [--repo <path>] [--baseline-mode strict|compatible|permissive] [--allow-missing-baseline-proof] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate an artifact without applying it"},
@@ -169,9 +169,9 @@ func runVerify(args []string, out, errOut io.Writer) int {
 		return writeFailure(errOut, *format, "POLIS VERIFY", exitInvalidArtifact, err)
 	}
 	if *format == "json" {
-		writeJSON(out, map[string]any{"status": "PASS", "project": r.Project, "change": r.Change, "base_commit": r.BaseCommit, "target_tree": r.TargetTree, "validation_level": r.ValidationLevel, "enabled_gates": r.EnabledGates, "disabled_gates": r.DisabledGates})
+		writeJSON(out, map[string]any{"status": "PASS", "project": r.Project, "change": r.Change, "base_commit": r.BaseCommit, "target_tree": r.TargetTree, "validation_level": r.ValidationLevel, "enabled_gates": r.EnabledGates, "disabled_gates": r.DisabledGates, "deferred_gates": r.DeferredGates, "consumer_validation_required": r.ConsumerValidationRequired})
 	} else {
-		fmt.Fprintf(out, "POLIS VERIFY: PASS\nProject: %s\nBase: %s\nTarget: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\n", r.Project, r.BaseCommit, r.TargetTree, r.ValidationLevel, strings.Join(r.EnabledGates, ", "), strings.Join(r.DisabledGates, ", "))
+		fmt.Fprintf(out, "POLIS VERIFY: PASS\nProject: %s\nBase: %s\nTarget: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\nDeferred gates: %s\nConsumer validation required: %t\n", r.Project, r.BaseCommit, r.TargetTree, r.ValidationLevel, strings.Join(r.EnabledGates, ", "), strings.Join(r.DisabledGates, ", "), strings.Join(r.DeferredGates, ", "), r.ConsumerValidationRequired)
 	}
 	return exitPass
 }
@@ -205,9 +205,9 @@ func runInspect(args []string, out, errOut io.Writer) int {
 }
 
 func writeInspectionText(out io.Writer, inspection packageverify.Inspection) {
-	fmt.Fprintf(out, "POLIS INSPECT: PASS\nProject: %s\nChange: %s\nFormat: %d\nPolicy schema: %d\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\nChange schema: %d\nKind: %s\nBase: %s\nTarget: %s\nScope: %s\nEvidence events: %d\n",
+	fmt.Fprintf(out, "POLIS INSPECT: PASS\nProject: %s\nChange: %s\nFormat: %d\nPolicy schema: %d\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\nDeferred gates: %s\nConsumer validation required: %t\nChange schema: %d\nKind: %s\nBase: %s\nTarget: %s\nScope: %s\nEvidence events: %d\n",
 		inspection.Project, inspection.Change, inspection.FormatVersion, inspection.PolicySchemaVersion,
-		inspection.ValidationLevel, strings.Join(inspection.EnabledGates, ", "), strings.Join(inspection.DisabledGates, ", "), inspection.ChangeContractSchemaVersion,
+		inspection.ValidationLevel, strings.Join(inspection.EnabledGates, ", "), strings.Join(inspection.DisabledGates, ", "), strings.Join(inspection.DeferredGates, ", "), inspection.ConsumerValidationRequired, inspection.ChangeContractSchemaVersion,
 		inspection.Kind, inspection.BaseCommit, inspection.TargetTree, strings.Join(inspection.AllowedPaths, ", "), inspection.EvidenceEvents)
 	for _, link := range inspection.Traceability {
 		fmt.Fprintf(out, "Trace: %s -> %s -> %s\n", link.RequirementID, link.AcceptanceCriterionID, link.Proof)
@@ -252,11 +252,11 @@ func runPreflight(args []string, out, errOut io.Writer) int {
 		return writeFailure(errOut, *format, preflightLabel, code, err)
 	}
 	if *format == "json" {
-		payload := map[string]any{"status": "PASS", "safe_to_apply": true, "project": result.Project, "change": result.Change, "target_tree": result.TargetTree, "validation_level": result.ValidationLevel, "enabled_gates": result.EnabledGates, "disabled_gates": result.DisabledGates}
+		payload := map[string]any{"status": "PASS", "safe_to_apply": true, "project": result.Project, "change": result.Change, "target_tree": result.TargetTree, "validation_level": result.ValidationLevel, "enabled_gates": result.EnabledGates, "disabled_gates": result.DisabledGates, "producer_deferred_gates": result.ProducerDeferredGates, "outstanding_deferred_gates": result.OutstandingDeferredGates, "consumer_validation_required": result.ConsumerValidationRequired, "consumer_validation_status": result.ConsumerValidationStatus, "consumer_gate_statuses": result.ConsumerGateStatuses}
 		addBaselineResultFields(payload, result)
 		writeJSON(out, payload)
 	} else {
-		fmt.Fprintf(out, preflightLabel+": PASS\nSafe to apply: yes\nProject: %s\nChange: %s\nTarget: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\n", result.Project, result.Change, result.TargetTree, result.ValidationLevel, strings.Join(result.EnabledGates, ", "), strings.Join(result.DisabledGates, ", "))
+		fmt.Fprintf(out, preflightLabel+": PASS\nSafe to apply: yes\nProject: %s\nChange: %s\nTarget: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\nProducer deferred gates: %s\nOutstanding deferred gates: %s\nConsumer validation required: %t\nConsumer validation status: %s\nConsumer gate statuses: %v\n", result.Project, result.Change, result.TargetTree, result.ValidationLevel, strings.Join(result.EnabledGates, ", "), strings.Join(result.DisabledGates, ", "), displayGateList(result.ProducerDeferredGates), displayGateList(result.OutstandingDeferredGates), result.ConsumerValidationRequired, result.ConsumerValidationStatus, result.ConsumerGateStatuses)
 		writeBaselineResultText(out, result)
 	}
 	return exitPass
@@ -322,14 +322,16 @@ func runPlan(args []string, out, errOut io.Writer) int {
 	repo := fs.String("repo", ".", targetRepoHelp)
 	policy := fs.String("policy", "", externalPolicyHelp)
 	format := fs.String("format", "text", outputFormatHelp)
+	var deferredGates argvFlag
+	fs.Var(&deferredGates, "defer-gate", "defer enabled gate validation to the consumer; repeat for each gate")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() != 0 || !validFormat(*format) {
-		fmt.Fprintln(errOut, "usage: polis plan [--repo <path>] [--policy <policy-v3.json>] [--format text|json]")
+		fmt.Fprintln(errOut, "usage: polis plan [--repo <path>] [--policy <policy-v3.json>] [--defer-gate <id> ...] [--format text|json]")
 		return exitUsage
 	}
-	plan, err := policyplan.Load(context.Background(), policyplan.Options{Repo: *repo, Policy: *policy})
+	plan, err := policyplan.Load(context.Background(), policyplan.Options{Repo: *repo, Policy: *policy, DeferredGates: deferredGates})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS PLAN", exitValidationFailed, err)
 	}
@@ -358,9 +360,9 @@ func writePlanDependencies(out io.Writer, dependencies []spec.PolicyDependency, 
 }
 
 func writePlanSummary(out io.Writer, plan policyplan.Plan) {
-	fmt.Fprintf(out, "POLIS PLAN: PASS\nPlan version: %d\nPolicy source: %s\nPolicy SHA256: %s\nPolicy schema: %d\nRuntime: %s/%s (%s)\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\n",
+	fmt.Fprintf(out, "POLIS PLAN: PASS\nPlan version: %d\nPolicy source: %s\nPolicy SHA256: %s\nPolicy schema: %d\nRuntime: %s/%s (%s)\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\nDeferred gates: %s\nConsumer validation required: %t\n",
 		plan.PlanVersion, plan.PolicySource, plan.PolicySHA256, plan.PolicySchemaVersion, plan.Runtime.OS, plan.Runtime.Architecture, plan.Runtime.GoVersion,
-		plan.ValidationLevel, strings.Join(plan.EnabledGates, ", "), strings.Join(plan.DisabledGates, ", "))
+		plan.ValidationLevel, strings.Join(plan.EnabledGates, ", "), strings.Join(plan.DisabledGates, ", "), strings.Join(plan.DeferredGates, ", "), plan.ConsumerValidationRequired)
 }
 
 func writePlanGates(out io.Writer, gates []policyplan.Gate) {
@@ -371,7 +373,7 @@ func writePlanGates(out io.Writer, gates []policyplan.Gate) {
 }
 
 func writePlanGate(out io.Writer, gate policyplan.Gate) {
-	fmt.Fprintf(out, "- %s %s (%s)", strings.ToUpper(gate.State), gate.ID, gate.Mode)
+	fmt.Fprintf(out, "- %s %s (%s) producer_action=%s consumer_requirement=%s", strings.ToUpper(gate.State), gate.ID, gate.Mode, gate.ProducerAction, gate.ConsumerRequirement)
 	writePlanCommand(out, gate)
 	writePlanCoverage(out, gate)
 	if gate.Reason != nil {
@@ -473,21 +475,27 @@ func runBuild(args []string, out, errOut io.Writer) int {
 	outDir := fs.String("out", "", "output directory")
 	contract := fs.String("contract", "", "delivery Change Contract JSON outside the worktree")
 	regressionPatch := fs.String("regression-patch", "", "validated Red-state patch for defect contracts")
+	format := fs.String("format", "text", outputFormatHelp)
+	var deferredGates argvFlag
+	fs.Var(&deferredGates, "defer-gate", "defer enabled gate validation to the consumer; repeat for each gate")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	if fs.NArg() != 0 || *repo == "" || *project == "" || *change == "" || *outDir == "" || *contract == "" {
-		fmt.Fprintln(errOut, "usage: polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] --out <directory>")
+	if fs.NArg() != 0 || !validFormat(*format) || *repo == "" || *project == "" || *change == "" || *outDir == "" || *contract == "" {
+		fmt.Fprintln(errOut, "usage: polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--defer-gate <id> ...] [--format text|json] --out <directory>")
 		return exitUsage
 	}
 	result, err := packagebuild.Build(context.Background(), packagebuild.Options{
-		Repo: *repo, Policy: *policy, Project: *project, Change: *change, Out: *outDir, Contract: *contract, RegressionPatch: *regressionPatch,
+		Repo: *repo, Policy: *policy, Project: *project, Change: *change, Out: *outDir, Contract: *contract, RegressionPatch: *regressionPatch, DeferredGates: deferredGates,
 	})
 	if err != nil {
-		fmt.Fprintf(errOut, "POLIS BUILD: FAIL: %v\n", err)
-		return exitUsage
+		return writeFailure(errOut, *format, "POLIS BUILD", exitUsage, err)
 	}
-	fmt.Fprintf(out, "POLIS BUILD: PASS\nArtifact: %s\nSHA256: %s\nBase: %s\nTarget: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\n", result.Path, result.SHA256, result.BaseCommit, result.TargetTree, result.ValidationLevel, strings.Join(result.EnabledGates, ", "), strings.Join(result.DisabledGates, ", "))
+	if *format == "json" {
+		writeJSON(out, map[string]any{"status": "PASS", "artifact": result.Path, "sha256": result.SHA256, "base_commit": result.BaseCommit, "target_tree": result.TargetTree, "validation_level": result.ValidationLevel, "enabled_gates": result.EnabledGates, "disabled_gates": result.DisabledGates, "deferred_gates": result.DeferredGates, "consumer_validation_required": result.ConsumerValidationRequired, "producer_gate_statuses": result.ProducerGateStatuses})
+	} else {
+		fmt.Fprintf(out, "POLIS BUILD: PASS\nArtifact: %s\nSHA256: %s\nBase: %s\nTarget: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\nDeferred gates: %s\nConsumer validation required: %t\nProducer gate statuses: %v\n", result.Path, result.SHA256, result.BaseCommit, result.TargetTree, result.ValidationLevel, strings.Join(result.EnabledGates, ", "), strings.Join(result.DisabledGates, ", "), strings.Join(result.DeferredGates, ", "), result.ConsumerValidationRequired, result.ProducerGateStatuses)
+	}
 	return exitPass
 }
 
@@ -570,7 +578,7 @@ func applyExitCode(err error) int {
 
 func writeApplySuccess(out io.Writer, format string, result packageapply.Result) {
 	if format == "json" {
-		payload := map[string]any{"status": "PASS", "project": result.Project, "change": result.Change, "target_tree": result.TargetTree, "validation_level": result.ValidationLevel, "enabled_gates": result.EnabledGates, "disabled_gates": result.DisabledGates}
+		payload := map[string]any{"status": "PASS", "project": result.Project, "change": result.Change, "target_tree": result.TargetTree, "validation_level": result.ValidationLevel, "enabled_gates": result.EnabledGates, "disabled_gates": result.DisabledGates, "producer_deferred_gates": result.ProducerDeferredGates, "outstanding_deferred_gates": result.OutstandingDeferredGates, "consumer_validation_required": result.ConsumerValidationRequired, "consumer_validation_status": result.ConsumerValidationStatus, "consumer_gate_statuses": result.ConsumerGateStatuses}
 		addBaselineResultFields(payload, result)
 		if result.EvidencePath != "" {
 			payload["evidence"] = result.EvidencePath
@@ -578,11 +586,18 @@ func writeApplySuccess(out io.Writer, format string, result packageapply.Result)
 		writeJSON(out, payload)
 		return
 	}
-	fmt.Fprintf(out, applyLabel+": PASS\nProject: %s\nChange: %s\nTarget: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\n", result.Project, result.Change, result.TargetTree, result.ValidationLevel, strings.Join(result.EnabledGates, ", "), strings.Join(result.DisabledGates, ", "))
+	fmt.Fprintf(out, applyLabel+": PASS\nProject: %s\nChange: %s\nTarget: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\nProducer deferred gates: %s\nOutstanding deferred gates: %s\nConsumer validation required: %t\nConsumer validation status: %s\nConsumer gate statuses: %v\n", result.Project, result.Change, result.TargetTree, result.ValidationLevel, strings.Join(result.EnabledGates, ", "), strings.Join(result.DisabledGates, ", "), displayGateList(result.ProducerDeferredGates), displayGateList(result.OutstandingDeferredGates), result.ConsumerValidationRequired, result.ConsumerValidationStatus, result.ConsumerGateStatuses)
 	writeBaselineResultText(out, result)
 	if result.EvidencePath != "" {
 		fmt.Fprintf(out, "Evidence: %s\n", result.EvidencePath)
 	}
+}
+
+func displayGateList(gates []string) string {
+	if len(gates) == 0 {
+		return "none"
+	}
+	return strings.Join(gates, ", ")
 }
 
 func addBaselineResultFields(payload map[string]any, result packageapply.Result) {

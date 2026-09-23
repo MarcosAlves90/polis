@@ -22,7 +22,9 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/isolation"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
 	"github.com/MarcosAlves90/polis/v6/internal/policyload"
+	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -34,16 +36,20 @@ type Options struct {
 	Out             string
 	Contract        string
 	RegressionPatch string
+	DeferredGates   []string
 }
 
 type Result struct {
-	Path            string
-	SHA256          string
-	BaseCommit      string
-	TargetTree      string
-	ValidationLevel string
-	EnabledGates    []string
-	DisabledGates   []string
+	Path                       string
+	SHA256                     string
+	BaseCommit                 string
+	TargetTree                 string
+	ValidationLevel            string
+	EnabledGates               []string
+	DisabledGates              []string
+	DeferredGates              []string
+	ConsumerValidationRequired bool
+	ProducerGateStatuses       map[string]spec.Status
 }
 
 const (
@@ -52,17 +58,19 @@ const (
 )
 
 type buildArtifact struct {
-	opts            Options
-	objectFormat    string
-	baseCommit      string
-	targetTree      string
-	policyRaw       []byte
-	policy          spec.Policy
-	changeRaw       []byte
-	regressionPatch []byte
-	patch           []byte
-	evidence        []byte
-	baseline        []byte
+	opts                 Options
+	objectFormat         string
+	baseCommit           string
+	targetTree           string
+	policyRaw            []byte
+	policy               spec.Policy
+	plan                 policyplan.Plan
+	producerGateStatuses map[string]spec.Status
+	changeRaw            []byte
+	regressionPatch      []byte
+	patch                []byte
+	evidence             []byte
+	baseline             []byte
 }
 
 func Build(ctx context.Context, opts Options) (Result, error) {
@@ -106,6 +114,10 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	if err := requireV6ProducerContract(changeContract); err != nil {
 		return Result{}, err
 	}
+	plan, err := policyplan.CompileWithOptions(policy, policyplan.CompileOptions{DeferredGates: opts.DeferredGates})
+	if err != nil {
+		return Result{}, err
+	}
 	baseCommit := changeContract.BaselineLock.BaseCommit
 	targetTree, patch, changedPaths, err := buildTargetWithTemporaryIndex(ctx, repo, baseCommit)
 	if err != nil {
@@ -128,6 +140,7 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	defer cleanupBaseline()
 
 	var evidence bytes.Buffer
+	var producerResult policyexec.Result
 	validation := isolation.Validation{
 		BaselineRepo:          baselineRepo,
 		BaselineCommit:        baseCommit,
@@ -137,6 +150,8 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 		RegressionPatch:       regressionPatch,
 		Change:                changeContract,
 		Policy:                policy,
+		ExecutionPlan:         &plan,
+		PolicyResult:          &producerResult,
 		Evidence:              &evidence,
 		RedWorktreePattern:    "polis-red-worktree-*",
 		TargetWorktreePattern: "polis-worktree-*",
@@ -151,7 +166,8 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 
 	artifact := buildArtifact{
 		opts: opts, objectFormat: objectFormat, baseCommit: baseCommit, targetTree: targetTree,
-		policyRaw: policyRaw, policy: policy, changeRaw: changeRaw, regressionPatch: regressionPatch, patch: patch, evidence: evidence.Bytes(), baseline: baseline,
+		policyRaw: policyRaw, policy: policy, plan: plan, producerGateStatuses: producerResult.Gates,
+		changeRaw: changeRaw, regressionPatch: regressionPatch, patch: patch, evidence: evidence.Bytes(), baseline: baseline,
 	}
 	manifestRaw, err := encodeManifest(artifact)
 	if err != nil {
@@ -279,14 +295,25 @@ func finalizeArtifact(artifact buildArtifact, manifestRaw []byte) (Result, error
 	}
 	summary := artifact.policy.ValidationSummary()
 	return Result{
-		Path:            finalPath,
-		SHA256:          archiveHash,
-		BaseCommit:      artifact.baseCommit,
-		TargetTree:      artifact.targetTree,
-		ValidationLevel: summary.Level,
-		EnabledGates:    append([]string{}, summary.EnabledGates...),
-		DisabledGates:   append([]string{}, summary.DisabledGates...),
+		Path:                       finalPath,
+		SHA256:                     archiveHash,
+		BaseCommit:                 artifact.baseCommit,
+		TargetTree:                 artifact.targetTree,
+		ValidationLevel:            summary.Level,
+		EnabledGates:               append([]string{}, summary.EnabledGates...),
+		DisabledGates:              append([]string{}, summary.DisabledGates...),
+		DeferredGates:              append([]string{}, artifact.plan.DeferredGates...),
+		ConsumerValidationRequired: artifact.plan.ConsumerValidationRequired,
+		ProducerGateStatuses:       cloneGateStatuses(artifact.producerGateStatuses),
 	}, nil
+}
+
+func cloneGateStatuses(gates map[string]spec.Status) map[string]spec.Status {
+	cloned := make(map[string]spec.Status, len(gates))
+	for gate, status := range gates {
+		cloned[gate] = status
+	}
+	return cloned
 }
 
 func resolveRepo(ctx context.Context, repo string) (string, error) {

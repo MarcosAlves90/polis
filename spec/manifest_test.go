@@ -43,6 +43,9 @@ func TestCanonicalManifestSchemaMatchesCurrentFormat(t *testing.T) {
 	if version.Const != FormatVersion {
 		t.Fatalf("manifest schema format_version=%d want=%d", version.Const, FormatVersion)
 	}
+	if schema.Title != "POLIS Manifest format v5" {
+		t.Fatalf("manifest schema title=%q want format v5", schema.Title)
+	}
 	required := map[string]bool{}
 	for _, name := range schema.Required {
 		required[name] = true
@@ -72,19 +75,21 @@ func TestDecodeManifestAcceptsSHA256GitObjectFormat(t *testing.T) {
 	}
 }
 
-func TestManifestV4RequiresEmbeddedBaselineDigest(t *testing.T) {
-	m := Manifest{FormatVersion: FormatVersion, Project: "gitrex", Change: "self-contained", GitObjectFormat: "sha1", BaseCommit: string(makeHex('1', 40)), TargetTree: string(makeHex('2', 40)), PolicySHA256: hA, ChangeContractSHA256: hB, RegressionPatchSHA256: hC, PayloadSHA256: hD, BaselineSHA256: hE}
-	if err := m.Validate(); err != nil {
-		t.Fatalf("valid v4 manifest rejected: %v", err)
-	}
-	m.BaselineSHA256 = ""
-	if err := m.Validate(); err == nil {
-		t.Fatal("format v4 manifest without baseline_sha256 accepted")
+func TestManifestV4AndV5RequireEmbeddedBaselineDigest(t *testing.T) {
+	for _, version := range []int{PreviousFormatVersion, FormatVersion} {
+		m := Manifest{FormatVersion: version, Project: "gitrex", Change: "self-contained", GitObjectFormat: "sha1", BaseCommit: string(makeHex('1', 40)), TargetTree: string(makeHex('2', 40)), PolicySHA256: hA, ChangeContractSHA256: hB, RegressionPatchSHA256: hC, PayloadSHA256: hD, BaselineSHA256: hE}
+		if err := m.Validate(); err != nil {
+			t.Fatalf("valid v%d manifest rejected: %v", version, err)
+		}
+		m.BaselineSHA256 = ""
+		if err := m.Validate(); err == nil {
+			t.Fatalf("format v%d manifest without baseline_sha256 accepted", version)
+		}
 	}
 }
 
 func TestHistoricalManifestRejectsBaselineDigest(t *testing.T) {
-	for _, version := range []int{LegacyFormatVersion, PreviousFormatVersion} {
+	for _, version := range []int{LegacyFormatVersion, IntermediateFormatVersion} {
 		m := Manifest{FormatVersion: version, Project: "gitrex", Change: "historical", GitObjectFormat: "sha1", BaseCommit: string(makeHex('1', 40)), TargetTree: string(makeHex('2', 40)), PolicySHA256: hA, ChangeContractSHA256: hB, RegressionPatchSHA256: hC, PayloadSHA256: hD, BaselineSHA256: hE}
 		if err := m.Validate(); err == nil {
 			t.Fatalf("format v%d accepted baseline_sha256", version)

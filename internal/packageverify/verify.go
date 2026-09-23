@@ -40,13 +40,15 @@ const (
 var lowerSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type Result struct {
-	Project         string
-	Change          string
-	BaseCommit      string
-	TargetTree      string
-	ValidationLevel string
-	EnabledGates    []string
-	DisabledGates   []string
+	Project                    string
+	Change                     string
+	BaseCommit                 string
+	TargetTree                 string
+	ValidationLevel            string
+	EnabledGates               []string
+	DisabledGates              []string
+	DeferredGates              []string
+	ConsumerValidationRequired bool
 }
 
 type Inspection struct {
@@ -57,6 +59,8 @@ type Inspection struct {
 	ValidationLevel             string                  `json:"validation_level"`
 	EnabledGates                []string                `json:"enabled_gates"`
 	DisabledGates               []string                `json:"disabled_gates"`
+	DeferredGates               []string                `json:"deferred_gates"`
+	ConsumerValidationRequired  bool                    `json:"consumer_validation_required"`
 	ChangeContractSchemaVersion int                     `json:"change_contract_schema_version"`
 	Kind                        string                  `json:"kind"`
 	BaseCommit                  string                  `json:"base_commit"`
@@ -97,7 +101,11 @@ func Inspect(filename string) (Inspection, error) {
 	if err != nil {
 		return Inspection{}, err
 	}
-	events, err := spec.DecodeEvidence(pkg.Evidence)
+	evidenceVersion, err := spec.EvidenceVersionForFormat(pkg.Manifest.FormatVersion)
+	if err != nil {
+		return Inspection{}, err
+	}
+	events, err := spec.DecodeEvidenceVersion(pkg.Evidence, evidenceVersion)
 	if err != nil {
 		return Inspection{}, err
 	}
@@ -110,6 +118,8 @@ func Inspect(filename string) (Inspection, error) {
 	summary := pkg.Policy.ValidationSummary()
 	inspection.EnabledGates = append([]string(nil), summary.EnabledGates...)
 	inspection.DisabledGates = append([]string(nil), summary.DisabledGates...)
+	inspection.DeferredGates = append([]string{}, pkg.Result.DeferredGates...)
+	inspection.ConsumerValidationRequired = pkg.Result.ConsumerValidationRequired
 	if pkg.Change.Scope != nil {
 		inspection.AllowedPaths = append([]string(nil), pkg.Change.Scope.AllowedPaths...)
 	} else {
@@ -146,7 +156,8 @@ func Load(filename string) (Package, error) {
 	if err := validateRegressionPatch(contracts.change, regressionPatch); err != nil {
 		return Package{}, err
 	}
-	if err := validateEvidenceAndIntegrity(contents, contracts); err != nil {
+	deferredGates, err := validateEvidenceAndIntegrity(contents, contracts)
+	if err != nil {
 		return Package{}, err
 	}
 	if err := verifyLockedDevelopmentBaseline(contracts.manifest, contracts.change, contents); err != nil {
@@ -155,7 +166,7 @@ func Load(filename string) (Package, error) {
 	if err := verifyEmbeddedBaseline(contracts.manifest, contracts.change, contents); err != nil {
 		return Package{}, err
 	}
-	return packageFromContents(contents, contracts, regressionPatch), nil
+	return packageFromContents(contents, contracts, regressionPatch, deferredGates), nil
 }
 
 func loadArchiveContents(filename string) (map[string][]byte, error) {
@@ -278,11 +289,11 @@ func verifyLockedDevelopmentBaseline(manifest spec.Manifest, change spec.ChangeC
 }
 
 func verifyEmbeddedBaseline(manifest spec.Manifest, change spec.ChangeContract, contents map[string][]byte) error {
-	if manifest.FormatVersion != spec.FormatVersion {
+	if !spec.FormatHasEmbeddedBaseline(manifest.FormatVersion) {
 		return nil
 	}
 	if change.BaselineLock == nil {
-		return errors.New("format v4 package requires baseline_lock")
+		return fmt.Errorf("format v%d package requires baseline_lock", manifest.FormatVersion)
 	}
 	if err := baselineproof.Verify(contents[memberBaseline], manifest.GitObjectFormat, manifest.BaseCommit, change.BaselineLock.BaseTree); err != nil {
 		return fmt.Errorf("verify embedded baseline: %w", err)
@@ -303,33 +314,46 @@ func validateRegressionPatch(change spec.ChangeContract, regressionPatch []byte)
 	return nil
 }
 
-func validateEvidenceAndIntegrity(contents map[string][]byte, contracts decodedContracts) error {
-	events, err := spec.DecodeEvidence(contents[memberEvidence])
+func validateEvidenceAndIntegrity(contents map[string][]byte, contracts decodedContracts) ([]string, error) {
+	evidenceVersion, err := spec.EvidenceVersionForFormat(contracts.manifest.FormatVersion)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if contracts.manifest.FormatVersion >= spec.PreviousFormatVersion {
+	events, err := spec.DecodeEvidenceVersion(contents[memberEvidence], evidenceVersion)
+	if err != nil {
+		return nil, err
+	}
+	if contracts.manifest.FormatVersion >= spec.IntermediateFormatVersion {
 		for i, event := range events {
 			if event.Event == "command_finished" && (event.Stdout != nil || event.Stderr != nil) {
-				return fmt.Errorf("evidence event %d stores raw command output in package format v3+", i)
+				return nil, fmt.Errorf("evidence event %d stores raw command output in package format v3+", i)
 			}
 		}
 	}
-	if err := spec.ValidatePassEvidence(events, contracts.change, contracts.policy); err != nil {
-		return fmt.Errorf("validate evidence contract: %w", err)
+	if err := spec.ValidatePassEvidenceForVersion(events, contracts.change, contracts.policy, evidenceVersion); err != nil {
+		return nil, fmt.Errorf("validate evidence contract: %w", err)
 	}
 	if err := verifyManifestDigests(contracts.manifest, contents); err != nil {
-		return err
+		return nil, err
 	}
-	return verifyChecksumFile(contents)
+	if err := verifyChecksumFile(contents); err != nil {
+		return nil, err
+	}
+	for _, event := range events {
+		if event.Event == "validation_configured" && event.DeferredGates != nil {
+			return append([]string{}, event.DeferredGates...), nil
+		}
+	}
+	return []string{}, nil
 }
 
-func packageFromContents(contents map[string][]byte, contracts decodedContracts, regressionPatch []byte) Package {
+func packageFromContents(contents map[string][]byte, contracts decodedContracts, regressionPatch []byte, deferredGates []string) Package {
 	manifest := contracts.manifest
 	summary := contracts.policy.ValidationSummary()
 	result := Result{
 		Project: manifest.Project, Change: manifest.Change, BaseCommit: manifest.BaseCommit, TargetTree: manifest.TargetTree,
 		ValidationLevel: summary.Level, EnabledGates: append([]string{}, summary.EnabledGates...), DisabledGates: append([]string{}, summary.DisabledGates...),
+		DeferredGates: append([]string{}, deferredGates...), ConsumerValidationRequired: len(deferredGates) > 0,
 	}
 	return Package{
 		Result: result, Manifest: manifest, Policy: contracts.policy, Change: contracts.change,
@@ -424,7 +448,7 @@ func verifyManifestDigests(m spec.Manifest, contents map[string][]byte) error {
 		{memberRegression, m.RegressionPatchSHA256},
 		{memberPayload, m.PayloadSHA256},
 	}
-	if m.FormatVersion == spec.FormatVersion {
+	if spec.FormatHasEmbeddedBaseline(m.FormatVersion) {
 		checks = append(checks, struct{ name, want string }{memberBaseline, m.BaselineSHA256})
 	}
 	for _, check := range checks {

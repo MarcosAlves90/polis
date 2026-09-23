@@ -2,7 +2,7 @@
 
 ## 1. Authority and compatibility model
 
-POLIS V6 uses package format v4 for new producer builds while retaining reader compatibility for valid package formats v2 and v3. Project-Policy-v3, Evidence-v2, exact-tree, signature, bounded-input, environment, and transactional-apply contracts remain in force unless this specification explicitly supersedes them.
+POLIS V6 uses package format v5 for new producer builds while retaining reader compatibility for valid package formats v2, v3, and v4. Project Policy schema v3, Evidence v2 for historical formats v2-v4, Evidence v3 for format v5, exact-tree, signature, bounded-input, environment, and transactional-apply contracts remain in force unless this specification explicitly supersedes them.
 
 For new V6 producer operations, this specification supersedes the V5 producer-admission rules and the committed-policy-only baseline-lock semantics defined by earlier POLIS specifications.
 
@@ -152,9 +152,9 @@ For V6 producer `build`, the immutable baseline and the current producer `HEAD` 
 
 `capture-red` is not relaxed by this producer-build rule and continues to require the exact locked baseline before Red proof.
 
-### 7.1 Package format v4 and embedded baseline proof
+### 7.1 Package formats v4 and v5 and embedded baseline proof
 
-New V6 builds MUST emit package format v4. Format v4 contains exactly eight regular canonical members under `polis/`:
+New V6 builds MUST emit package format v5. Formats v4 and v5 contain exactly eight regular canonical members under `polis/`:
 
 ```text
 polis/polis-baseline.tar
@@ -167,11 +167,11 @@ polis/polis-policy.json
 polis/polis-regression.patch
 ```
 
-Formats v2 and v3 retain their exact historical seven-member inventory and MUST NOT contain `polis/polis-baseline.tar` or `baseline_sha256`. New producer builds MUST NOT emit v2 or v3.
+Formats v2 and v3 retain their exact historical seven-member inventory and MUST NOT contain `polis/polis-baseline.tar` or `baseline_sha256`. Format v4 retains its exact historical eight-member inventory and Evidence v2 semantics. New producer builds MUST NOT emit v2, v3, or v4.
 
-`polis/polis-baseline.tar` is a deterministic uncompressed tar stream containing the locked `base_commit` object plus the complete recursively reachable tree/blob closure of `baseline_lock.base_tree`. Git object IDs MUST be recomputed from the raw object payload under `manifest.git_object_format`, the embedded commit MUST equal `manifest.base_commit`, and its root tree MUST equal `baseline_lock.base_tree`. Duplicate, unrelated, missing, malformed, non-canonical, Git-invalid, or identity-mismatched objects MUST invalidate the artifact. Verification MUST pass the reconstructed objects through native Git object validation in isolated temporary state before accepting the artifact. Parent commits and consumer/producer refs are not transported by this representation. Before a new v4 artifact is accepted by `build`, the locked development proof MUST be replayed against the materialized embedded baseline itself; therefore a configured baseline command that requires unavailable history or refs MUST make the producer build fail closed rather than producing an artifact that can only fail later at the consumer.
+`polis/polis-baseline.tar` is a deterministic uncompressed tar stream containing the locked `base_commit` object plus the complete recursively reachable tree/blob closure of `baseline_lock.base_tree`. Git object IDs MUST be recomputed from the raw object payload under `manifest.git_object_format`, the embedded commit MUST equal `manifest.base_commit`, and its root tree MUST equal `baseline_lock.base_tree`. Duplicate, unrelated, missing, malformed, non-canonical, Git-invalid, or identity-mismatched objects MUST invalidate the artifact. Verification MUST pass the reconstructed objects through native Git object validation in isolated temporary state before accepting the artifact. Parent commits and consumer/producer refs are not transported by this representation. Before a new v5 artifact is accepted by `build`, the locked development proof MUST be replayed against the materialized embedded baseline itself; therefore a configured baseline command that requires unavailable history or refs MUST make the producer build fail closed rather than producing an artifact that can only fail later at the consumer.
 
-The v4 manifest MUST contain `baseline_sha256`, the SHA-256 of `polis/polis-baseline.tar`. The baseline member MUST also be covered by `polis/polis-checksums.sha256`. Its uncompressed member size is capped at 32 MiB; the existing 64 MiB archive and aggregate-uncompressed caps remain in force. The producer MUST determine that the projected canonical TAR exceeds no baseline-member bound before loading full object payloads into memory. A producer whose required baseline material exceeds the configured bounds MUST fail closed rather than omit material, allocate the entire oversized snapshot first, or silently increase limits.
+The v4 and v5 manifests MUST contain `baseline_sha256`, the SHA-256 of `polis/polis-baseline.tar`. The baseline member MUST also be covered by `polis/polis-checksums.sha256`. Its uncompressed member size is capped at 32 MiB; the existing 64 MiB archive and aggregate-uncompressed caps remain in force. The producer MUST determine that the projected canonical TAR exceeds no baseline-member bound before loading full object payloads into memory. A producer whose required baseline material exceeds the configured bounds MUST fail closed rather than omit material, allocate the entire oversized snapshot first, or silently increase limits.
 
 A policy hash mismatch MUST fail before an artifact is accepted. The canonical policy bytes remain embedded in `polis/polis-policy.json`. Candidate packages MUST be verified through the canonical package verifier before publication.
 
@@ -181,17 +181,25 @@ Change Contract schemas v1-v3 are decode-compatible but invalid producer input.
 
 Temporary target-tree construction and embedded-baseline construction MUST keep temporary index/object writes outside the target repository's persistent Git object database.
 
+### 7.2 Consumer-deferred project gates and Evidence v3
+
+`polis plan` and `polis build` accept repeatable `--defer-gate <id>` options. Planning remains read-only and uses the same compiled execution plan as build. IDs MUST be enabled project gates, MUST be unique, and MUST use the canonical project-gate order. Unknown, disabled, duplicate, and invalid deferrals MUST fail before project validation commands run. A producer-executed gate MUST NOT depend directly or transitively on a deferred prerequisite; a deferred gate may depend on a gate that the producer executes.
+
+A producer MUST skip each deferred gate's command and any gate-specific side effect, including deleting or replacing coverage reports. Evidence MUST use Evidence v3, include a complete `validation_configured` inventory with an explicit `deferred_gates` array, and record each deferred gate as `DEFERRED` with the stable reason `deferred to consumer`. Deferred is distinct from both `PASS` and `NOT_APPLICABLE`. Formats v2-v4 retain their historical Evidence v2 decoding and validation semantics; format v5 selects Evidence v3.
+
+Package verification MUST authenticate the package members and validate the complete policy/evidence trace, including the enabled deferred inventory and matching `DEFERRED` events. A consumer MUST compile the packaged policy with an empty deferral set and execute every enabled gate during both `preflight` and `apply`. A failing or blocked consumer gate MUST prevent real apply mutation. Text and JSON reports from plan, build, verify, inspect, preflight, and apply MUST show deferred gates and whether consumer validation is required; successful consumer reports MUST identify consumer validation as `PASS`.
+
 ## 8. Reader and consumer compatibility
 
-`verify` and `inspect` remain capable of validating historical package/contract schemas already supported by V5 when those artifacts are otherwise valid. Formats v2/v3 keep their historical local-object-database baseline behavior; format v4 adds authenticated embedded baseline proof and does not redefine older package semantics.
+`verify` and `inspect` remain capable of validating historical package/contract schemas already supported by V5 when those artifacts are otherwise valid. Formats v2/v3 keep their historical local-object-database baseline behavior; format v4 adds authenticated embedded baseline proof while retaining Evidence v2 semantics, and format v5 adds Evidence v3 deferred-gate semantics without redefining older package behavior.
 
-For locked schema-v4 Change Contracts, package verification MUST prove that the packaged Project Policy SHA-256 equals `baseline_lock.policy_sha256`. For package format v4 it MUST additionally validate the embedded baseline digest, canonical object inventory, Git object identities, complete locked tree/blob closure, and locked base commit/tree relationship before consumer admission. Consumer `preflight` and `apply` therefore MUST NOT require `.polis/policy.json` in the target repository.
+For locked schema-v4 Change Contracts, package verification MUST prove that the packaged Project Policy SHA-256 equals `baseline_lock.policy_sha256`. For package formats v4 and v5 it MUST additionally validate the embedded baseline digest, canonical object inventory, Git object identities, complete locked tree/blob closure, and locked base commit/tree relationship before consumer admission. Consumer `preflight` and `apply` therefore MUST NOT require `.polis/policy.json` in the target repository.
 
 At consumer boundaries, `preflight` and `apply` execute validation with the packaged effective policy, validate deterministic target-tree identity and scope, and perform fail-closed patch checks. The consumer baseline mode is explicit and defaults to `strict`:
 
 - `strict` requires consumer `HEAD` to equal the artifact/locked base commit exactly and preserves the historical exact-baseline behavior. Embedded proof MUST NOT relax this equality requirement;
 - `compatible` permits a different clean consumer `HEAD` only when the artifact base is locally available and provably an ancestor of that `HEAD`, the exact payload applies cleanly to the observed consumer tree, and complete isolated target validation passes. Embedded proof MUST NOT substitute for the consumer ancestry requirement;
-- `permissive` may admit a clean consumer `HEAD` whose ancestry from the artifact base cannot be proven. Required development proof MUST use a locally resolvable locked baseline when available, otherwise a valid format-v4 embedded baseline, and only if neither source can establish the proof may the caller explicitly authorize `--allow-missing-baseline-proof`. A non-ancestral admission MUST remain visibly reported.
+- `permissive` may admit a clean consumer `HEAD` whose ancestry from the artifact base cannot be proven. Required development proof MUST use a locally resolvable locked baseline when available, otherwise a valid format-v4 or v5 embedded baseline, and only if neither source can establish the proof may the caller explicitly authorize `--allow-missing-baseline-proof`. A non-ancestral admission MUST remain visibly reported.
 
 Baseline proof source resolution is therefore `local -> embedded -> explicitly overridden`. A successful embedded replay carries proof and MUST NOT be reported as an override or reduced-safety execution.
 
@@ -259,20 +267,20 @@ Every requirement MUST be covered by at least one acceptance criterion, every ac
 
 V6 preserves the following contracts unless explicitly superseded above:
 
-- exact reader compatibility for historical package formats v2/v3; new builds use format v4 with the additional authenticated baseline member;
+- exact reader compatibility for historical package formats v2/v3/v4; new builds use format v5 with the authenticated baseline member and Evidence v3;
 - Project Policy schema v3 gate registry, its backward-compatible `validation_level` reinforcement setting, and additive `depends_on` dependency declarations;
 - Change Contract schema v4 structure;
-- Evidence v2 package member, digest, and bounded-output contract; V6 executions additionally emit `validation_configured` with the effective level and complete project-gate inventory;
+- Evidence v2 package member, digest, and bounded-output contract for formats v2-v4; format v5 Evidence v3 adds the explicit deferred-gate inventory and `DEFERRED` terminal status while retaining bounded output;
 - coverage adapters and strict `>` threshold semantics;
 - bounded stdout/stderr retention and full-stream digests;
 - direct argv execution and declared environments;
 - detached Ed25519 signature model;
 - explicit consumer baseline-compatibility admission with `strict` default and deterministic exact target-tree validation for the admitted consumer base;
 - transactional apply preserving HEAD and the real index;
-- existing package/member resource limits, with the additional 32 MiB v4 embedded-baseline member limit while the 64 MiB archive and aggregate caps remain unchanged.
+- existing package/member resource limits, with the 32 MiB embedded-baseline member limit for v4/v5 while the 64 MiB archive and aggregate caps remain unchanged.
 
 ## 13. Major-version rationale
 
 V6 remains a semantic major because producer operations that were valid in V5 become invalid: a caller cannot create a new artifact directly from Change Contract schema v2 or unlocked strict schema v3. The required `polis start` lock and development proof are part of the producer contract.
 
-This V6 refinement introduces package format v4 for new builds without changing the Project Policy, Change Contract, or Evidence schema versions. Historical v2/v3 package readers remain part of the supported compatibility contract.
+This V6 refinement introduces package format v5 and Evidence v3 for new builds without changing the Project Policy or Change Contract schema versions. Formats v2-v4 retain their original Evidence v2 semantics and remain part of the supported reader compatibility contract.
