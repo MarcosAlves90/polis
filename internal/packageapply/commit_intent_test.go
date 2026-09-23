@@ -39,6 +39,17 @@ func TestApplyAutoCommitsExactArtifactIntent(t *testing.T) {
 	message := "Feature: keep this exact message\n\nsecond line with spaces  \n"
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
 	configureCommitTestIdentity(t, repo)
+	pkg, err := packageverify.Load(artifact)
+	if err != nil {
+		t.Fatalf("verify built artifact: %v", err)
+	}
+	inspection, err := packageverify.Inspect(artifact)
+	if err != nil {
+		t.Fatalf("inspect built artifact: %v", err)
+	}
+	if pkg.Change.Commit == nil || pkg.Change.Commit.Message != message || inspection.Commit == nil || inspection.Commit.Message != message {
+		t.Fatalf("verified/inspected commit intent differs from start input: package=%+v inspection=%+v", pkg.Change.Commit, inspection.Commit)
+	}
 	parent := git(t, repo, "rev-parse", "HEAD")
 	installCommitTripwires(t, repo)
 
@@ -192,6 +203,101 @@ func TestApplyCommitIntentDefaultModeDoesNotCommit(t *testing.T) {
 	}
 }
 
+func TestApplyExplicitNoneModeDoesNotCommit(t *testing.T) {
+	message := "feat(apply): remain apply only when mode none is explicit\n"
+	repo, artifact, _ := repoWithCommitArtifact(t, message)
+	headBefore := git(t, repo, "rev-parse", "HEAD")
+
+	result, err := ApplyWithOptions(context.Background(), artifact, repo, Options{BaselineMode: BaselineModeStrict, CommitMode: CommitModeNone})
+	if err != nil {
+		t.Fatalf("apply in explicit none mode: %v", err)
+	}
+	if result.Committed || result.CommitSHA != "" {
+		t.Fatalf("explicit none result=%+v", result)
+	}
+	if got := git(t, repo, "rev-parse", "HEAD"); got != headBefore {
+		t.Fatalf("explicit none moved HEAD: got %s want %s", got, headBefore)
+	}
+	if got := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); got == "" {
+		t.Fatal("explicit none did not leave the applied payload in the worktree")
+	}
+}
+
+func TestApplyCompatibleCommitUsesValidatedConsumerHeadAsParent(t *testing.T) {
+	message := "feat(apply): use compatible consumer head as parent"
+	repo, artifact, _ := repoWithCommitArtifact(t, message)
+	configureCommitTestIdentity(t, repo)
+	consumerHead := commitFile(t, repo, "consumer.txt", "consumer-only\n", "consumer descendant")
+
+	result, err := ApplyWithOptions(context.Background(), artifact, repo, Options{BaselineMode: BaselineModeCompatible, CommitMode: CommitModeAuto})
+	if err != nil {
+		t.Fatalf("compatible commit apply: %v", err)
+	}
+	if result.BaselineMode != BaselineModeCompatible || result.ConsumerBaseCommit != consumerHead || !result.Committed {
+		t.Fatalf("compatible result=%+v want consumer base %s", result, consumerHead)
+	}
+	if got := git(t, repo, "show", "-s", "--format=%P", result.CommitSHA); got != consumerHead {
+		t.Fatalf("compatible commit parent=%s want validated consumer HEAD %s", got, consumerHead)
+	}
+	if got := git(t, repo, "rev-parse", result.CommitSHA+"^{tree}"); got != result.TargetTree {
+		t.Fatalf("compatible commit tree=%s want validated consumer target %s", got, result.TargetTree)
+	}
+	if got := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); got != "" {
+		t.Fatalf("compatible commit left worktree changes: %q", got)
+	}
+}
+
+func TestApplyPermissiveCommitUsesValidatedConsumerHeadAsParent(t *testing.T) {
+	message := "feat(apply): use permissive consumer head as parent"
+	producer, artifact, _ := repoWithCommitArtifact(t, message)
+	producerBase := git(t, producer, "rev-parse", "HEAD")
+	consumer := independentConsumerFromRepo(t, producer)
+	consumerHead := git(t, consumer, "rev-parse", "HEAD")
+	configureCommitTestIdentity(t, consumer)
+
+	result, err := ApplyWithOptions(context.Background(), artifact, consumer, Options{BaselineMode: BaselineModePermissive, CommitMode: CommitModeAuto})
+	if err != nil {
+		t.Fatalf("permissive commit apply: %v", err)
+	}
+	if result.BaselineMode != BaselineModePermissive || result.ConsumerBaseCommit != consumerHead || !result.Committed {
+		t.Fatalf("permissive result=%+v want consumer base %s", result, consumerHead)
+	}
+	if got := git(t, consumer, "show", "-s", "--format=%P", result.CommitSHA); got != consumerHead {
+		t.Fatalf("permissive commit parent=%s want validated consumer HEAD %s", got, consumerHead)
+	}
+	if got := git(t, consumer, "rev-parse", result.CommitSHA+"^{tree}"); got != result.TargetTree {
+		t.Fatalf("permissive commit tree=%s want validated consumer target %s", got, result.TargetTree)
+	}
+	if got := git(t, consumer, "status", "--porcelain=v1", "--untracked-files=all"); got != "" {
+		t.Fatalf("permissive commit left worktree changes: %q", got)
+	}
+	assertCommitMissing(t, consumer, producerBase)
+}
+
+func TestApplyAutoLeavesRemoteRefsUnchanged(t *testing.T) {
+	message := "feat(apply): leave remote refs untouched"
+	repo, artifact, _ := repoWithCommitArtifact(t, message)
+	configureCommitTestIdentity(t, repo)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, remote, "init", "--bare", "-q")
+	git(t, repo, "remote", "add", "origin", remote)
+	git(t, repo, "push", "origin", "HEAD:refs/heads/polis-sentinel")
+	before := git(t, remote, "for-each-ref", "--format=%(refname) %(objectname)")
+	if before == "" {
+		t.Fatal("remote sentinel ref was not created")
+	}
+
+	if _, err := ApplyWithOptions(context.Background(), artifact, repo, Options{BaselineMode: BaselineModeStrict, CommitMode: CommitModeAuto}); err != nil {
+		t.Fatalf("apply with a configured remote: %v", err)
+	}
+	if after := git(t, remote, "for-each-ref", "--format=%(refname) %(objectname)"); after != before {
+		t.Fatalf("remote refs changed during local apply\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
 func TestApplyMissingGitIdentityDoesNotMutateRepository(t *testing.T) {
 	message := "Feature: missing committer identity fails safely\n"
 	repo, artifact, _ := repoWithCommitArtifact(t, message)
@@ -326,6 +432,7 @@ func TestApplyCommitConstructionAndFinalVerificationFailuresRollback(t *testing.
 	}
 	headBefore := git(t, repo, "rev-parse", "HEAD")
 	indexBefore := git(t, repo, "write-tree")
+	baseTree := git(t, repo, "rev-parse", "HEAD^{tree}")
 
 	for _, testCase := range []struct {
 		name       string
@@ -336,6 +443,15 @@ func TestApplyCommitConstructionAndFinalVerificationFailuresRollback(t *testing.
 			operations: artifactCommitOperations{
 				createObject: func(context.Context, string, string, string, string) (string, error) {
 					return "", errors.New("injected commit-tree failure")
+				},
+			},
+		},
+		{
+			name: "candidate tree mismatch",
+			operations: artifactCommitOperations{
+				createObject: func(ctx context.Context, repo, _, parent, message string) (string, error) {
+					out, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader([]byte(message)), "commit-tree", baseTree, "-p", parent, "-F", "-")
+					return strings.TrimSpace(string(out)), err
 				},
 			},
 		},

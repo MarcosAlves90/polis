@@ -54,6 +54,20 @@ func canonicalPolicyBytes(t *testing.T) []byte {
 
 func lockedCLIContract(t *testing.T, repo string, externalPolicy ...string) string {
 	t.Helper()
+	draftPath := cliDraftContract(t, repo, nil)
+	locked := filepath.Join(t.TempDir(), "cli-locked-v4.json")
+	startOptions := devstart.Options{Repo: repo, Contract: draftPath, Out: locked}
+	if len(externalPolicy) > 0 {
+		startOptions.Policy = externalPolicy[0]
+	}
+	if _, err := devstart.Start(context.Background(), startOptions); err != nil {
+		t.Fatalf("polis start CLI fixture: %v", err)
+	}
+	return locked
+}
+
+func cliDraftContract(t *testing.T, repo string, commitMessage *string) string {
+	t.Helper()
 	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
 	pass := spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}
 	regression := spec.CommandSpec{Argv: []string{"go", "test", "-p=1", "./...", "-run", "TestAdd"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
@@ -73,23 +87,21 @@ func lockedCLIContract(t *testing.T, repo string, externalPolicy ...string) stri
 		},
 		Behavior: pass, Affected: pass, Regression: spec.RegressionContract{Mode: spec.RegressionModeGreenGreen, Command: &regression},
 	}
+	draftName := "cli-draft-v3.json"
+	if commitMessage != nil {
+		draft.SchemaVersion = spec.CommitIntentDraftChangeContractSchemaVersion
+		draft.Commit = &spec.CommitMetadata{Message: *commitMessage}
+		draftName = "cli-draft-v5.json"
+	}
 	raw, err := json.Marshal(draft)
 	if err != nil {
 		t.Fatal(err)
 	}
-	draftPath := filepath.Join(t.TempDir(), "cli-draft-v3.json")
+	draftPath := filepath.Join(t.TempDir(), draftName)
 	if err := os.WriteFile(draftPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	locked := filepath.Join(t.TempDir(), "cli-locked-v4.json")
-	startOptions := devstart.Options{Repo: repo, Contract: draftPath, Out: locked}
-	if len(externalPolicy) > 0 {
-		startOptions.Policy = externalPolicy[0]
-	}
-	if _, err := devstart.Start(context.Background(), startOptions); err != nil {
-		t.Fatalf("polis start CLI fixture: %v", err)
-	}
-	return locked
+	return draftPath
 }
 
 func makeValidPackage(t *testing.T) string {
@@ -581,6 +593,84 @@ func TestRunApplyAppliesBuiltPackage(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(repo, "app.txt")); string(b) != "changed\n" {
 		t.Fatalf("app.txt=%q", b)
 	}
+}
+
+func TestRunApplyAutoCommitsArtifactIntentEndToEnd(t *testing.T) {
+	repo := makeBuildRepo(t)
+	message := "feat(apply): commit the validated artifact tree\n\nsecond line with preserved spaces  \n"
+	draft := cliDraftContract(t, repo, &message)
+	locked := filepath.Join(t.TempDir(), "cli-locked-v6.json")
+	var startOut, startErr bytes.Buffer
+	if code := run([]string{"start", "--repo", repo, "--contract", draft, "--out", locked}, &startOut, &startErr); code != exitPass {
+		t.Fatalf("start code=%d stderr=%s", code, startErr.String())
+	}
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(t.TempDir(), "out")
+	built := runCLIJSON(t, "build", "--repo", repo, "--project", "polis", "--change", "artifact-commit-e2e", "--contract", locked, "--defer-gate", "coverage", "--out", outDir, "--format", "json")
+	artifact, ok := built["artifact"].(string)
+	if !ok || artifact == "" {
+		t.Fatalf("build output has no artifact path: %v", built)
+	}
+	if output, err := exec.Command("git", "-C", repo, "restore", "--", "app.txt").CombinedOutput(); err != nil {
+		t.Fatalf("restore producer worktree: %v\n%s", err, output)
+	}
+	verified := runCLIJSON(t, "verify", "--format", "json", artifact)
+	if verified["status"] != "PASS" {
+		t.Fatalf("verify result=%v", verified)
+	}
+	inspection := runCLIJSON(t, "inspect", "--format", "json", artifact)
+	commitIntent, ok := inspection["commit"].(map[string]any)
+	if !ok || commitIntent["message"] != message {
+		t.Fatalf("inspect commit intent=%v want exact message %q", inspection["commit"], message)
+	}
+	if output, err := exec.Command("git", "-C", repo, "config", "user.name", "POLIS CLI Consumer").CombinedOutput(); err != nil {
+		t.Fatalf("configure consumer name: %v\n%s", err, output)
+	}
+	if output, err := exec.Command("git", "-C", repo, "config", "user.email", "polis-cli@example.invalid").CombinedOutput(); err != nil {
+		t.Fatalf("configure consumer email: %v\n%s", err, output)
+	}
+	parent := cliGit(t, repo, "rev-parse", "HEAD")
+	targetTree, ok := built["target_tree"].(string)
+	if !ok || targetTree == "" {
+		t.Fatalf("build output has no target tree: %v", built)
+	}
+	apply := runCLIJSON(t, "apply", "--repo", repo, "--commit-mode", "auto", "--format", "json", artifact)
+	commitSHA, ok := apply["commit_sha"].(string)
+	if !ok || commitSHA == "" || apply["committed"] != true || apply["commit_message"] != message {
+		t.Fatalf("apply commit result=%v", apply)
+	}
+	if got := cliGit(t, repo, "rev-parse", "HEAD"); got != commitSHA {
+		t.Fatalf("HEAD=%s want commit_sha %s", got, commitSHA)
+	}
+	if got := cliGit(t, repo, "show", "-s", "--format=%P", "HEAD"); got != parent {
+		t.Fatalf("commit parent=%s want validated consumer HEAD %s", got, parent)
+	}
+	if got := cliGit(t, repo, "rev-parse", "HEAD^{tree}"); got != targetTree {
+		t.Fatalf("commit tree=%s want validated target tree %s", got, targetTree)
+	}
+	commitObject, err := exec.Command("git", "-C", repo, "cat-file", "commit", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("read created commit: %v", err)
+	}
+	separator := bytes.Index(commitObject, []byte("\n\n"))
+	if separator < 0 || !bytes.Equal(commitObject[separator+2:], []byte(message)) {
+		t.Fatalf("commit message bytes=%q want exact %q", commitObject[separator+2:], message)
+	}
+	if status := cliGit(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); status != "" {
+		t.Fatalf("successful auto commit left worktree changes: %q", status)
+	}
+}
+
+func cliGit(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func TestRunApplyRequiresArtifact(t *testing.T) {
