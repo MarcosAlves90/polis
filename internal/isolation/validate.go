@@ -9,6 +9,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/changeexec"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
+	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -23,6 +24,8 @@ type Validation struct {
 	RegressionPatch       []byte
 	Change                spec.ChangeContract
 	Policy                spec.Policy
+	ExecutionPlan         *policyplan.Plan
+	PolicyResult          *policyexec.Result
 	Evidence              io.Writer
 	RedWorktreePattern    string
 	TargetWorktreePattern string
@@ -153,7 +156,15 @@ func validateTarget(ctx context.Context, validation Validation, redProof map[str
 	if err := changeexec.ExecuteTarget(validation.Change, worktree, validation.Evidence); err != nil {
 		return err
 	}
-	result := policyexec.Execute(validation.Policy, worktree, validation.Evidence)
+	var result policyexec.Result
+	if validation.ExecutionPlan != nil {
+		result = policyexec.ExecutePlan(*validation.ExecutionPlan, worktree, validation.Evidence)
+	} else {
+		result = policyexec.Execute(validation.Policy, worktree, validation.Evidence)
+	}
+	if validation.PolicyResult != nil {
+		*validation.PolicyResult = result
+	}
 	if result.Overall != spec.StatusPass {
 		return fmt.Errorf("%s %s", validation.PolicyFailureLabel, result.Overall)
 	}

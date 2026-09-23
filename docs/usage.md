@@ -46,14 +46,14 @@ baseline mode defaults to `strict`:
   pass;
 - `permissive` also permits non-descendant history. Required locked development
   proof uses the local baseline when available, otherwise the authenticated
-  format-v4 embedded baseline. It emits an explicit warning when ancestry is not
+  format-v4/v5 embedded baseline. It emits an explicit warning when ancestry is not
   proven.
 
-New format-v4 artifacts carry `polis/polis-baseline.tar`, so permissive consumption
+New format-v5 artifacts carry `polis/polis-baseline.tar`, so permissive consumption
 can replay locked development proof even when the consumer object database does
 not contain the producer base commit. Valid embedded proof is not an override and
 does not reduce guarantees.
-The embedded baseline carries the locked commit and complete tree/blob closure, not refs or parent history. `polis build` replays the locked baseline proof from that exact embedded state, so a baseline command that requires unavailable history is rejected during build rather than producing a non-portable v4 artifact.
+The embedded baseline carries the locked commit and complete tree/blob closure, not refs or parent history. `polis build` replays the locked baseline proof from that exact embedded state, so a baseline command that requires unavailable history is rejected during build rather than producing a non-portable v5 artifact.
 
 For historical artifacts without embedded baseline proof,
 `--allow-missing-baseline-proof` may be supplied only with `permissive`. It must be
@@ -99,14 +99,18 @@ executes a deterministic topological order.
 
 `polis plan` is read-only. It reports the policy digest, commands, enabled and
 disabled gates, dependency edges, execution order, mandatory invariants, and
-the guarantees provided or absent by the effective policy.
+the guarantees provided or absent by the effective policy. Repeat
+`--defer-gate <id>` to preview transferring enabled gate validation to the
+consumer. A producer-executed gate cannot depend directly or transitively on a
+deferred gate.
 
 ## V6 contract summary
 
-- New builds use package format v4 with eight regular members under `polis/`, including the authenticated `polis/polis-baseline.tar`; valid historical v2/v3 seven-member artifacts remain readable.
+- New builds use package format v5 with eight regular members under `polis/`, including the authenticated `polis/polis-baseline.tar`; valid historical v2/v3 seven-member and v4 eight-member artifacts remain readable.
 - Project Policy uses schema v3 with command environments and gate configuration.
 - New builds require locked Change Contract schema v4 from `polis start`.
-- Evidence v2 records bounded-output counts and digests, not raw streams.
+- Format v5 uses Evidence v3 to record deferred gates as `DEFERRED`; formats v2-v4 retain Evidence v2 semantics. Both use bounded-output counts and digests, not raw streams.
+- `polis build --defer-gate <id>` may repeat the option. Deferred gates are skipped by the producer and run with the packaged policy during consumer `preflight` and `apply`.
 - Detached Ed25519 signatures authenticate exact package bytes.
 - Coverage adapters are Go coverprofile, LCOV, and Cobertura.
 - Strict consumer mode keeps exact Git baseline identity; compatible retains ancestry proof; permissive can source locked development proof from local or embedded baseline state while retaining deterministic exact consumer target-tree validation. Missing proof can be waived only through the explicit permissive-only override.

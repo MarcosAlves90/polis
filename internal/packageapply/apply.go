@@ -12,6 +12,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/isolation"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -22,21 +23,26 @@ var (
 )
 
 type Result struct {
-	Project               string
-	Change                string
-	TargetTree            string
-	ValidationLevel       string
-	EnabledGates          []string
-	DisabledGates         []string
-	EvidencePath          string
-	BaselineMode          BaselineMode
-	BaselineSource        BaselineSource
-	BaselineAncestry      BaselineAncestry
-	ConsumerBaseCommit    string
-	BaselineCompatibility string
-	OverrideActive        bool
-	BypassedGuarantees    []string
-	Warnings              []string
+	Project                    string
+	Change                     string
+	TargetTree                 string
+	ValidationLevel            string
+	EnabledGates               []string
+	DisabledGates              []string
+	ProducerDeferredGates      []string
+	OutstandingDeferredGates   []string
+	ConsumerValidationRequired bool
+	ConsumerValidationStatus   spec.Status
+	ConsumerGateStatuses       map[string]spec.Status
+	EvidencePath               string
+	BaselineMode               BaselineMode
+	BaselineSource             BaselineSource
+	BaselineAncestry           BaselineAncestry
+	ConsumerBaseCommit         string
+	BaselineCompatibility      string
+	OverrideActive             bool
+	BypassedGuarantees         []string
+	Warnings                   []string
 }
 
 const (
@@ -72,6 +78,7 @@ func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Optio
 		return Result{}, fmt.Errorf("create temporary evidence: %w", err)
 	}
 	evidencePath := evidenceFile.Name()
+	var consumerPolicyResult policyexec.Result
 
 	if err := isolation.Validate(ctx, isolation.Validation{
 		BaselineRepo:          baselineRepo,
@@ -84,6 +91,7 @@ func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Optio
 		RegressionPatch:       pkg.RegressionPatch,
 		Change:                pkg.Change,
 		Policy:                pkg.Policy,
+		PolicyResult:          &consumerPolicyResult,
 		Evidence:              evidenceFile,
 		RedWorktreePattern:    "polis-apply-red-*",
 		TargetWorktreePattern: "polis-apply-worktree-*",
@@ -127,7 +135,7 @@ func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Optio
 		}
 		return Result{}, fmt.Errorf("post-apply target_tree mismatch: got %s want %s; patch reversed", gotTree, assessment.TargetTree)
 	}
-	return resultForPackage(pkg, gotTree, assessment), nil
+	return resultForPackage(pkg, gotTree, assessment, consumerPolicyResult), nil
 }
 
 func Preflight(ctx context.Context, artifact, repoPath string) (Result, error) {
@@ -152,6 +160,7 @@ func PreflightWithOptions(ctx context.Context, artifact, repoPath string, opts O
 		return Result{}, err
 	}
 	defer cleanupBaseline()
+	var consumerPolicyResult policyexec.Result
 	if err := isolation.Validate(ctx, isolation.Validation{
 		BaselineRepo:          baselineRepo,
 		BaselineCommit:        pkg.Manifest.BaseCommit,
@@ -163,6 +172,7 @@ func PreflightWithOptions(ctx context.Context, artifact, repoPath string, opts O
 		RegressionPatch:       pkg.RegressionPatch,
 		Change:                pkg.Change,
 		Policy:                pkg.Policy,
+		PolicyResult:          &consumerPolicyResult,
 		Evidence:              io.Discard,
 		RedWorktreePattern:    "polis-preflight-red-*",
 		TargetWorktreePattern: "polis-preflight-worktree-*",
@@ -179,27 +189,50 @@ func PreflightWithOptions(ctx context.Context, artifact, repoPath string, opts O
 	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", gitApplyCheck, "-"); err != nil {
 		return Result{}, fmt.Errorf("%w: real git apply --check failed: %v", ErrValidationFailed, err)
 	}
-	return resultForPackage(pkg, assessment.TargetTree, assessment), nil
+	return resultForPackage(pkg, assessment.TargetTree, assessment, consumerPolicyResult), nil
 }
 
-func resultForPackage(pkg packageverify.Package, targetTree string, assessment baselineAssessment) Result {
+func resultForPackage(pkg packageverify.Package, targetTree string, assessment baselineAssessment, policyResult policyexec.Result) Result {
 	summary := pkg.Policy.ValidationSummary()
 	return Result{
-		Project:               pkg.Manifest.Project,
-		Change:                pkg.Manifest.Change,
-		TargetTree:            targetTree,
-		ValidationLevel:       summary.Level,
-		EnabledGates:          append([]string{}, summary.EnabledGates...),
-		DisabledGates:         append([]string{}, summary.DisabledGates...),
-		BaselineMode:          assessment.Mode,
-		BaselineSource:        assessment.Source,
-		BaselineAncestry:      assessment.Ancestry,
-		ConsumerBaseCommit:    assessment.ConsumerHead,
-		BaselineCompatibility: baselineCompatibilitySummary(assessment),
-		OverrideActive:        assessment.OverrideActive,
-		BypassedGuarantees:    append([]string{}, assessment.BypassedGuarantees...),
-		Warnings:              append([]string{}, assessment.Warnings...),
+		Project:                    pkg.Manifest.Project,
+		Change:                     pkg.Manifest.Change,
+		TargetTree:                 targetTree,
+		ValidationLevel:            summary.Level,
+		EnabledGates:               append([]string{}, summary.EnabledGates...),
+		DisabledGates:              append([]string{}, summary.DisabledGates...),
+		ProducerDeferredGates:      append([]string{}, pkg.Result.DeferredGates...),
+		OutstandingDeferredGates:   outstandingDeferredGates(pkg.Result.DeferredGates, policyResult.Gates),
+		ConsumerValidationRequired: pkg.Result.ConsumerValidationRequired,
+		ConsumerValidationStatus:   policyResult.Overall,
+		ConsumerGateStatuses:       cloneGateStatuses(policyResult.Gates),
+		BaselineMode:               assessment.Mode,
+		BaselineSource:             assessment.Source,
+		BaselineAncestry:           assessment.Ancestry,
+		ConsumerBaseCommit:         assessment.ConsumerHead,
+		BaselineCompatibility:      baselineCompatibilitySummary(assessment),
+		OverrideActive:             assessment.OverrideActive,
+		BypassedGuarantees:         append([]string{}, assessment.BypassedGuarantees...),
+		Warnings:                   append([]string{}, assessment.Warnings...),
 	}
+}
+
+func outstandingDeferredGates(deferred []string, consumerStatuses map[string]spec.Status) []string {
+	outstanding := make([]string, 0, len(deferred))
+	for _, gate := range deferred {
+		if consumerStatuses[gate] != spec.StatusPass {
+			outstanding = append(outstanding, gate)
+		}
+	}
+	return outstanding
+}
+
+func cloneGateStatuses(gates map[string]spec.Status) map[string]spec.Status {
+	cloned := make(map[string]spec.Status, len(gates))
+	for gate, status := range gates {
+		cloned[gate] = status
+	}
+	return cloned
 }
 
 func baselineCompatibilitySummary(assessment baselineAssessment) string {

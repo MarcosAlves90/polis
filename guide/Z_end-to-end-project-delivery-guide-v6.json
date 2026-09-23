@@ -89,12 +89,12 @@
     "inventing language-specific init commands without repository evidence"
   ],
   "v6_contracts": {
-    "package_format": 3,
+    "package_format": 5,
     "policy_schema": 3,
     "change_contract_schema": "schema v4 locked is mandatory for new V6 builds; schemas v1-v3 are read-compatible migration inputs only",
-    "evidence_contract": 2,
+    "evidence_contract": 3,
     "signature_schema": 1,
-    "canonical_member_count": 7,
+    "canonical_member_count": 8,
     "migration_read_compatibility": [
       "package format v2",
       "Project Policy v2",

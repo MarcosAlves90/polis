@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -133,6 +134,72 @@ func TestCompileMinimalDisablesAllProjectGates(t *testing.T) {
 func TestCompileRejectsInvalidPolicy(t *testing.T) {
 	if _, err := Compile(spec.Policy{SchemaVersion: spec.PolicySchemaVersion}); err == nil || !strings.Contains(err.Error(), "compile execution plan") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestCompileWithOptionsDefersAndCanonicalizesEnabledGates(t *testing.T) {
+	policy := planPolicy(spec.ValidationLevelStrict)
+	command := policy.Gates[0].Command
+	policy.Gates[5] = spec.GatePolicy{ID: "smoke", Mode: spec.GateModeCommand, Command: command}
+
+	plan, err := CompileWithOptions(policy, CompileOptions{DeferredGates: []string{"smoke", "coverage"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"coverage", "smoke"}; !reflect.DeepEqual(plan.DeferredGates, want) {
+		t.Fatalf("deferred gates=%v want=%v", plan.DeferredGates, want)
+	}
+	if !plan.ConsumerValidationRequired {
+		t.Fatal("plan did not require consumer validation")
+	}
+	if plan.Gates[0].ProducerAction != ProducerActionExecute || plan.Gates[0].ConsumerRequirement != ConsumerRequirementRequired {
+		t.Fatalf("producer gate responsibility=%+v", plan.Gates[0])
+	}
+	if plan.Gates[1].ProducerAction != ProducerActionDeferred || plan.Gates[1].ConsumerRequirement != ConsumerRequirementRequired {
+		t.Fatalf("deferred coverage responsibility=%+v", plan.Gates[1])
+	}
+	if plan.Gates[2].ProducerAction != ProducerActionNotApplicable || plan.Gates[2].ConsumerRequirement != ConsumerRequirementNotRequired {
+		t.Fatalf("disabled gate responsibility=%+v", plan.Gates[2])
+	}
+}
+
+func TestCompileWithOptionsRejectsInvalidDeferredGates(t *testing.T) {
+	policy := planPolicy(spec.ValidationLevelStrict)
+	cases := []struct {
+		name   string
+		gates  []string
+		policy spec.Policy
+	}{
+		{name: "unknown", gates: []string{"deploy"}, policy: policy},
+		{name: "non project invariant", gates: []string{"integrity"}, policy: policy},
+		{name: "duplicate", gates: []string{"coverage", "coverage"}, policy: policy},
+		{name: "not applicable", gates: []string{"lint"}, policy: policy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := CompileWithOptions(tc.policy, CompileOptions{DeferredGates: tc.gates}); err == nil {
+				t.Fatalf("invalid deferred gates accepted: %v", tc.gates)
+			}
+		})
+	}
+}
+
+func TestCompileWithOptionsRejectsDirectAndTransitiveDeferredPrerequisites(t *testing.T) {
+	policy := planPolicy(spec.ValidationLevelStrict)
+	policy.Gates[2] = spec.GatePolicy{ID: "lint", Mode: spec.GateModeCommand, Command: policy.Gates[0].Command, DependsOn: []string{"test.complete"}}
+	if _, err := CompileWithOptions(policy, CompileOptions{DeferredGates: []string{"test.complete"}}); err == nil {
+		t.Fatal("producer gate with direct deferred prerequisite was accepted")
+	}
+	policy = planPolicy(spec.ValidationLevelStrict)
+	if _, err := CompileWithOptions(policy, CompileOptions{DeferredGates: []string{"test.complete", "coverage"}}); err != nil {
+		t.Fatalf("dependent gates deferred together rejected: %v", err)
+	}
+	policy = planPolicy(spec.ValidationLevelStandard)
+	policy.Gates[2] = spec.GatePolicy{ID: "lint", Mode: spec.GateModeCommand, Command: policy.Gates[0].Command}
+	policy.Gates[3] = spec.GatePolicy{ID: "typecheck", Mode: spec.GateModeCommand, Command: policy.Gates[0].Command}
+	dependencies := map[string][]string{"lint": {"typecheck"}, "typecheck": {"coverage"}}
+	if err := validateDeferredDependencies(policy, []string{"lint"}, dependencies, map[string]struct{}{"coverage": {}}); err == nil {
+		t.Fatal("transitive deferred prerequisite was accepted")
 	}
 }
 

@@ -173,7 +173,7 @@ func admitPermissiveBaseline(pkg packageverify.Package, opts Options, assessment
 }
 
 func resolveMissingPermissiveBaseline(pkg packageverify.Package, opts Options, assessment *baselineAssessment) error {
-	if pkg.Manifest.FormatVersion == spec.FormatVersion && len(pkg.Baseline) != 0 {
+	if spec.FormatHasEmbeddedBaseline(pkg.Manifest.FormatVersion) && len(pkg.Baseline) != 0 {
 		assessment.Source = BaselineSourceEmbedded
 		return nil
 	}

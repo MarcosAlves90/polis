@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -379,6 +380,51 @@ func TestRunPlanReportsEffectiveExecutionPlan(t *testing.T) {
 	}
 }
 
+func TestRunPlanDeferralReportsResponsibilitiesInTextAndJSON(t *testing.T) {
+	repo := makeBuildRepo(t)
+	var out, errOut bytes.Buffer
+	if code := run([]string{"plan", "--repo", repo, "--defer-gate", "coverage", "--format", "json"}, &out, &errOut); code != exitPass {
+		t.Fatalf("json code=%d stderr=%s", code, errOut.String())
+	}
+	var plan policyplan.Plan
+	if err := json.Unmarshal(out.Bytes(), &plan); err != nil {
+		t.Fatalf("invalid plan JSON: %v\n%s", err, out.String())
+	}
+	if !plan.ConsumerValidationRequired || len(plan.DeferredGates) != 1 || plan.DeferredGates[0] != "coverage" || plan.Gates[1].ProducerAction != policyplan.ProducerActionDeferred || plan.Gates[1].ConsumerRequirement != policyplan.ConsumerRequirementRequired {
+		t.Fatalf("plan deferral=%+v gate=%+v", plan.DeferredGates, plan.Gates[1])
+	}
+	if !slices.Contains(plan.EnabledGates, "coverage") || !slices.Contains(plan.DisabledGates, "lint") {
+		t.Fatalf("deferred and disabled inventories collapsed: enabled=%v disabled=%v", plan.EnabledGates, plan.DisabledGates)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"plan", "--repo", repo, "--defer-gate", "test.complete", "--defer-gate", "coverage"}, &out, &errOut); code != exitPass {
+		t.Fatalf("multiple deferrals code=%d stderr=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "Deferred gates: test.complete, coverage") || !strings.Contains(out.String(), "producer_action=deferred") || !strings.Contains(out.String(), "consumer_requirement=required") {
+		t.Fatalf("text plan omitted responsibility details: %s", out.String())
+	}
+}
+
+func TestRunPlanRejectsInvalidDeferredGateFlags(t *testing.T) {
+	repo := makeBuildRepo(t)
+	for _, scenario := range []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"--defer-gate", "missing.gate"}, want: "unknown project gate"},
+		{args: []string{"--defer-gate", "coverage", "--defer-gate", "coverage"}, want: "more than once"},
+		{args: []string{"--defer-gate", "lint"}, want: "not applicable"},
+	} {
+		args := append([]string{"plan", "--repo", repo}, scenario.args...)
+		var out, errOut bytes.Buffer
+		if code := run(args, &out, &errOut); code != exitValidationFailed || !strings.Contains(errOut.String(), scenario.want) {
+			t.Fatalf("args=%v code=%d stderr=%s", scenario.args, code, errOut.String())
+		}
+	}
+}
+
 func TestRunPlanReportsExternalPolicySourceWithoutPath(t *testing.T) {
 	repo := makeBuildRepo(t)
 	policyPath := filepath.Join(t.TempDir(), "policy-v3.json")
@@ -459,16 +505,41 @@ func TestRunBuildCreatesPackage(t *testing.T) {
 	}
 	outDir := filepath.Join(t.TempDir(), "out")
 	var out, errOut bytes.Buffer
-	code := run([]string{"build", "--repo", repo, "--policy", policyPath, "--project", "gitrex", "--change", "cli-build", "--contract", contract, "--out", outDir}, &out, &errOut)
+	code := run([]string{"build", "--repo", repo, "--policy", policyPath, "--project", "gitrex", "--change", "cli-build", "--contract", contract, "--defer-gate", "coverage", "--out", outDir}, &out, &errOut)
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "POLIS BUILD: PASS") {
+	if !strings.Contains(out.String(), "POLIS BUILD: PASS") || !strings.Contains(out.String(), "Deferred gates: coverage") || !strings.Contains(out.String(), "Consumer validation required: true") || !strings.Contains(out.String(), "DEFERRED") {
 		t.Fatalf("stdout=%q", out.String())
 	}
 	entries, err := os.ReadDir(outDir)
 	if err != nil || len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), ".polis") {
 		t.Fatalf("entries=%v err=%v", entries, err)
+	}
+}
+
+func TestRunBuildDeferralTextAndJSONReporting(t *testing.T) {
+	repo := makeBuildRepo(t)
+	contract := lockedCLIContract(t, repo)
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(t.TempDir(), "out")
+	var out, errOut bytes.Buffer
+	args := []string{"build", "--repo", repo, "--project", "gitrex", "--change", "cli-defer", "--contract", contract, "--defer-gate", "coverage", "--format", "json", "--out", outDir}
+	if code := run(args, &out, &errOut); code != exitPass {
+		t.Fatalf("json code=%d stderr=%s", code, errOut.String())
+	}
+	var result struct {
+		DeferredGates              []string          `json:"deferred_gates"`
+		ConsumerValidationRequired bool              `json:"consumer_validation_required"`
+		ProducerGateStatuses       map[string]string `json:"producer_gate_statuses"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("invalid build JSON: %v\n%s", err, out.String())
+	}
+	if !result.ConsumerValidationRequired || len(result.DeferredGates) != 1 || result.DeferredGates[0] != "coverage" || result.ProducerGateStatuses["coverage"] != string(spec.StatusDeferred) {
+		t.Fatalf("build output=%+v", result)
 	}
 }
 
@@ -487,7 +558,7 @@ func TestRunApplyAppliesBuiltPackage(t *testing.T) {
 	}
 	outDir := filepath.Join(t.TempDir(), "out")
 	var buildOut, buildErr bytes.Buffer
-	if code := run([]string{"build", "--repo", repo, "--project", "gitrex", "--change", "cli-apply", "--contract", contract, "--out", outDir}, &buildOut, &buildErr); code != 0 {
+	if code := run([]string{"build", "--repo", repo, "--project", "gitrex", "--change", "cli-apply", "--contract", contract, "--defer-gate", "coverage", "--out", outDir}, &buildOut, &buildErr); code != 0 {
 		t.Fatalf("build code=%d stderr=%s", code, buildErr.String())
 	}
 	entries, err := os.ReadDir(outDir)
@@ -504,7 +575,7 @@ func TestRunApplyAppliesBuiltPackage(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "POLIS APPLY: PASS") || strings.Contains(out.String(), "Evidence:") {
+	if !strings.Contains(out.String(), "POLIS APPLY: PASS") || strings.Contains(out.String(), "Evidence:") || !strings.Contains(out.String(), "Producer deferred gates: coverage") || !strings.Contains(out.String(), "Outstanding deferred gates: none") || !strings.Contains(out.String(), "Consumer validation required: true") || !strings.Contains(out.String(), "Consumer validation status: PASS") {
 		t.Fatalf("stdout=%q", out.String())
 	}
 	if b, _ := os.ReadFile(filepath.Join(repo, "app.txt")); string(b) != "changed\n" {
@@ -681,11 +752,15 @@ func TestRunDoctorJSON(t *testing.T) {
 func TestRunV6TrustBoundaryCommands(t *testing.T) {
 	repo, built := buildV6CLIArtifact(t)
 
-	assertCLITextContains(t, []string{"inspect", built.Path}, "POLIS INSPECT: PASS", built.TargetTree)
-	assertJSONFields(t, runCLIJSON(t, "inspect", "--format", "json", built.Path), map[string]string{
+	assertCLITextContains(t, []string{"inspect", built.Path}, "POLIS INSPECT: PASS", built.TargetTree, "Deferred gates: coverage", "Consumer validation required: true")
+	inspection := runCLIJSON(t, "inspect", "--format", "json", built.Path)
+	assertJSONFields(t, inspection, map[string]string{
 		"project":     "polis",
 		"target_tree": built.TargetTree,
 	})
+	if deferred, ok := inspection["deferred_gates"].([]any); !ok || len(deferred) != 1 || deferred[0] != "coverage" || inspection["consumer_validation_required"] != true {
+		t.Fatalf("inspect deferral=%v consumer_required=%v", inspection["deferred_gates"], inspection["consumer_validation_required"])
+	}
 	verify := runCLIJSON(t, "verify", "--format", "json", built.Path)
 	assertJSONFields(t, verify, map[string]string{
 		"status": "PASS",
@@ -696,10 +771,30 @@ func TestRunV6TrustBoundaryCommands(t *testing.T) {
 	if gates, ok := verify["enabled_gates"].([]any); !ok || len(gates) != 2 {
 		t.Fatalf("verify enabled_gates=%v", verify["enabled_gates"])
 	}
-	assertJSONFields(t, runCLIJSON(t, "preflight", "--repo", repo, "--format", "json", built.Path), map[string]string{
+	if deferred, ok := verify["deferred_gates"].([]any); !ok || len(deferred) != 1 || deferred[0] != "coverage" || verify["consumer_validation_required"] != true {
+		t.Fatalf("verify deferral=%v consumer_required=%v", verify["deferred_gates"], verify["consumer_validation_required"])
+	}
+	assertCLITextContains(t, []string{"verify", built.Path}, "Deferred gates: coverage", "Consumer validation required: true")
+	preflight := runCLIJSON(t, "preflight", "--repo", repo, "--format", "json", built.Path)
+	assertJSONFields(t, preflight, map[string]string{
 		"status": "PASS",
 	})
+	producerDeferred, producerDeferredOK := preflight["producer_deferred_gates"].([]any)
+	outstandingDeferred, outstandingDeferredOK := preflight["outstanding_deferred_gates"].([]any)
+	preflightGateStatuses, gateStatusesOK := preflight["consumer_gate_statuses"].(map[string]any)
+	if preflight["consumer_validation_status"] != string(spec.StatusPass) || preflight["consumer_validation_required"] != true || !producerDeferredOK || len(producerDeferred) != 1 || producerDeferred[0] != "coverage" || !outstandingDeferredOK || len(outstandingDeferred) != 0 || !gateStatusesOK || preflightGateStatuses["coverage"] != string(spec.StatusPass) {
+		t.Fatalf("preflight consumer validation=%v", preflight)
+	}
+	assertCLITextContains(t, []string{"preflight", "--repo", repo, built.Path}, "Producer deferred gates: coverage", "Outstanding deferred gates: none", "Consumer validation status: PASS", "coverage:PASS")
 	assertFileContents(t, filepath.Join(repo, "app.txt"), "base\n")
+	apply := runCLIJSON(t, "apply", "--repo", repo, "--format", "json", built.Path)
+	consumerGateStatuses, ok := apply["consumer_gate_statuses"].(map[string]any)
+	producerDeferred, producerDeferredOK = apply["producer_deferred_gates"].([]any)
+	outstandingDeferred, outstandingDeferredOK = apply["outstanding_deferred_gates"].([]any)
+	if apply["consumer_validation_status"] != string(spec.StatusPass) || !ok || consumerGateStatuses["coverage"] != string(spec.StatusPass) || !producerDeferredOK || len(producerDeferred) != 1 || producerDeferred[0] != "coverage" || !outstandingDeferredOK || len(outstandingDeferred) != 0 {
+		t.Fatalf("apply consumer validation=%v", apply)
+	}
+	assertFileContents(t, filepath.Join(repo, "app.txt"), "changed\n")
 
 	privatePath, publicPath := writeCLIKeyPair(t)
 	signaturePath := filepath.Join(t.TempDir(), "artifact.polis.sig")
@@ -707,6 +802,21 @@ func TestRunV6TrustBoundaryCommands(t *testing.T) {
 		"status": "PASS",
 	})
 	assertCLITextContains(t, []string{"verify", "--signature", signaturePath, "--trusted-key", publicPath, built.Path}, "POLIS VERIFY: PASS")
+	artifactFile, err := os.OpenFile(built.Path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artifactFile.Write([]byte("tampered")); err != nil {
+		_ = artifactFile.Close()
+		t.Fatal(err)
+	}
+	if err := artifactFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var tamperOut, tamperErr bytes.Buffer
+	if code := run([]string{"verify", "--signature", signaturePath, "--trusted-key", publicPath, built.Path}, &tamperOut, &tamperErr); code != exitInvalidArtifact || !strings.Contains(tamperErr.String(), "signature") {
+		t.Fatalf("signed deferred artifact tampering code=%d stderr=%s", code, tamperErr.String())
+	}
 }
 
 func buildV6CLIArtifact(t *testing.T) (string, packagebuild.Result) {
@@ -716,7 +826,7 @@ func buildV6CLIArtifact(t *testing.T) (string, packagebuild.Result) {
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	built, err := packagebuild.Build(context.Background(), packagebuild.Options{Repo: repo, Project: "polis", Change: "v6-cli-contracts", Out: t.TempDir(), Contract: contract})
+	built, err := packagebuild.Build(context.Background(), packagebuild.Options{Repo: repo, Project: "polis", Change: "v6-cli-contracts", Out: t.TempDir(), Contract: contract, DeferredGates: []string{"coverage"}})
 	if err != nil {
 		t.Fatal(err)
 	}

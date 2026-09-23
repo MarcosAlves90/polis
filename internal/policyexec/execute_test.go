@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -77,7 +78,7 @@ func TestExecutePassAndEvidence(t *testing.T) {
 	if result.Overall != spec.StatusPass {
 		t.Fatalf("overall=%s", result.Overall)
 	}
-	events, err := spec.DecodeEvidence(evidence.Bytes())
+	events, err := spec.DecodeEvidenceVersion(evidence.Bytes(), spec.EvidenceVersionV3)
 	if err != nil {
 		t.Fatalf("evidence invalid: %v\n%s", err, evidence.String())
 	}
@@ -93,7 +94,7 @@ func TestExecuteRecordsEffectiveValidationConfiguration(t *testing.T) {
 	if result.Overall != spec.StatusPass {
 		t.Fatalf("overall=%s", result.Overall)
 	}
-	events, err := spec.DecodeEvidence(evidence.Bytes())
+	events, err := spec.DecodeEvidenceVersion(evidence.Bytes(), spec.EvidenceVersionV3)
 	if err != nil {
 		t.Fatalf("evidence invalid: %v\n%s", err, evidence.String())
 	}
@@ -174,15 +175,77 @@ func TestExecuteRecordsEmptyEnabledInventoryForMinimalPolicy(t *testing.T) {
 	if result.Overall != spec.StatusPass {
 		t.Fatalf("overall=%s evidence=%s", result.Overall, evidence.String())
 	}
-	if !strings.Contains(evidence.String(), `"enabled_gates":[]`) {
+	if !strings.Contains(evidence.String(), `"enabled_gates":[]`) || !strings.Contains(evidence.String(), `"deferred_gates":[]`) {
 		t.Fatalf("empty enabled inventory was omitted: %s", evidence.String())
 	}
-	events, err := spec.DecodeEvidence(evidence.Bytes())
+	events, err := spec.DecodeEvidenceVersion(evidence.Bytes(), spec.EvidenceVersionV3)
 	if err != nil {
 		t.Fatalf("minimal evidence invalid: %v", err)
 	}
 	if len(events) == 0 || events[0].Event != "validation_configured" || events[0].EnabledGates == nil {
 		t.Fatalf("configuration=%+v", events[0])
+	}
+}
+
+func TestExecutePlanDefersCommandWithoutRunningIt(t *testing.T) {
+	policy := testPolicy(t, "fail")
+	plan, err := policyplan.CompileWithOptions(policy, policyplan.CompileOptions{DeferredGates: []string{"test.complete", "coverage"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var evidence bytes.Buffer
+	result := ExecutePlan(plan, t.TempDir(), &evidence)
+	if result.Overall != spec.StatusPass || result.Gates["test.complete"] != spec.StatusDeferred || result.Gates["coverage"] != spec.StatusDeferred {
+		t.Fatalf("result=%+v evidence=%s", result, evidence.String())
+	}
+	if strings.Contains(evidence.String(), `"event":"command_finished","gate":"test.complete"`) || !strings.Contains(evidence.String(), `"gate":"test.complete","status":"DEFERRED","reason":"deferred to consumer"`) {
+		t.Fatalf("deferred command evidence=%s", evidence.String())
+	}
+	if _, err := spec.DecodeEvidenceVersion(evidence.Bytes(), spec.EvidenceVersionV3); err != nil {
+		t.Fatalf("deferred evidence invalid: %v\n%s", err, evidence.String())
+	}
+}
+
+func TestExecutePlanDoesNotHideFailureFromExecutingGate(t *testing.T) {
+	plan, err := policyplan.CompileWithOptions(testPolicy(t, "fail"), policyplan.CompileOptions{DeferredGates: []string{"coverage"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var evidence bytes.Buffer
+	result := ExecutePlan(plan, t.TempDir(), &evidence)
+	if result.Overall != spec.StatusFail || result.Gates["test.complete"] != spec.StatusFail || result.Gates["coverage"] != spec.StatusDeferred {
+		t.Fatalf("producer failure was hidden: result=%+v evidence=%s", result, evidence.String())
+	}
+	if !strings.Contains(evidence.String(), `"event":"command_finished","gate":"test.complete","status":"FAIL"`) {
+		t.Fatalf("executing failure was not recorded: %s", evidence.String())
+	}
+}
+
+func TestExecutePlanDefersCoverageWithoutTouchingReport(t *testing.T) {
+	policy := testPolicy(t, "pass")
+	root := t.TempDir()
+	report := filepath.Join(root, "coverage.out")
+	if err := os.WriteFile(report, []byte("existing report must remain"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := policyplan.CompileWithOptions(policy, policyplan.CompileOptions{DeferredGates: []string{"coverage"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var evidence bytes.Buffer
+	result := ExecutePlan(plan, root, &evidence)
+	if result.Overall != spec.StatusPass || result.Gates["coverage"] != spec.StatusDeferred || result.Gates["test.complete"] != spec.StatusPass {
+		t.Fatalf("result=%+v evidence=%s", result, evidence.String())
+	}
+	got, err := os.ReadFile(report)
+	if err != nil || string(got) != "existing report must remain" {
+		t.Fatalf("coverage report changed: contents=%q err=%v", got, err)
+	}
+	if strings.Contains(evidence.String(), `"event":"command_finished","gate":"coverage"`) || strings.Contains(evidence.String(), `"event":"coverage_measured"`) {
+		t.Fatalf("deferred coverage executed: %s", evidence.String())
+	}
+	if _, err := spec.DecodeEvidenceVersion(evidence.Bytes(), spec.EvidenceVersionV3); err != nil {
+		t.Fatalf("deferred coverage evidence invalid: %v\n%s", err, evidence.String())
 	}
 }
 
@@ -251,7 +314,7 @@ func TestExecuteCoverageUsesRuntimeLineMetric(t *testing.T) {
 	if !strings.Contains(evidence.String(), `"event":"coverage_measured"`) || !strings.Contains(evidence.String(), `"value_percent":100`) {
 		t.Fatalf("evidence=%s", evidence.String())
 	}
-	if _, err := spec.DecodeEvidence(evidence.Bytes()); err != nil {
+	if _, err := spec.DecodeEvidenceVersion(evidence.Bytes(), spec.EvidenceVersionV3); err != nil {
 		t.Fatalf("evidence invalid: %v\n%s", err, evidence.String())
 	}
 }

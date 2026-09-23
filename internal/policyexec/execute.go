@@ -22,21 +22,32 @@ type Result struct {
 }
 
 func Execute(policy spec.Policy, repoRoot string, evidence io.Writer) Result {
-	result := Result{Overall: spec.StatusPass, Gates: make(map[string]spec.Status, len(policy.Gates))}
 	plan, err := policyplan.Compile(policy)
 	if err != nil {
-		result.Overall = spec.StatusBlocked
-		return result
+		return Result{Overall: spec.StatusBlocked, Gates: make(map[string]spec.Status, len(policy.Gates))}
 	}
+	return ExecutePlan(plan, repoRoot, evidence)
+}
+
+func ExecutePlan(plan policyplan.Plan, repoRoot string, evidence io.Writer) Result {
+	result := Result{Overall: spec.StatusPass, Gates: make(map[string]spec.Status, len(plan.Gates))}
 	enc := json.NewEncoder(evidence)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(spec.EvidenceEvent{
 		Event: "validation_configured", Gate: "policy", ValidationLevel: plan.ValidationLevel,
 		EnabledGates: append([]string{}, plan.EnabledGates...), DisabledGates: append([]string{}, plan.DisabledGates...),
+		DeferredGates: append([]string{}, plan.DeferredGates...),
 	})
 	for _, gate := range plan.GatePolicies() {
 		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_started", Gate: gate.ID})
 		status := spec.StatusPass
+		if planGateDeferred(plan, gate.ID) {
+			status = spec.StatusDeferred
+			reason := spec.DeferredReasonToConsumer
+			_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: gate.ID, Status: status, Reason: &reason})
+			result.Gates[gate.ID] = status
+			continue
+		}
 		switch gate.Mode {
 		case spec.GateModeNotApplicable:
 			status = spec.StatusNotApplicable
@@ -53,6 +64,15 @@ func Execute(policy spec.Policy, repoRoot string, evidence io.Writer) Result {
 		result.Overall = combine(result.Overall, status)
 	}
 	return result
+}
+
+func planGateDeferred(plan policyplan.Plan, gateID string) bool {
+	for _, deferred := range plan.DeferredGates {
+		if deferred == gateID {
+			return true
+		}
+	}
+	return false
 }
 
 func executeCoverage(enc *json.Encoder, gate spec.GatePolicy, repoRoot string) spec.Status {

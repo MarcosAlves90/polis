@@ -131,6 +131,67 @@ func TestValidatePassEvidenceAcceptsAndChecksValidationConfiguration(t *testing.
 	}
 }
 
+func TestValidatePassEvidenceV3RequiresExactDeferredTrace(t *testing.T) {
+	events, change, policy := validPassEvidence(t, false)
+	summary := policy.ValidationSummary()
+	configuredAt := eventIndex(events, "gate_started", "test.complete", 0)
+	laterGate := eventIndex(events, "gate_started", "lint", 0)
+	configuration := EvidenceEvent{
+		Event: "validation_configured", Gate: "policy", ValidationLevel: summary.Level,
+		EnabledGates: summary.EnabledGates, DisabledGates: summary.DisabledGates,
+		DeferredGates: []string{"test.complete", "coverage"},
+	}
+	deferred := []EvidenceEvent{
+		{Event: "gate_started", Gate: "test.complete"},
+		{Event: "gate_finished", Gate: "test.complete", Status: StatusDeferred, Reason: stringPointer(DeferredReasonToConsumer)},
+		{Event: "gate_started", Gate: "coverage"},
+		{Event: "gate_finished", Gate: "coverage", Status: StatusDeferred, Reason: stringPointer(DeferredReasonToConsumer)},
+	}
+	events = append(events[:configuredAt], append([]EvidenceEvent{configuration}, append(deferred, events[laterGate:]...)...)...)
+	if err := ValidatePassEvidenceForVersion(events, change, policy, EvidenceVersionV3); err != nil {
+		t.Fatalf("valid deferred Evidence v3 rejected: %v", err)
+	}
+	if err := ValidatePassEvidence(events, change, policy); err == nil {
+		t.Fatal("Evidence v2 accepted a deferred v3 trace")
+	}
+
+	tests := []struct {
+		name   string
+		mutate func([]EvidenceEvent) []EvidenceEvent
+	}{
+		{name: "missing inventory event", mutate: func(e []EvidenceEvent) []EvidenceEvent { return append(e[:configuredAt], e[configuredAt+1:]...) }},
+		{name: "wrong deferred inventory", mutate: func(e []EvidenceEvent) []EvidenceEvent {
+			e[configuredAt].DeferredGates = []string{"coverage"}
+			return e
+		}},
+		{name: "wrong order", mutate: func(e []EvidenceEvent) []EvidenceEvent {
+			e[configuredAt].DeferredGates = []string{"coverage", "test.complete"}
+			return e
+		}},
+		{name: "non-deferred status", mutate: func(e []EvidenceEvent) []EvidenceEvent {
+			e[configuredAt+2].Status = StatusPass
+			e[configuredAt+2].Reason = nil
+			return e
+		}},
+		{name: "unstable reason", mutate: func(e []EvidenceEvent) []EvidenceEvent {
+			reason := "skipped"
+			e[configuredAt+2].Reason = &reason
+			return e
+		}},
+		{name: "command event for deferred gate", mutate: func(e []EvidenceEvent) []EvidenceEvent {
+			return append(e[:configuredAt+2], append([]EvidenceEvent{passCommandEvent("test.complete", *policy.Gates[0].Command, StatusPass, 0, "")}, e[configuredAt+2:]...)...)
+		}},
+	}
+	for _, test := range tests {
+		copyEvents := cloneEvidence(t, events)
+		if err := ValidatePassEvidenceForVersion(test.mutate(copyEvents), change, policy, EvidenceVersionV3); err == nil {
+			t.Errorf("%s tampering accepted", test.name)
+		}
+	}
+}
+
+func stringPointer(value string) *string { return &value }
+
 func TestValidatePassEvidenceRequiresConfigurationForExplicitLevel(t *testing.T) {
 	events, c, p := validPassEvidence(t, false)
 	p.ValidationLevel = ValidationLevelStandard

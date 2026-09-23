@@ -252,6 +252,24 @@ Consumer execution of POLIS V3.1 revision V005 on macOS reached isolated validat
 
 **Producer evidence:** combining the complete prior suite evidence with the new focused executions covers `1900 / 2314 = 82.10890233362143%` of production lines on Linux/Go 1.23.2. The consumer remains authoritative for its own native toolchain and must independently pass `>80.0` before apply.
 
+## Issue #4 — consumer-deferred project gates
+
+**Red observed:** three legacy packageapply tests failed because their format-v3
+fixture retained the Evidence v3-only `deferred_gates` field. The Evidence v2
+decoder correctly rejected the mismatched historical wire format.
+
+**Green:** the fixture now re-encodes current evidence through Evidence v2 before
+changing the package format. New producer packages use format v5/Evidence v3;
+formats v2-v4 remain Evidence v2. Producer deferrals are explicit and verified,
+while consumer preflight/apply execute all enabled gates before reporting
+success or mutating the target.
+
+**Validation:** full tests and race tests each passed 463 tests across 22
+packages. The CI line-union metric was `4948 / 6071 = 81.502223686378%`, above
+the unchanged strict `>80.0%` gate. Vet, formatting, module integrity, build,
+doctor, offline export inspection, and diff checks passed on macOS arm64. The
+repository has no `package.json`, so `npm run verify` could not run.
+
 ## SDD-0013 — Sonar maintainability cleanup
 
 ### Static-analysis Red

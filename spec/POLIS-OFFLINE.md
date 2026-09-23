@@ -30,7 +30,7 @@ Run the executable directly from this bundle:
 ./bin/polis plan --repo /path/to/repository
 ./bin/polis start --repo /path/to/repository --policy /outside/policy-v3.json --contract /outside/draft-v3.json --out /outside/locked-v4.json
 ./bin/polis capture-red --repo /path/to/repository --contract /outside/locked-v4.json --out /outside/regression.patch
-./bin/polis build --repo /path/to/repository --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/locked-v4.json --regression-patch /outside/regression.patch --out /outside/output
+./bin/polis build --repo /path/to/repository --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/locked-v4.json --regression-patch /outside/regression.patch [--defer-gate gate-id ...] --out /outside/output
 ./bin/polis verify /outside/output/artifact.polis
 ./bin/polis preflight --repo /path/to/repository [--baseline-mode strict|compatible|permissive] /outside/output/artifact.polis
 ./bin/polis apply --repo /path/to/repository [--baseline-mode strict|compatible|permissive] /outside/output/artifact.polis
@@ -51,6 +51,11 @@ base, `compatible` accepts a different descendant only after complete
 compatibility validation, and `permissive` can attempt a non-descendant base only
 when the locked artifact base remains available and all patch, proof, scope, and
 policy checks still pass. Relaxed modes never suppress real conflicts.
+
+New builds use package format v5 and Evidence v3. Repeat `--defer-gate <id>` on
+`plan` to preview or on `build` to skip an enabled producer gate. The packaged
+consumer policy still requires every enabled gate during `preflight` and
+`apply`. Formats v2-v4 retain their Evidence v2 semantics.
 
 The bundle does not contain a target repository or project-specific policy.
 It can therefore be copied between projects without carrying project data.

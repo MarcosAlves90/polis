@@ -96,13 +96,17 @@ func lockedApplyFixtureContract(t *testing.T, repo string) string {
 }
 
 func repoWithArtifact(t *testing.T) (repo, artifact, target string) {
+	return repoWithPolicyArtifact(t, policyBytes(t))
+}
+
+func repoWithPolicyArtifact(t *testing.T, projectPolicy []byte, deferredGates ...string) (repo, artifact, target string) {
 	t.Helper()
 	repo = filepath.Join(t.TempDir(), "repo")
 	if err := os.MkdirAll(filepath.Join(repo, ".polis"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	git(t, repo, "init", "-q")
-	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), policyBytes(t), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), projectPolicy, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, ".polis", "coverage.out"), []byte("mode: set\nexample.com/polisfixture/calc.go:1.1,1.2 1 1\n"), 0o644); err != nil {
@@ -129,7 +133,7 @@ func repoWithArtifact(t *testing.T) (repo, artifact, target string) {
 	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	built, err := packagebuild.Build(context.Background(), packagebuild.Options{Repo: repo, Project: "gitrex", Change: "apply-test", Out: t.TempDir(), Contract: contractPath})
+	built, err := packagebuild.Build(context.Background(), packagebuild.Options{Repo: repo, Project: "gitrex", Change: "apply-test", Out: t.TempDir(), Contract: contractPath, DeferredGates: deferredGates})
 	if err != nil {
 		t.Fatalf("build fixture: %v", err)
 	}
@@ -240,14 +244,23 @@ func writeArtifactMembers(t *testing.T, members map[string][]byte, filename stri
 		checksums.WriteByte('\n')
 	}
 	members[spec.MemberChecksums] = []byte(checksums.String())
+	return writeArtifactArchive(t, members, filename)
+}
 
+func writeArtifactMembersPreservingChecksums(t *testing.T, members map[string][]byte, filename string) string {
+	t.Helper()
+	return writeArtifactArchive(t, members, filename)
+}
+
+func writeArtifactArchive(t *testing.T, members map[string][]byte, filename string) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), filename)
 	out, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	zw := zip.NewWriter(out)
-	names = names[:0]
+	names := make([]string, 0, len(members))
 	for name := range members {
 		names = append(names, name)
 	}
@@ -277,11 +290,31 @@ func legacyV3Artifact(t *testing.T, artifact string) string {
 	members := readArtifactMembers(t, artifact)
 	delete(members, spec.MemberBaseline)
 
+	events, err := spec.DecodeEvidenceVersion(members[spec.MemberEvidence], spec.EvidenceVersionV3)
+	if err != nil {
+		t.Fatalf("decode v5 evidence for v3 fixture: %v", err)
+	}
+	var evidence strings.Builder
+	encoder := json.NewEncoder(&evidence)
+	encoder.SetEscapeHTML(false)
+	for _, event := range events {
+		if event.Status == spec.StatusDeferred {
+			t.Fatal("cannot encode deferred gate evidence as historical Evidence v2")
+		}
+		if event.Event == "validation_configured" {
+			event.DeferredGates = nil
+		}
+		if err := encoder.Encode(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	members[spec.MemberEvidence] = []byte(evidence.String())
+
 	var manifest spec.Manifest
 	if err := json.Unmarshal(members[spec.MemberManifest], &manifest); err != nil {
 		t.Fatal(err)
 	}
-	manifest.FormatVersion = spec.PreviousFormatVersion
+	manifest.FormatVersion = spec.IntermediateFormatVersion
 	manifest.BaselineSHA256 = ""
 	manifestRaw, err := json.Marshal(manifest)
 	if err != nil {
@@ -294,6 +327,193 @@ func legacyV3Artifact(t *testing.T, artifact string) string {
 		t.Fatalf("generated legacy v3 artifact is invalid: %v", err)
 	}
 	return path
+}
+
+func legacyV4Artifact(t *testing.T, artifact string) string {
+	t.Helper()
+	members := readArtifactMembers(t, artifact)
+	events, err := spec.DecodeEvidenceVersion(members[spec.MemberEvidence], spec.EvidenceVersionV3)
+	if err != nil {
+		t.Fatalf("decode v5 evidence for v4 fixture: %v", err)
+	}
+	var evidence strings.Builder
+	encoder := json.NewEncoder(&evidence)
+	encoder.SetEscapeHTML(false)
+	for _, event := range events {
+		if event.Event == "validation_configured" {
+			event.DeferredGates = nil
+		}
+		if err := encoder.Encode(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	members[spec.MemberEvidence] = []byte(evidence.String())
+	var manifest spec.Manifest
+	if err := json.Unmarshal(members[spec.MemberManifest], &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.FormatVersion = spec.PreviousFormatVersion
+	manifestRaw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members[spec.MemberManifest] = manifestRaw
+	path := writeArtifactMembers(t, members, "legacy-v4.polis")
+	if _, err := packageverify.Verify(path); err != nil {
+		t.Fatalf("generated legacy v4 artifact is invalid: %v", err)
+	}
+	return path
+}
+
+func encodeEvidenceEvents(t *testing.T, events []spec.EvidenceEvent) []byte {
+	t.Helper()
+	var evidence strings.Builder
+	encoder := json.NewEncoder(&evidence)
+	encoder.SetEscapeHTML(false)
+	for _, event := range events {
+		if err := encoder.Encode(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return []byte(evidence.String())
+}
+
+func TestDeferredEvidenceTamperingFailsChecksumAndTraceValidation(t *testing.T) {
+	_, artifact, _ := repoWithPolicyArtifact(t, policyBytes(t), "coverage")
+	original := readArtifactMembers(t, artifact)
+	events, err := spec.DecodeEvidenceVersion(original[spec.MemberEvidence], spec.EvidenceVersionV3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	checksumInventory := readArtifactMembers(t, artifact)
+	originalEvidence := string(checksumInventory[spec.MemberEvidence])
+	checksumInventory[spec.MemberEvidence] = []byte(strings.Replace(originalEvidence, `"deferred_gates":["coverage"]`, `"deferred_gates": ["coverage"]`, 1))
+	if string(checksumInventory[spec.MemberEvidence]) == originalEvidence {
+		t.Fatal("test failed to alter deferred metadata bytes")
+	}
+	checksumTampered := writeArtifactMembersPreservingChecksums(t, checksumInventory, "deferred-checksum-tamper.polis")
+	if _, err := packageverify.Verify(checksumTampered); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("deferred metadata checksum tampering accepted: %v", err)
+	}
+
+	wrongTrace := readArtifactMembers(t, artifact)
+	wrongTraceEvents := cloneEvidenceEventsForTest(t, events)
+	for i := range wrongTraceEvents {
+		if wrongTraceEvents[i].Event == "validation_configured" {
+			wrongTraceEvents[i].DeferredGates = []string{}
+		}
+	}
+	wrongTrace[spec.MemberEvidence] = encodeEvidenceEvents(t, wrongTraceEvents)
+	semanticTampered := writeArtifactMembers(t, wrongTrace, "deferred-trace-tamper.polis")
+	if _, err := packageverify.Verify(semanticTampered); err == nil || !strings.Contains(err.Error(), "validate evidence contract") {
+		t.Fatalf("rehash of mismatched deferred trace accepted: %v", err)
+	}
+}
+
+func cloneEvidenceEventsForTest(t *testing.T, events []spec.EvidenceEvent) []spec.EvidenceEvent {
+	t.Helper()
+	raw, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cloned []spec.EvidenceEvent
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		t.Fatal(err)
+	}
+	return cloned
+}
+
+func TestLegacyV4RetainsEvidenceV2AndEmbeddedBaseline(t *testing.T) {
+	producer, currentArtifact, _ := repoWithArtifact(t)
+	artifact := legacyV4Artifact(t, currentArtifact)
+	pkg, err := packageverify.Load(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Manifest.FormatVersion != spec.PreviousFormatVersion || len(pkg.Baseline) == 0 || pkg.Result.ConsumerValidationRequired || len(pkg.Result.DeferredGates) != 0 {
+		t.Fatalf("v4 package result=%+v manifest=%+v baseline=%d", pkg.Result, pkg.Manifest, len(pkg.Baseline))
+	}
+	if _, err := spec.DecodeEvidenceVersion(pkg.Evidence, spec.EvidenceVersionV2); err != nil {
+		t.Fatalf("v4 Evidence v2 decode failed: %v", err)
+	}
+	preflight, err := PreflightWithOptions(context.Background(), artifact, producer, Options{BaselineMode: BaselineModeStrict})
+	if err != nil {
+		t.Fatalf("v4 preflight failed: %v", err)
+	}
+	if preflight.ConsumerValidationStatus != spec.StatusPass || len(preflight.ConsumerGateStatuses) == 0 {
+		t.Fatalf("v4 consumer result=%+v", preflight)
+	}
+}
+
+func TestDeferredGateIsRevalidatedBeforeApplyMutation(t *testing.T) {
+	for _, scenario := range []struct {
+		name   string
+		argv   []string
+		status string
+	}{
+		{name: "fail", argv: []string{"git", "rev-parse", "--does-not-exist"}, status: "FAIL"},
+		{name: "block", argv: []string{"polis-deferred-gate-executable-404"}, status: "BLOCKED"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			policy, err := spec.DecodePolicy(policyBytes(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range policy.Gates {
+				if policy.Gates[i].ID == "coverage" {
+					policy.Gates[i].Command.Argv = scenario.argv
+				}
+			}
+			policyRaw, err := json.Marshal(policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			consumer, artifact, target := repoWithPolicyArtifact(t, policyRaw, "coverage")
+			beforeHead := git(t, consumer, "rev-parse", "HEAD")
+			beforeIndex := git(t, consumer, "write-tree")
+			beforeStatus := git(t, consumer, "status", "--porcelain=v1", "--untracked-files=all")
+			if _, err := PreflightWithOptions(context.Background(), artifact, consumer, Options{BaselineMode: BaselineModeStrict}); err == nil || !errors.Is(err, ErrValidationFailed) || !strings.Contains(err.Error(), scenario.status) {
+				t.Fatalf("preflight accepted deferred gate with status %s: %v", scenario.status, err)
+			}
+			if _, err := ApplyWithOptions(context.Background(), artifact, consumer, Options{BaselineMode: BaselineModeStrict}); err == nil || !errors.Is(err, ErrValidationFailed) || !strings.Contains(err.Error(), scenario.status) {
+				t.Fatalf("apply accepted deferred gate with status %s: %v", scenario.status, err)
+			}
+			if got := git(t, consumer, "rev-parse", "HEAD"); got != beforeHead {
+				t.Fatalf("consumer HEAD mutated after failed validation: %s -> %s", beforeHead, got)
+			}
+			if got := git(t, consumer, "write-tree"); got != beforeIndex {
+				t.Fatalf("consumer index mutated after failed validation: %s -> %s", beforeIndex, got)
+			}
+			if got := git(t, consumer, "status", "--porcelain=v1", "--untracked-files=all"); got != beforeStatus {
+				t.Fatalf("consumer worktree mutated after failed validation: before=%q after=%q", beforeStatus, got)
+			}
+			if target == "" {
+				t.Fatal("fixture target tree is empty")
+			}
+		})
+	}
+}
+
+func TestPreflightAndApplyReportConsumerPassForDeferredGate(t *testing.T) {
+	repo, artifact, _ := repoWithPolicyArtifact(t, policyBytes(t), "coverage")
+	preflight, err := PreflightWithOptions(context.Background(), artifact, repo, Options{BaselineMode: BaselineModeStrict})
+	if err != nil {
+		t.Fatalf("preflight deferred package: %v", err)
+	}
+	if !preflight.ConsumerValidationRequired || preflight.ConsumerValidationStatus != spec.StatusPass || len(preflight.ProducerDeferredGates) != 1 || preflight.ProducerDeferredGates[0] != "coverage" || len(preflight.OutstandingDeferredGates) != 0 || preflight.ConsumerGateStatuses["coverage"] != spec.StatusPass {
+		t.Fatalf("preflight consumer result=%+v", preflight)
+	}
+	applied, err := ApplyWithOptions(context.Background(), artifact, repo, Options{BaselineMode: BaselineModeStrict})
+	if err != nil {
+		t.Fatalf("apply deferred package: %v", err)
+	}
+	if !applied.ConsumerValidationRequired || applied.ConsumerValidationStatus != spec.StatusPass || len(applied.ProducerDeferredGates) != 1 || applied.ProducerDeferredGates[0] != "coverage" || len(applied.OutstandingDeferredGates) != 0 || applied.ConsumerGateStatuses["coverage"] != spec.StatusPass {
+		t.Fatalf("apply consumer result=%+v", applied)
+	}
+	if got, err := os.ReadFile(filepath.Join(repo, "app.txt")); err != nil || string(got) != "changed\n" {
+		t.Fatalf("applied app.txt=%q err=%v", got, err)
+	}
 }
 
 func semanticallyCorruptedV4Artifact(t *testing.T, artifact string) string {

@@ -18,7 +18,15 @@ const (
 	StatusFail          Status = "FAIL"
 	StatusBlocked       Status = "BLOCKED"
 	StatusNotApplicable Status = "NOT_APPLICABLE"
+	StatusDeferred      Status = "DEFERRED"
+
+	EvidenceVersionV2 EvidenceVersion = 2
+	EvidenceVersionV3 EvidenceVersion = 3
+
+	DeferredReasonToConsumer = "deferred to consumer"
 )
+
+type EvidenceVersion int
 
 type EvidenceEvent struct {
 	Event            string   `json:"event"`
@@ -52,6 +60,7 @@ type EvidenceEvent struct {
 	ValidationLevel  string   `json:"validation_level,omitempty"`
 	EnabledGates     []string `json:"enabled_gates,omitempty"`
 	DisabledGates    []string `json:"disabled_gates,omitempty"`
+	DeferredGates    []string `json:"deferred_gates,omitempty"`
 }
 
 func (e EvidenceEvent) MarshalJSON() ([]byte, error) {
@@ -67,6 +76,23 @@ func (e EvidenceEvent) MarshalJSON() ([]byte, error) {
 	if disabled == nil {
 		disabled = []string{}
 	}
+	if e.DeferredGates != nil {
+		deferred := e.DeferredGates
+		if deferred == nil {
+			deferred = []string{}
+		}
+		return json.Marshal(struct {
+			Event           string   `json:"event"`
+			Gate            string   `json:"gate"`
+			ValidationLevel string   `json:"validation_level"`
+			EnabledGates    []string `json:"enabled_gates"`
+			DisabledGates   []string `json:"disabled_gates"`
+			DeferredGates   []string `json:"deferred_gates"`
+		}{
+			Event: e.Event, Gate: e.Gate, ValidationLevel: e.ValidationLevel,
+			EnabledGates: enabled, DisabledGates: disabled, DeferredGates: deferred,
+		})
+	}
 	return json.Marshal(struct {
 		Event           string   `json:"event"`
 		Gate            string   `json:"gate"`
@@ -80,6 +106,13 @@ func (e EvidenceEvent) MarshalJSON() ([]byte, error) {
 }
 
 func DecodeEvidence(raw []byte) ([]EvidenceEvent, error) {
+	return DecodeEvidenceVersion(raw, EvidenceVersionV2)
+}
+
+func DecodeEvidenceVersion(raw []byte, version EvidenceVersion) ([]EvidenceEvent, error) {
+	if version != EvidenceVersionV2 && version != EvidenceVersionV3 {
+		return nil, fmt.Errorf("unsupported evidence version %d", version)
+	}
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	var events []EvidenceEvent
@@ -90,7 +123,7 @@ func DecodeEvidence(raw []byte) ([]EvidenceEvent, error) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			return nil, fmt.Errorf("evidence line %d is empty", lineNo)
 		}
-		event, err := decodeEvidenceEvent(line)
+		event, err := decodeEvidenceEvent(line, version)
 		if err != nil {
 			return nil, fmt.Errorf("evidence line %d: %w", lineNo, err)
 		}
@@ -102,7 +135,7 @@ func DecodeEvidence(raw []byte) ([]EvidenceEvent, error) {
 	return events, nil
 }
 
-func decodeEvidenceEvent(raw []byte) (EvidenceEvent, error) {
+func decodeEvidenceEvent(raw []byte, version EvidenceVersion) (EvidenceEvent, error) {
 	fields, err := decodeEvidenceFields(raw)
 	if err != nil {
 		return EvidenceEvent{}, err
@@ -121,7 +154,7 @@ func decodeEvidenceEvent(raw []byte) (EvidenceEvent, error) {
 
 	e := EvidenceEvent{Event: eventName, Gate: gate}
 	allowed := map[string]bool{"event": true, "gate": true}
-	if err := decodeEventPayload(&e, fields, allowed); err != nil {
+	if err := decodeEventPayload(&e, fields, allowed, version); err != nil {
 		return EvidenceEvent{}, err
 	}
 	if err := rejectForbiddenEvidenceFields(fields, allowed, eventName); err != nil {
@@ -144,12 +177,12 @@ func decodeEvidenceFields(raw []byte) (map[string]json.RawMessage, error) {
 	return fields, nil
 }
 
-func decodeEventPayload(e *EvidenceEvent, fields map[string]json.RawMessage, allowed map[string]bool) error {
+func decodeEventPayload(e *EvidenceEvent, fields map[string]json.RawMessage, allowed map[string]bool, version EvidenceVersion) error {
 	switch e.Event {
 	case "gate_started":
 		return nil
 	case "gate_finished":
-		return decodeGateFinished(e, fields, allowed)
+		return decodeGateFinished(e, fields, allowed, version)
 	case "command_finished":
 		return decodeCommandFinished(e, fields, allowed)
 	case "oracle_checked":
@@ -157,13 +190,13 @@ func decodeEventPayload(e *EvidenceEvent, fields map[string]json.RawMessage, all
 	case "coverage_measured":
 		return decodeCoverageMeasured(e, fields, allowed)
 	case "validation_configured":
-		return decodeValidationConfigured(e, fields, allowed)
+		return decodeValidationConfigured(e, fields, allowed, version)
 	default:
 		return fmt.Errorf("unknown event %q", e.Event)
 	}
 }
 
-func decodeValidationConfigured(e *EvidenceEvent, fields map[string]json.RawMessage, allowed map[string]bool) error {
+func decodeValidationConfigured(e *EvidenceEvent, fields map[string]json.RawMessage, allowed map[string]bool, version EvidenceVersion) error {
 	if e.Gate != "policy" {
 		return errors.New("validation_configured gate must be policy")
 	}
@@ -171,6 +204,12 @@ func decodeValidationConfigured(e *EvidenceEvent, fields map[string]json.RawMess
 		allowed[name] = true
 		if _, ok := fields[name]; !ok {
 			return fmt.Errorf("validation_configured missing %s", name)
+		}
+	}
+	if version == EvidenceVersionV3 {
+		allowed["deferred_gates"] = true
+		if _, ok := fields["deferred_gates"]; !ok {
+			return errors.New("validation_configured missing deferred_gates")
 		}
 	}
 	level, err := requiredStringField(fields, "validation_level")
@@ -192,7 +231,30 @@ func decodeValidationConfigured(e *EvidenceEvent, fields map[string]json.RawMess
 	if err := validateCompleteGateInventory(enabled, disabled); err != nil {
 		return err
 	}
-	e.EnabledGates, e.DisabledGates = enabled, disabled
+	var deferred []string
+	if version == EvidenceVersionV3 {
+		deferred, err = decodeGateInventory(fields["deferred_gates"], "deferred_gates")
+		if err != nil {
+			return err
+		}
+		if err := validateDeferredGateInventory(enabled, deferred); err != nil {
+			return err
+		}
+	}
+	e.EnabledGates, e.DisabledGates, e.DeferredGates = enabled, disabled, deferred
+	return nil
+}
+
+func validateDeferredGateInventory(enabled, deferred []string) error {
+	enabledSet := make(map[string]struct{}, len(enabled))
+	for _, id := range enabled {
+		enabledSet[id] = struct{}{}
+	}
+	for _, id := range deferred {
+		if _, ok := enabledSet[id]; !ok {
+			return fmt.Errorf("validation_configured deferred_gates contains gate %q that is not enabled", id)
+		}
+	}
 	return nil
 }
 
@@ -239,14 +301,17 @@ func validateCompleteGateInventory(enabled, disabled []string) error {
 	return nil
 }
 
-func decodeGateFinished(e *EvidenceEvent, fields map[string]json.RawMessage, allowed map[string]bool) error {
+func decodeGateFinished(e *EvidenceEvent, fields map[string]json.RawMessage, allowed map[string]bool, version EvidenceVersion) error {
 	allowed["status"] = true
-	status, err := decodeStatus(fields["status"])
+	status, err := decodeStatusVersion(fields["status"], version)
 	if err != nil {
 		return err
 	}
 	e.Status = status
-	if status == StatusBlocked || status == StatusNotApplicable {
+	if status == StatusDeferred && !IsProjectGate(e.Gate) {
+		return fmt.Errorf("gate %q cannot be deferred", e.Gate)
+	}
+	if status == StatusBlocked || status == StatusNotApplicable || status == StatusDeferred {
 		return decodeGateFinishedReason(e, fields, allowed)
 	}
 	if _, ok := fields["reason"]; ok {
@@ -259,7 +324,7 @@ func decodeGateFinishedReason(e *EvidenceEvent, fields map[string]json.RawMessag
 	allowed["reason"] = true
 	reason, err := requiredStringField(fields, "reason")
 	if err != nil || strings.TrimSpace(reason) == "" {
-		return errors.New("BLOCKED/NOT_APPLICABLE gate_finished requires non-empty reason")
+		return errors.New("BLOCKED/NOT_APPLICABLE/DEFERRED gate_finished requires non-empty reason")
 	}
 	e.Reason = &reason
 	return nil
@@ -564,6 +629,10 @@ func rejectForbiddenEvidenceFields(fields map[string]json.RawMessage, allowed ma
 }
 
 func decodeStatus(raw json.RawMessage) (Status, error) {
+	return decodeStatusVersion(raw, EvidenceVersionV2)
+}
+
+func decodeStatusVersion(raw json.RawMessage, version EvidenceVersion) (Status, error) {
 	if len(raw) == 0 {
 		return "", errors.New("missing status")
 	}
@@ -575,7 +644,12 @@ func decodeStatus(raw json.RawMessage) (Status, error) {
 	switch status {
 	case StatusPass, StatusFail, StatusBlocked, StatusNotApplicable:
 		return status, nil
+	case StatusDeferred:
+		if version == EvidenceVersionV3 {
+			return status, nil
+		}
 	default:
 		return "", fmt.Errorf("unknown status %s", strconv.Quote(s))
 	}
+	return "", fmt.Errorf("unknown status %s", strconv.Quote(s))
 }

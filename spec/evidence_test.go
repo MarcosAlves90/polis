@@ -2,6 +2,8 @@ package spec
 
 import (
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +32,94 @@ func TestDecodeEvidenceAcceptsValidationConfiguration(t *testing.T) {
 	if len(events) != 1 || events[0].ValidationLevel != ValidationLevelStandard || len(events[0].EnabledGates) != 2 || len(events[0].DisabledGates) != 9 {
 		t.Fatalf("events=%+v", events)
 	}
+}
+
+func TestDecodeEvidenceVersionsKeepDeferredSemanticsOutOfV2(t *testing.T) {
+	configured := validationConfigurationV3([]string{"coverage"})
+	deferred := `{"event":"gate_finished","gate":"coverage","status":"DEFERRED","reason":"deferred to consumer"}` + "\n"
+	if _, err := DecodeEvidence([]byte(configured)); err == nil {
+		t.Fatal("Evidence v2 accepted deferred_gates")
+	}
+	if _, err := DecodeEvidence([]byte(deferred)); err == nil {
+		t.Fatal("Evidence v2 accepted DEFERRED")
+	}
+	events, err := DecodeEvidenceVersion([]byte(configured+deferred), EvidenceVersionV3)
+	if err != nil {
+		t.Fatalf("Evidence v3 rejected deferred events: %v", err)
+	}
+	if len(events) != 2 || !reflect.DeepEqual(events[0].DeferredGates, []string{"coverage"}) || events[1].Status != StatusDeferred {
+		t.Fatalf("decoded v3 events=%+v", events)
+	}
+}
+
+func TestDecodeEvidenceV3RequiresCanonicalDeferredInventoryAndReason(t *testing.T) {
+	valid := validationConfigurationV3([]string{"coverage"})
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{name: "missing inventory", raw: strings.Replace(valid, `,"deferred_gates":["coverage"]`, "", 1)},
+		{name: "not enabled", raw: validationConfigurationV3([]string{"lint"})},
+		{name: "deferred reason absent", raw: valid + `{"event":"gate_finished","gate":"coverage","status":"DEFERRED"}` + "\n"},
+		{name: "deferred reason empty", raw: valid + `{"event":"gate_finished","gate":"coverage","status":"DEFERRED","reason":" "}` + "\n"},
+		{name: "command cannot be deferred", raw: valid + `{"event":"command_finished","gate":"coverage","status":"DEFERRED","argv":["go"],"cwd":".","exit_code":0,"duration_ms":1,"stdout":"","stderr":""}` + "\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := DecodeEvidenceVersion([]byte(tc.raw), EvidenceVersionV3); err == nil {
+				t.Fatalf("invalid v3 evidence accepted: %s", tc.raw)
+			}
+		})
+	}
+}
+
+func TestMarshalEvidenceV3PreservesExplicitEmptyDeferredInventory(t *testing.T) {
+	raw, err := json.Marshal(EvidenceEvent{
+		Event: "validation_configured", Gate: "policy", ValidationLevel: ValidationLevelMinimal,
+		EnabledGates: []string{}, DisabledGates: append([]string{}, ProjectGateOrder...), DeferredGates: []string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"deferred_gates":[]`) {
+		t.Fatalf("explicit empty deferred inventory omitted: %s", raw)
+	}
+	if _, err := DecodeEvidenceVersion(append(raw, '\n'), EvidenceVersionV3); err != nil {
+		t.Fatalf("marshaled v3 configuration rejected: %v", err)
+	}
+}
+
+func TestOfflineEvidenceSchemaDefinesCurrentDeferredContract(t *testing.T) {
+	var raw []byte
+	for _, resource := range OfflineResources() {
+		if resource.Path == "schemas/evidence-event.schema.json" {
+			raw = resource.Data
+			break
+		}
+	}
+	if len(raw) == 0 {
+		t.Fatal("canonical evidence schema not found")
+	}
+	var schema struct {
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if schema.Title != "POLIS Evidence Event v3" || !strings.Contains(string(raw), `"deferred_gates"`) || !strings.Contains(string(raw), `"DEFERRED"`) {
+		t.Fatalf("current evidence schema is missing deferral semantics: title=%q", schema.Title)
+	}
+}
+
+func validationConfigurationV3(deferred []string) string {
+	enabled := []string{"test.complete", "coverage"}
+	disabled := ProjectGateOrder[2:]
+	encode := func(ids []string) string {
+		data, _ := json.Marshal(ids)
+		return string(data)
+	}
+	deferredJSON := encode(deferred)
+	return `{"event":"validation_configured","gate":"policy","validation_level":"strict","enabled_gates":` + encode(enabled) + `,"disabled_gates":` + encode(disabled) + `,"deferred_gates":` + deferredJSON + `}` + "\n"
 }
 
 func TestMarshalValidationConfigurationPreservesEmptyInventory(t *testing.T) {

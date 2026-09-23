@@ -118,6 +118,39 @@ Observed repository validation on the current macOS arm64 host with Go 1.27.1 an
 - `go test -race ./... -count=1` — PASS.
 - `go test -coverpkg=./... ./... -coverprofile=.polis/coverage.out` — PASS.
 - normative union line coverage: `3514 / 4304 = 81.6%`, strictly greater than `80.0%` — PASS.
+
+## POLIS V6 consumer-deferred project gates — Issue #4 — 2026-09-23
+
+New producer artifacts use package format v5 and Evidence v3 to record enabled
+project gates whose execution is deferred to the consumer. Project Policy schema
+v3 is unchanged. Formats v2, v3, and v4 continue to select Evidence v2; formats
+v4 and v5 retain the same eight-member package inventory and embedded-baseline
+contract.
+
+The implementation adds repeatable `--defer-gate` flags to `plan` and `build`,
+rejects unknown, duplicate, not-applicable, and dependency-invalid requests
+before project commands run, and emits an authenticated `DEFERRED` trace without
+executing producer commands or touching coverage reports. Package verification
+checks the inventory against the evidence trace. Consumer preflight and apply
+execute every enabled packaged-policy gate in isolation before reporting success
+or mutating the real target.
+
+Observed validation on macOS 25.6.0 arm64 with Go 1.27.1 and Git 2.55.0:
+
+- `go test ./... -count=1` — PASS, 463 tests across 22 packages.
+- `go test -race ./... -count=1` — PASS, 463 tests across 22 packages.
+- `go test -coverpkg=./... ./... -count=1 -coverprofile=/tmp/polis-issue4-coverage.out` — PASS.
+- CI line-union metric: `4948 / 6071 = 81.502223686378%`, strictly greater than `80.0%` — PASS.
+- `go vet ./...` — PASS.
+- `go mod verify` — PASS (`all modules verified`).
+- `go build -trimpath -o /tmp/polis-issue4 ./cmd/polis` — PASS.
+- `/tmp/polis-issue4 doctor --format=json` — PASS; reports POLIS 6.7.0, Darwin arm64, Go 1.27.1, and Git 2.55.0.
+- Offline export and archive inspection — PASS; the bundle contains format-v5 manifest schema, Evidence v3 schema with `DEFERRED` and `deferred_gates`, and the current V6 specification.
+- `gofmt -l .`, `git diff --check`, and `go mod verify` — PASS.
+- `npm run verify` — unavailable: the repository has no `package.json`.
+
+No Linux or Windows run was performed in this local validation. No remote CI,
+publication, commit, or issue mutation was triggered.
 - `go vet ./...`, `go build ./cmd/polis`, `go mod verify`, `gofmt -l .`, and `git diff --check` — PASS.
 - Go JSON Schema checks for strict legacy, standard, minimal, and invalid combinations — PASS.
 - focused tests cover omitted-command behavior, disabled-command non-execution, enabled command execution, explicit evidence inventory, empty enabled inventories, invalid configurations, and strict compatibility — PASS.

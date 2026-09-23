@@ -204,6 +204,56 @@ func TestBuildCreatesVerifiedPackageWithoutMutatingSourceState(t *testing.T) {
 	}
 }
 
+func TestBuildDefersCoverageInFormatV5Evidence(t *testing.T) {
+	repo := newV6Repo(t, false)
+	contract := lockedCharacterizationContract(t, repo, ".")
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Build(context.Background(), Options{
+		Repo: repo, Project: "gitrex", Change: "defer-coverage", Out: t.TempDir(), Contract: contract,
+		DeferredGates: []string{"coverage"},
+	})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if !result.ConsumerValidationRequired || len(result.DeferredGates) != 1 || result.DeferredGates[0] != "coverage" || result.ProducerGateStatuses["coverage"] != spec.StatusDeferred || result.ProducerGateStatuses["test.complete"] != spec.StatusPass {
+		t.Fatalf("build deferral result=%+v", result)
+	}
+	pkg, err := packageverify.Load(result.Path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if pkg.Manifest.FormatVersion != 5 || !pkg.Result.ConsumerValidationRequired || len(pkg.Result.DeferredGates) != 1 || pkg.Result.DeferredGates[0] != "coverage" {
+		t.Fatalf("verified deferral result=%+v manifest=%+v", pkg.Result, pkg.Manifest)
+	}
+	events, err := spec.DecodeEvidenceVersion(pkg.Evidence, spec.EvidenceVersionV3)
+	if err != nil {
+		t.Fatalf("Evidence v3 decode: %v", err)
+	}
+	for _, event := range events {
+		if event.Event == "command_finished" && event.Gate == "coverage" {
+			t.Fatal("deferred coverage command was recorded as executed")
+		}
+	}
+}
+
+func TestBuildRejectsInvalidDeferralBeforeProjectValidation(t *testing.T) {
+	repo := newV6Repo(t, true)
+	contract := lockedCharacterizationContract(t, repo, ".")
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "out")
+	_, err := Build(context.Background(), Options{Repo: repo, Project: "gitrex", Change: "invalid-defer", Out: out, Contract: contract, DeferredGates: []string{"unknown.gate"}})
+	if err == nil || !strings.Contains(err.Error(), "unknown project gate") {
+		t.Fatalf("expected invalid deferral rejection before command execution, got %v", err)
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid deferral created package output: err=%v", statErr)
+	}
+}
+
 func TestBuildRejectsBaselineProofThatEmbeddedSnapshotCannotReplay(t *testing.T) {
 	repo := newV6Repo(t, false)
 	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}

@@ -9,9 +9,10 @@ import (
 )
 
 const (
-	FormatVersion         = 4
-	PreviousFormatVersion = 3
-	LegacyFormatVersion   = 2
+	FormatVersion             = 5
+	PreviousFormatVersion     = 4
+	IntermediateFormatVersion = 3
+	LegacyFormatVersion       = 2
 )
 
 var (
@@ -51,7 +52,7 @@ func DecodeManifest(raw []byte) (Manifest, error) {
 }
 
 func (m Manifest) Validate() error {
-	if m.FormatVersion != FormatVersion && m.FormatVersion != PreviousFormatVersion && m.FormatVersion != LegacyFormatVersion {
+	if m.FormatVersion != FormatVersion && m.FormatVersion != PreviousFormatVersion && m.FormatVersion != IntermediateFormatVersion && m.FormatVersion != LegacyFormatVersion {
 		return fmt.Errorf("unsupported format_version %d", m.FormatVersion)
 	}
 	if !projectPattern.MatchString(m.Project) {
@@ -87,9 +88,9 @@ func (m Manifest) Validate() error {
 	if !sha256Pattern.MatchString(m.PayloadSHA256) {
 		return errors.New("payload_sha256 must be 64 lowercase hexadecimal characters")
 	}
-	if m.FormatVersion == FormatVersion {
+	if FormatHasEmbeddedBaseline(m.FormatVersion) {
 		if !sha256Pattern.MatchString(m.BaselineSHA256) {
-			return errors.New("baseline_sha256 must be 64 lowercase hexadecimal characters for format v4")
+			return fmt.Errorf("baseline_sha256 must be 64 lowercase hexadecimal characters for format v%d", m.FormatVersion)
 		}
 	} else if m.BaselineSHA256 != "" {
 		return errors.New("baseline_sha256 is not valid before format v4")
