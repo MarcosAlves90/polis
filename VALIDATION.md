@@ -279,20 +279,18 @@ the authorized scope.
 
 This change carries optional commit intent in Change Contract schema v5/v6 and
 adds consumer-authorized local commits to `apply`. The default remains
-apply-only. It also removes unowned schema identifiers from the current schema
-resources while retaining standard JSON Schema declarations.
+apply-only. It also removes absolute schema identifiers on an unowned domain
+while retaining standard JSON Schema dialect declarations.
 
-Observed on Darwin arm64 with Go 1.27.1 and Git 2.55.0:
+GitHub Actions run `35910900279` at head `587bb66` passed the quality gate,
+Ubuntu/macOS/Windows jobs, and GitGuardian:
 
-- `go test ./...` — PASS, 495 tests across 22 packages.
-- `go test -coverpkg=./... ./... -coverprofile=.polis/coverage.out` — PASS.
-- Normative `go-coverprofile-v1` line-union metric: `5219 / 6503 = 80.255267%`, strictly greater than `80.0%` — PASS.
-- `go vet ./...` — PASS.
-- `go build ./...` — PASS.
-- `go mod verify` — PASS (`all modules verified`).
-- `gofmt -l .` and `git diff --check` — PASS, no output.
+- `go test ./...` — PASS on Ubuntu, macOS, and Windows.
+- Normative `go-coverprofile-v1` line-union metric: `5806 / 7095 = 81.832276250881%`, strictly greater than `80.0%` — PASS.
+- `go vet ./...`, `go build ./...`, `go mod verify`, and the race detector — PASS.
+- Windows `internal/packageapply` — PASS in `511.603s`, below the Go test package's `600s` timeout.
+- Formatting and `git diff --check` — PASS.
+- Local `go test ./internal/packageapply -count=1` with cached shared commit fixtures — PASS in `184.061s`.
 - Offline export — PASS; verified 14-member archive includes Change Contract v5/v6 schemas and declares `network_required: false`; `unzip -t` found no archive errors.
-- Repository-wide search for the unowned schema host — PASS, no matches.
+- Tracked repository search for unowned schema URLs — PASS, no matches.
 - `npm run verify` — unavailable because the repository has no `package.json`.
-
-No cross-platform or remote CI result is claimed from this local run.

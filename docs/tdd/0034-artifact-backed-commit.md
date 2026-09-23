@@ -45,12 +45,14 @@ Run focused suites while progressing, then the current `.polis/policy.json` gate
 
 ## Final validation results
 
-Observed on Darwin arm64 with Go 1.27.1 and Git 2.55.0 after the final implementation diff:
+Latest complete GitHub Actions validation: run `35910900279`, head `587bb66`.
 
-- `go test ./...` — PASS, 495 tests across 22 packages.
-- `go test -coverpkg=./... ./... -coverprofile=.polis/coverage.out` — PASS; normative `go-coverprofile-v1` line-union metric `5219 / 6503 = 80.255267%`, strictly greater than `80.0%`.
-- `go vet ./...`, `go build ./...`, and `go mod verify` — PASS (`all modules verified`).
+- `go test ./...` — PASS on Ubuntu, macOS, and Windows.
+- `go test -coverpkg=./... ./... -coverprofile=.polis/coverage.out` — PASS; normative `go-coverprofile-v1` line-union metric `5806 / 7095 = 81.832276250881%`, strictly greater than `80.0%`.
+- Windows `internal/packageapply` — PASS in `511.603s`, below the Go test package's `600s` timeout.
+- `go vet ./...`, `go build ./...`, `go mod verify`, and the race detector — PASS.
 - `gofmt -l .` and `git diff --check` — PASS, no output.
+- Local `go test ./internal/packageapply -count=1` after shared-fixture caching — PASS in `184.061s`.
 - Offline export — PASS; the verified 14-member archive contains both Change Contract v5/v6 schemas and declares `network_required: false`; `unzip -t` reports no archive errors.
-- Repository-wide search for the unowned schema host — PASS, no matches.
+- Tracked repository search for unowned schema URLs — PASS, no matches.
 - `npm run verify` — unavailable because this Go repository has no `package.json`.
