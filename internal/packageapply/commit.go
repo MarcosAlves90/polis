@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,9 +14,15 @@ import (
 )
 
 type artifactCommitSnapshot struct {
-	head      string
-	ref       string
-	indexTree string
+	head                 string
+	ref                  string
+	indexTree            string
+	indexPath            string
+	indexImage           []byte
+	indexMode            os.FileMode
+	updatedIndexImage    []byte
+	updatedIndexMode     os.FileMode
+	updatedIndexCaptured bool
 }
 
 type artifactCommitOperations struct {
@@ -87,7 +94,70 @@ func captureArtifactCommitSnapshot(ctx context.Context, repo, expectedHead strin
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return artifactCommitSnapshot{}, fmt.Errorf("inspect Git index lock: %w", err)
 	}
-	return artifactCommitSnapshot{head: head, ref: ref, indexTree: indexTree}, nil
+	indexImage, indexMode, err := readArtifactCommitIndexImage(indexPath)
+	if err != nil {
+		return artifactCommitSnapshot{}, fmt.Errorf("snapshot Git index: %w", err)
+	}
+	verifiedIndexTree, err := gitutil.Output(ctx, repo, nil, nil, "write-tree")
+	if err != nil {
+		return artifactCommitSnapshot{}, fmt.Errorf("verify current index snapshot: %w", err)
+	}
+	verifiedIndexImage, verifiedIndexMode, err := readArtifactCommitIndexImage(indexPath)
+	if err != nil {
+		return artifactCommitSnapshot{}, fmt.Errorf("verify current index image: %w", err)
+	}
+	if verifiedIndexTree != indexTree || !bytes.Equal(verifiedIndexImage, indexImage) || verifiedIndexMode.Perm() != indexMode.Perm() {
+		return artifactCommitSnapshot{}, errors.New("Git index changed while taking commit snapshot")
+	}
+	if _, err := os.Stat(indexPath + ".lock"); err == nil {
+		return artifactCommitSnapshot{}, errors.New("Git index is locked by another process")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return artifactCommitSnapshot{}, fmt.Errorf("inspect Git index lock: %w", err)
+	}
+	return artifactCommitSnapshot{
+		head:       head,
+		ref:        ref,
+		indexTree:  indexTree,
+		indexPath:  indexPath,
+		indexImage: indexImage,
+		indexMode:  indexMode.Perm(),
+	}, nil
+}
+
+func readArtifactCommitIndexImage(indexPath string) ([]byte, os.FileMode, error) {
+	before, err := os.Lstat(indexPath)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !before.Mode().IsRegular() {
+		return nil, 0, fmt.Errorf("Git index is not a regular file: %s", indexPath)
+	}
+	image, err := os.ReadFile(indexPath)
+	if err != nil {
+		return nil, 0, err
+	}
+	after, err := os.Lstat(indexPath)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !os.SameFile(before, after) || before.Mode().Perm() != after.Mode().Perm() {
+		return nil, 0, errors.New("Git index changed while reading its image")
+	}
+	return image, before.Mode().Perm(), nil
+}
+
+func verifyArtifactCommitIndexImage(snapshot artifactCommitSnapshot, expected []byte, expectedMode os.FileMode) error {
+	image, mode, err := readArtifactCommitIndexImage(snapshot.indexPath)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(image, expected) {
+		return errors.New("Git index file contents changed")
+	}
+	if mode.Perm() != expectedMode.Perm() {
+		return fmt.Errorf("Git index file mode changed: got %04o want %04o", mode.Perm(), expectedMode.Perm())
+	}
+	return nil
 }
 
 func createArtifactCommit(ctx context.Context, repo string, snapshot artifactCommitSnapshot, targetTree, message string, patch []byte) (string, error) {
@@ -177,6 +247,11 @@ func createArtifactCommitWithOperations(ctx context.Context, repo string, snapsh
 	if err := operations.updateIndex(ctx, repo, commit); err != nil {
 		return fail(fmt.Errorf("update real index to committed tree: %w", err), commit, true, true)
 	}
+	snapshot.updatedIndexImage, snapshot.updatedIndexMode, err = readArtifactCommitIndexImage(snapshot.indexPath)
+	if err != nil {
+		return fail(fmt.Errorf("snapshot updated Git index: %w", err), commit, true, true)
+	}
+	snapshot.updatedIndexCaptured = true
 	if err := verifyArtifactCommitRef(ctx, repo, snapshot.ref, commit); err != nil {
 		return fail(fmt.Errorf("verify committed HEAD reference: %w", err), commit, true, true)
 	}
@@ -221,6 +296,9 @@ func verifyArtifactCommitPreRefState(ctx context.Context, repo string, snapshot 
 	if indexTree != snapshot.indexTree {
 		return fmt.Errorf("real index changed: got tree %s want %s", indexTree, snapshot.indexTree)
 	}
+	if err := verifyArtifactCommitIndexImage(snapshot, snapshot.indexImage, snapshot.indexMode); err != nil {
+		return fmt.Errorf("real index changed: %w", err)
+	}
 	worktreeTree, err := workingTreeID(ctx, repo, snapshot.head)
 	if err != nil {
 		return fmt.Errorf("inspect worktree: %w", err)
@@ -241,6 +319,9 @@ func verifyArtifactCommitIndexBeforeUpdate(ctx context.Context, repo string, sna
 	}
 	if indexTree != snapshot.indexTree {
 		return fmt.Errorf("real index changed: got tree %s want %s", indexTree, snapshot.indexTree)
+	}
+	if err := verifyArtifactCommitIndexImage(snapshot, snapshot.indexImage, snapshot.indexMode); err != nil {
+		return fmt.Errorf("real index changed: %w", err)
 	}
 	return nil
 }
@@ -313,34 +394,76 @@ func rollbackArtifactCommit(ctx context.Context, repo string, snapshot artifactC
 	head, headErr := gitutil.Output(ctx, repo, nil, nil, "rev-parse", "HEAD")
 	ref, refErr := gitutil.Output(ctx, repo, nil, nil, "rev-parse", "--symbolic-full-name", "HEAD")
 	indexTree, indexErr := gitutil.Output(ctx, repo, nil, nil, "write-tree")
-	status, statusErr := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
-	if headErr != nil || refErr != nil || indexErr != nil || statusErr != nil || head != snapshot.head || ref != snapshot.ref || indexTree != snapshot.indexTree || status != "" {
-		return fmt.Errorf("%v; rollback state verification failed: HEAD=%q ref=%q index=%q status=%q errors=%v", cause, head, ref, indexTree, status, errors.Join(headErr, refErr, indexErr, statusErr))
+	status, statusErr := gitutil.Output(ctx, repo, gitEnvironmentWithValue("GIT_OPTIONAL_LOCKS", "0"), nil, "status", "--porcelain=v1", "--untracked-files=all")
+	indexImageErr := verifyArtifactCommitIndexImage(snapshot, snapshot.indexImage, snapshot.indexMode)
+	if headErr != nil || refErr != nil || indexErr != nil || statusErr != nil || indexImageErr != nil || head != snapshot.head || ref != snapshot.ref || indexTree != snapshot.indexTree || status != "" {
+		return fmt.Errorf("%v; rollback state verification failed: HEAD=%q ref=%q index=%q status=%q errors=%v", cause, head, ref, indexTree, status, errors.Join(headErr, refErr, indexErr, statusErr, indexImageErr))
 	}
 	return cause
 }
 
 func restoreArtifactIndex(ctx context.Context, repo string, snapshot artifactCommitSnapshot, targetTree string) error {
+	indexImage, indexMode, err := readArtifactCommitIndexImage(snapshot.indexPath)
+	if err != nil {
+		return fmt.Errorf("inspect index image before restore: %w", err)
+	}
+	if bytes.Equal(indexImage, snapshot.indexImage) && indexMode.Perm() == snapshot.indexMode.Perm() {
+		return nil
+	}
+	if !snapshot.updatedIndexCaptured || !bytes.Equal(indexImage, snapshot.updatedIndexImage) || indexMode.Perm() != snapshot.updatedIndexMode.Perm() {
+		return errors.New("refusing to overwrite a Git index image not produced by this transaction")
+	}
 	indexTree, err := gitutil.Output(ctx, repo, nil, nil, "write-tree")
 	if err != nil {
-		return fmt.Errorf("inspect index before restore: %w", err)
+		return fmt.Errorf("inspect index tree before restore: %w", err)
 	}
-	switch indexTree {
-	case snapshot.indexTree:
-		return nil
-	case targetTree:
-	default:
-		return fmt.Errorf("refusing to overwrite concurrently changed index tree %s", indexTree)
+	if indexTree != targetTree {
+		return fmt.Errorf("refusing to restore index tree %s, expected transaction tree %s", indexTree, targetTree)
 	}
-	if _, err := gitutil.Bytes(ctx, repo, nil, nil, "read-tree", snapshot.head); err != nil {
-		return fmt.Errorf("read original HEAD tree into index: %w", err)
-	}
-	indexTree, err = gitutil.Output(ctx, repo, nil, nil, "write-tree")
+	lockPath := snapshot.indexPath + ".lock"
+	lock, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, snapshot.indexMode.Perm())
 	if err != nil {
-		return fmt.Errorf("verify restored index: %w", err)
+		return fmt.Errorf("create Git index lock for restore: %w", err)
 	}
-	if indexTree != snapshot.indexTree {
-		return fmt.Errorf("restored index tree=%s want %s", indexTree, snapshot.indexTree)
+	lockPathExists := true
+	defer func() {
+		if lockPathExists {
+			_ = lock.Close()
+			_ = os.Remove(lockPath)
+		}
+	}()
+	indexImage, indexMode, err = readArtifactCommitIndexImage(snapshot.indexPath)
+	if err != nil {
+		return fmt.Errorf("recheck index image under restore lock: %w", err)
+	}
+	if bytes.Equal(indexImage, snapshot.indexImage) && indexMode.Perm() == snapshot.indexMode.Perm() {
+		return nil
+	}
+	if !bytes.Equal(indexImage, snapshot.updatedIndexImage) || indexMode.Perm() != snapshot.updatedIndexMode.Perm() {
+		return errors.New("refusing to overwrite a concurrently changed Git index image")
+	}
+	if err := lock.Chmod(snapshot.indexMode.Perm()); err != nil {
+		return fmt.Errorf("set restored Git index mode: %w", err)
+	}
+	written, err := lock.Write(snapshot.indexImage)
+	if err != nil {
+		return fmt.Errorf("write original Git index image: %w", err)
+	}
+	if written != len(snapshot.indexImage) {
+		return io.ErrShortWrite
+	}
+	if err := lock.Sync(); err != nil {
+		return fmt.Errorf("sync restored Git index image: %w", err)
+	}
+	if err := lock.Close(); err != nil {
+		return fmt.Errorf("close restored Git index image: %w", err)
+	}
+	if err := os.Rename(lockPath, snapshot.indexPath); err != nil {
+		return fmt.Errorf("install restored Git index image: %w", err)
+	}
+	lockPathExists = false
+	if err := verifyArtifactCommitIndexImage(snapshot, snapshot.indexImage, snapshot.indexMode); err != nil {
+		return fmt.Errorf("verify restored Git index image: %w", err)
 	}
 	return nil
 }
@@ -391,7 +514,7 @@ func verifyCommittedRepository(ctx context.Context, repo, commit, targetTree str
 	if indexTree != targetTree {
 		return fmt.Errorf("index tree=%s want %s", indexTree, targetTree)
 	}
-	status, err := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := gitutil.Output(ctx, repo, gitEnvironmentWithValue("GIT_OPTIONAL_LOCKS", "0"), nil, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("inspect committed worktree: %w", err)
 	}
@@ -422,13 +545,17 @@ func wrapCleanupError(label string, err error) error {
 }
 
 func gitEnvironmentWithIndex(indexPath string) []string {
+	return gitEnvironmentWithValue("GIT_INDEX_FILE", indexPath)
+}
+
+func gitEnvironmentWithValue(name, setting string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
-	for _, value := range os.Environ() {
-		key, _, ok := strings.Cut(value, "=")
-		if ok && key == "GIT_INDEX_FILE" {
+	for _, entry := range os.Environ() {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && key == name {
 			continue
 		}
-		env = append(env, value)
+		env = append(env, entry)
 	}
-	return append(env, "GIT_INDEX_FILE="+indexPath)
+	return append(env, name+"="+setting)
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/redcapture"
 	artifactsig "github.com/MarcosAlves90/polis/v6/internal/signature"
 	"github.com/MarcosAlves90/polis/v6/spec"
+	"golang.org/x/term"
 )
 
 const version = "6.7.0"
@@ -678,11 +679,7 @@ func escapeCommitMessageForDisplay(message string) string {
 
 func stdinIsTerminal(reader io.Reader) bool {
 	file, ok := reader.(*os.File)
-	if !ok {
-		return false
-	}
-	info, err := file.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	return ok && term.IsTerminal(int(file.Fd()))
 }
 
 func displayGateList(gates []string) string {

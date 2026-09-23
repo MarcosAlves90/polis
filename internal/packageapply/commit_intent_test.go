@@ -497,6 +497,65 @@ func TestApplyCommitConstructionAndFinalVerificationFailuresRollback(t *testing.
 	}
 }
 
+func TestApplyCommitRollbackRestoresIndexFlags(t *testing.T) {
+	message := commitIntentFixtureMessage
+	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
+	configureCommitTestIdentity(t, repo)
+	pkg, err := packageverify.Load(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "update-index", "--assume-unchanged", "app.txt")
+	headBefore := git(t, repo, "rev-parse", "HEAD")
+	indexBefore := git(t, repo, "write-tree")
+	indexFlagsBefore := git(t, repo, "ls-files", "-v")
+	indexPath := git(t, repo, "rev-parse", "--git-path", "index")
+	if !filepath.IsAbs(indexPath) {
+		indexPath = filepath.Join(repo, indexPath)
+	}
+	indexContentsBefore, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("read original Git index: %v", err)
+	}
+	snapshot, err := captureArtifactCommitSnapshot(context.Background(), repo, headBefore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitutil.Bytes(context.Background(), repo, nil, bytes.NewReader(pkg.Patch), "apply", "-"); err != nil {
+		t.Fatalf("apply payload before injected failure: %v", err)
+	}
+	_, err = createArtifactCommitWithOperations(context.Background(), repo, snapshot, targetTree, message, pkg.Patch, artifactCommitOperations{
+		verifyRepository: func(ctx context.Context, repo, commit, tree string) error {
+			if err := verifyCommittedRepository(ctx, repo, commit, tree); err != nil {
+				return err
+			}
+			return errors.New("injected final verification failure")
+		},
+	})
+	if err == nil {
+		t.Fatal("injected transaction failure returned success")
+	}
+	if got := git(t, repo, "rev-parse", "HEAD"); got != headBefore {
+		t.Fatalf("HEAD after rollback=%s want %s", got, headBefore)
+	}
+	if got := git(t, repo, "write-tree"); got != indexBefore {
+		t.Fatalf("index tree after rollback=%s want %s", got, indexBefore)
+	}
+	if got := git(t, repo, "ls-files", "-v"); got != indexFlagsBefore {
+		t.Fatalf("index flags after rollback=%q want %q", got, indexFlagsBefore)
+	}
+	indexContentsAfter, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("read restored Git index: %v", err)
+	}
+	if !bytes.Equal(indexContentsAfter, indexContentsBefore) {
+		t.Fatal("index bytes after rollback differ from the original index")
+	}
+	if got := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); got != "" {
+		t.Fatalf("worktree after rollback=%q (transaction error %v)", got, err)
+	}
+}
+
 func TestApplyCommitRefCASConflictDoesNotOverwriteConcurrentRef(t *testing.T) {
 	message := commitIntentFixtureMessage
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)

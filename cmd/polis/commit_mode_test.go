@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -50,6 +52,59 @@ func TestConfirmArtifactCommitRequiresTTYAndAffirmativeAnswer(t *testing.T) {
 	approved, err = confirmArtifactCommit(strings.NewReader("YES\n"), &output, message, targetTree, true)
 	if err != nil || !approved {
 		t.Fatalf("affirmative confirmation approved=%t err=%v", approved, err)
+	}
+}
+
+func TestStdinIsTerminalRejectsNonTerminalSources(t *testing.T) {
+	testFile := func(t *testing.T, file *os.File) {
+		t.Helper()
+		terminal := stdinIsTerminal(file)
+		if terminal {
+			t.Fatalf("%s was classified as a terminal", file.Name())
+		}
+		approved, err := confirmArtifactCommit(file, &bytes.Buffer{}, "test message", "tree", terminal)
+		if err == nil || approved {
+			t.Fatalf("confirmation from %s approved=%t err=%v", file.Name(), approved, err)
+		}
+	}
+
+	t.Run("pipe", func(t *testing.T) {
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reader.Close()
+		defer writer.Close()
+		testFile(t, reader)
+	})
+
+	t.Run("regular file", func(t *testing.T) {
+		file, err := os.CreateTemp(t.TempDir(), "stdin-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		testFile(t, file)
+	})
+
+	t.Run("null device", func(t *testing.T) {
+		file, err := os.Open(os.DevNull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		testFile(t, file)
+	})
+
+	if runtime.GOOS != "windows" {
+		t.Run("zero device", func(t *testing.T) {
+			file, err := os.Open("/dev/zero")
+			if err != nil {
+				t.Fatalf("open /dev/zero: %v", err)
+			}
+			defer file.Close()
+			testFile(t, file)
+		})
 	}
 }
 
