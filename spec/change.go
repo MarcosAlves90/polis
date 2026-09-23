@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -99,6 +100,107 @@ type ChangeContract struct {
 
 type CommitMetadata struct {
 	Message string `json:"message"`
+}
+
+// UnmarshalJSON checks the raw commit.message string before encoding/json can
+// replace unpaired UTF-16 surrogate escapes with U+FFFD.
+func (m *CommitMetadata) UnmarshalJSON(data []byte) error {
+	type plain CommitMetadata
+
+	dec := json.NewDecoder(bytes.NewReader(data))
+	first, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	opening, ok := first.(json.Delim)
+	if !ok || opening != '{' {
+		return json.Unmarshal(data, (*plain)(m))
+	}
+
+	for dec.More() {
+		keyToken, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return errors.New("commit metadata object key must be a string")
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return err
+		}
+		if strings.EqualFold(key, "message") {
+			if err := rejectUnpairedSurrogateEscapes(value); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return err
+	}
+	if err := ensureDecoderEOF(dec, "commit metadata"); err != nil {
+		return err
+	}
+
+	strict := json.NewDecoder(bytes.NewReader(data))
+	strict.DisallowUnknownFields()
+	var decoded plain
+	if err := strict.Decode(&decoded); err != nil {
+		return err
+	}
+	if err := ensureDecoderEOF(strict, "commit metadata"); err != nil {
+		return err
+	}
+	*m = CommitMetadata(decoded)
+	return nil
+}
+
+func rejectUnpairedSurrogateEscapes(raw []byte) error {
+	if len(raw) < 2 || raw[0] != '"' {
+		return nil
+	}
+	for i := 1; i < len(raw)-1; {
+		if raw[i] != '\\' {
+			i++
+			continue
+		}
+		i++
+		if i >= len(raw)-1 {
+			return nil // The JSON decoder reports the malformed escape.
+		}
+		if raw[i] != 'u' {
+			i++
+			continue
+		}
+		if i+4 >= len(raw) {
+			return nil // The JSON decoder reports the malformed escape.
+		}
+		unit, err := strconv.ParseUint(string(raw[i+1:i+5]), 16, 16)
+		if err != nil {
+			return nil // The JSON decoder reports the malformed escape.
+		}
+		switch {
+		case unit >= 0xD800 && unit <= 0xDBFF:
+			next := i + 5
+			if next+5 >= len(raw) || raw[next] != '\\' || raw[next+1] != 'u' {
+				return errors.New("commit.message must not contain an unpaired Unicode surrogate escape")
+			}
+			low, err := strconv.ParseUint(string(raw[next+2:next+6]), 16, 16)
+			if err != nil {
+				return nil // The JSON decoder reports the malformed escape.
+			}
+			if low < 0xDC00 || low > 0xDFFF {
+				return errors.New("commit.message must not contain an unpaired Unicode surrogate escape")
+			}
+			i = next + 6
+		case unit >= 0xDC00 && unit <= 0xDFFF:
+			return errors.New("commit.message must not contain an unpaired Unicode surrogate escape")
+		default:
+			i += 5
+		}
+	}
+	return nil
 }
 
 func (m CommitMetadata) Validate() error {

@@ -38,7 +38,7 @@ func TestBuildTransportsLockedCommitIntent(t *testing.T) {
 }
 
 func TestApplyAutoCommitsExactArtifactIntent(t *testing.T) {
-	message := commitIntentFixtureMessage
+	message := commitIntentFixtureMessage + "controls:\x1b\a\u0085 café\n"
 	repo, artifact, targetTree := repoWithCommitArtifact(t, message)
 	configureCommitTestIdentity(t, repo)
 	pkg, err := packageverify.Load(artifact)

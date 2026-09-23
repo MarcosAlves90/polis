@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"unicode"
 
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
 	"github.com/MarcosAlves90/polis/v6/internal/offlinekit"
@@ -212,10 +213,8 @@ func writeInspectionText(out io.Writer, inspection packageverify.Inspection) {
 		inspection.ValidationLevel, strings.Join(inspection.EnabledGates, ", "), strings.Join(inspection.DisabledGates, ", "), strings.Join(inspection.DeferredGates, ", "), inspection.ConsumerValidationRequired, inspection.ChangeContractSchemaVersion,
 		inspection.Kind, inspection.BaseCommit, inspection.TargetTree, strings.Join(inspection.AllowedPaths, ", "), inspection.EvidenceEvents)
 	if inspection.Commit != nil {
-		fmt.Fprintf(out, "Commit message:\n%s", inspection.Commit.Message)
-		if !strings.HasSuffix(inspection.Commit.Message, "\n") {
-			fmt.Fprintln(out)
-		}
+		fmt.Fprintf(out, "Commit message:\n%s", escapeCommitMessageForDisplay(inspection.Commit.Message))
+		fmt.Fprintln(out)
 	}
 	for _, link := range inspection.Traceability {
 		fmt.Fprintf(out, "Trace: %s -> %s -> %s\n", link.RequirementID, link.AcceptanceCriterionID, link.Proof)
@@ -634,10 +633,8 @@ func confirmArtifactCommit(reader io.Reader, writer io.Writer, message, targetTr
 	if !terminal {
 		return false, errors.New("--commit-mode prompt requires a terminal")
 	}
-	fmt.Fprintf(writer, "Target tree: %s\nArtifact commit message:\n%s", targetTree, message)
-	if !strings.HasSuffix(message, "\n") {
-		fmt.Fprintln(writer)
-	}
+	fmt.Fprintf(writer, "Target tree: %s\nArtifact commit message:\n%s", targetTree, escapeCommitMessageForDisplay(message))
+	fmt.Fprintln(writer)
 	fmt.Fprint(writer, "Create this local commit? [y/N]: ")
 	line, err := bufio.NewReader(reader).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
@@ -648,10 +645,35 @@ func confirmArtifactCommit(reader io.Reader, writer io.Writer, message, targetTr
 }
 
 func writeCommitMessage(out io.Writer, label, message string) {
-	fmt.Fprintf(out, "%s:\n%s", label, message)
-	if !strings.HasSuffix(message, "\n") {
-		fmt.Fprintln(out)
+	fmt.Fprintf(out, "%s:\n%s", label, escapeCommitMessageForDisplay(message))
+	fmt.Fprintln(out)
+}
+
+func escapeCommitMessageForDisplay(message string) string {
+	var escaped strings.Builder
+	for _, r := range message {
+		switch r {
+		case '\n':
+			escaped.WriteString(`\n`)
+		case '\r':
+			escaped.WriteString(`\r`)
+		case '\t':
+			escaped.WriteString(`\t`)
+		case '\b':
+			escaped.WriteString(`\b`)
+		case '\f':
+			escaped.WriteString(`\f`)
+		default:
+			if unicode.IsControl(r) && r <= 0xFF {
+				fmt.Fprintf(&escaped, `\x%02x`, r)
+			} else if unicode.IsControl(r) {
+				fmt.Fprintf(&escaped, `\u%04x`, r)
+			} else {
+				escaped.WriteRune(r)
+			}
+		}
 	}
+	return escaped.String()
 }
 
 func stdinIsTerminal(reader io.Reader) bool {
@@ -811,9 +833,25 @@ func verifyDetached(artifact, signaturePath, trustedKey string) error {
 func validFormat(format string) bool { return format == "text" || format == "json" }
 
 func writeJSON(w io.Writer, value any) {
-	enc := json.NewEncoder(w)
+	var encoded strings.Builder
+	enc := json.NewEncoder(&encoded)
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(value)
+	if err := enc.Encode(value); err != nil {
+		return
+	}
+	_, _ = io.WriteString(w, escapeJSONC1Controls(encoded.String()))
+}
+
+func escapeJSONC1Controls(encoded string) string {
+	var escaped strings.Builder
+	for _, r := range encoded {
+		if r >= 0x80 && r <= 0x9F {
+			fmt.Fprintf(&escaped, `\u%04x`, r)
+		} else {
+			escaped.WriteRune(r)
+		}
+	}
+	return escaped.String()
 }
 
 func writeFailure(w io.Writer, format, label string, code int, err error) int {
