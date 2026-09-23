@@ -54,7 +54,7 @@ func canonicalPolicyBytes(t *testing.T) []byte {
 
 func lockedCLIContract(t *testing.T, repo string, externalPolicy ...string) string {
 	t.Helper()
-	draftPath := cliDraftContract(t, repo, nil)
+	draftPath := cliDraftContract(t, repo, spec.StrictChangeContractSchemaVersion, nil)
 	locked := filepath.Join(t.TempDir(), "cli-locked-v4.json")
 	startOptions := devstart.Options{Repo: repo, Contract: draftPath, Out: locked}
 	if len(externalPolicy) > 0 {
@@ -66,7 +66,7 @@ func lockedCLIContract(t *testing.T, repo string, externalPolicy ...string) stri
 	return locked
 }
 
-func cliDraftContract(t *testing.T, repo string, commitMessage *string) string {
+func cliDraftContract(t *testing.T, repo string, schemaVersion int, commitMessage *string) string {
 	t.Helper()
 	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
 	pass := spec.CommandSpec{Argv: cliFixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}
@@ -87,11 +87,13 @@ func cliDraftContract(t *testing.T, repo string, commitMessage *string) string {
 		},
 		Behavior: pass, Affected: pass, Regression: spec.RegressionContract{Mode: spec.RegressionModeGreenGreen, Command: &regression},
 	}
+	draft.SchemaVersion = schemaVersion
 	draftName := "cli-draft-v3.json"
-	if commitMessage != nil {
-		draft.SchemaVersion = spec.CommitIntentDraftChangeContractSchemaVersion
-		draft.Commit = &spec.CommitMetadata{Message: *commitMessage}
+	if schemaVersion == spec.CommitIntentDraftChangeContractSchemaVersion {
 		draftName = "cli-draft-v5.json"
+	}
+	if commitMessage != nil {
+		draft.Commit = &spec.CommitMetadata{Message: *commitMessage}
 	}
 	raw, err := json.Marshal(draft)
 	if err != nil {
@@ -564,7 +566,23 @@ func TestRunBuildRequiresFlags(t *testing.T) {
 
 func TestRunApplyAppliesBuiltPackage(t *testing.T) {
 	repo := makeBuildRepo(t)
-	contract := lockedCLIContract(t, repo)
+	draft := cliDraftContract(t, repo, spec.CommitIntentDraftChangeContractSchemaVersion, nil)
+	contract := filepath.Join(t.TempDir(), "cli-locked-v6.json")
+	var startOut, startErr bytes.Buffer
+	if code := run([]string{"start", "--repo", repo, "--contract", draft, "--out", contract}, &startOut, &startErr); code != exitPass {
+		t.Fatalf("start code=%d stderr=%s", code, startErr.String())
+	}
+	lockedRaw, err := os.ReadFile(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockedContract, err := spec.DecodeChangeContract(lockedRaw)
+	if err != nil {
+		t.Fatalf("decode locked schema-v6 contract: %v", err)
+	}
+	if lockedContract.SchemaVersion != spec.CommitIntentLockedChangeContractSchemaVersion || lockedContract.Commit != nil {
+		t.Fatalf("locked contract=%+v; want schema v6 without commit metadata", lockedContract)
+	}
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -582,13 +600,21 @@ func TestRunApplyAppliesBuiltPackage(t *testing.T) {
 	if b, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("restore: %v\n%s", err, b)
 	}
-	var out, errOut bytes.Buffer
-	code := run([]string{"apply", "--repo", repo, artifact}, &out, &errOut)
-	if code != 0 {
-		t.Fatalf("code=%d stderr=%s", code, errOut.String())
+	verified := runCLIJSON(t, "verify", "--format", "json", artifact)
+	if verified["status"] != "PASS" {
+		t.Fatalf("verify result=%v", verified)
 	}
-	if !strings.Contains(out.String(), "POLIS APPLY: PASS") || strings.Contains(out.String(), "Evidence:") || !strings.Contains(out.String(), "Producer deferred gates: coverage") || !strings.Contains(out.String(), "Outstanding deferred gates: none") || !strings.Contains(out.String(), "Consumer validation required: true") || !strings.Contains(out.String(), "Consumer validation status: PASS") {
-		t.Fatalf("stdout=%q", out.String())
+	inspection := runCLIJSON(t, "inspect", "--format", "json", artifact)
+	if commit, exists := inspection["commit"]; exists && commit != nil {
+		t.Fatalf("inspect synthesized commit metadata for schema v6 contract without it: %v", commit)
+	}
+	head := cliGit(t, repo, "rev-parse", "HEAD")
+	apply := runCLIJSON(t, "apply", "--repo", repo, "--format", "json", artifact)
+	if apply["committed"] != false || apply["commit_sha"] != nil || apply["commit_message"] != nil {
+		t.Fatalf("default apply synthesized commit intent: %v", apply)
+	}
+	if got := cliGit(t, repo, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("default apply moved HEAD: got %s want %s", got, head)
 	}
 	if b, _ := os.ReadFile(filepath.Join(repo, "app.txt")); string(b) != "changed\n" {
 		t.Fatalf("app.txt=%q", b)
@@ -598,7 +624,7 @@ func TestRunApplyAppliesBuiltPackage(t *testing.T) {
 func TestRunApplyAutoCommitsArtifactIntentEndToEnd(t *testing.T) {
 	repo := makeBuildRepo(t)
 	message := "feat(apply): commit the validated artifact tree\n\nsecond line with preserved spaces  \n"
-	draft := cliDraftContract(t, repo, &message)
+	draft := cliDraftContract(t, repo, spec.CommitIntentDraftChangeContractSchemaVersion, &message)
 	locked := filepath.Join(t.TempDir(), "cli-locked-v6.json")
 	var startOut, startErr bytes.Buffer
 	if code := run([]string{"start", "--repo", repo, "--contract", draft, "--out", locked}, &startOut, &startErr); code != exitPass {
