@@ -274,3 +274,25 @@ this Linux workspace. The repository CI still defines those platform jobs, but a
 fresh cross-platform result requires the change to run in those environments; no
 remote workflow was triggered because publication/push/remote mutation was outside
 the authorized scope.
+
+## POLIS V6 artifact-backed commit — Issue #3 — 2026-09-23
+
+This change carries optional commit intent in Change Contract schema v5/v6 and
+adds consumer-authorized local commits to `apply`. The default remains
+apply-only. It also removes unowned schema identifiers from the current schema
+resources while retaining standard JSON Schema declarations.
+
+Observed on Darwin arm64 with Go 1.27.1 and Git 2.55.0:
+
+- `go test ./...` — PASS, 495 tests across 22 packages.
+- `go test -coverpkg=./... ./... -coverprofile=.polis/coverage.out` — PASS.
+- Normative `go-coverprofile-v1` line-union metric: `5219 / 6503 = 80.255267%`, strictly greater than `80.0%` — PASS.
+- `go vet ./...` — PASS.
+- `go build ./...` — PASS.
+- `go mod verify` — PASS (`all modules verified`).
+- `gofmt -l .` and `git diff --check` — PASS, no output.
+- Offline export — PASS; verified 14-member archive includes Change Contract v5/v6 schemas and declares `network_required: false`; `unzip -t` found no archive errors.
+- Repository-wide search for the unowned schema host — PASS, no matches.
+- `npm run verify` — unavailable because the repository has no `package.json`.
+
+No cross-platform or remote CI result is claimed from this local run.

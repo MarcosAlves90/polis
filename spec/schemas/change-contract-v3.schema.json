@@ -1,6 +1,5 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://polis.dev/spec/v5/change-contract-v3.schema.json",
   "title": "POLIS Strict Change Contract v3",
   "type": "object",
   "additionalProperties": false,

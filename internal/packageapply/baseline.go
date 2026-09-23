@@ -38,6 +38,8 @@ const (
 type Options struct {
 	BaselineMode              BaselineMode
 	AllowMissingBaselineProof bool
+	CommitMode                CommitMode
+	ConfirmCommit             CommitConfirmation
 }
 
 type baselineAssessment struct {

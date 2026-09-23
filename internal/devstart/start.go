@@ -113,8 +113,8 @@ func loadDraft(root, contractPath string) (spec.ChangeContract, error) {
 	if err != nil {
 		return spec.ChangeContract{}, fmt.Errorf("invalid draft change contract: %w", err)
 	}
-	if draft.SchemaVersion != spec.StrictChangeContractSchemaVersion || draft.DevelopmentMethod != spec.DevelopmentMethodStrictSDDTDDV1 {
-		return spec.ChangeContract{}, errors.New("polis start requires a strict schema-v3 draft using strict_sdd_tdd_v1")
+	if (draft.SchemaVersion != spec.StrictChangeContractSchemaVersion && draft.SchemaVersion != spec.CommitIntentDraftChangeContractSchemaVersion) || draft.DevelopmentMethod != spec.DevelopmentMethodStrictSDDTDDV1 {
+		return spec.ChangeContract{}, errors.New("polis start requires a strict schema-v3 or schema-v5 draft using strict_sdd_tdd_v1")
 	}
 	return draft, nil
 }
@@ -145,7 +145,11 @@ func lockContract(ctx context.Context, root string, draft spec.ChangeContract, p
 		return spec.ChangeContract{}, fmt.Errorf("lock baseline: %w", err)
 	}
 	locked := draft
-	locked.SchemaVersion = spec.LockedChangeContractSchemaVersion
+	if draft.SchemaVersion == spec.CommitIntentDraftChangeContractSchemaVersion {
+		locked.SchemaVersion = spec.CommitIntentLockedChangeContractSchemaVersion
+	} else {
+		locked.SchemaVersion = spec.LockedChangeContractSchemaVersion
+	}
 	locked.DevelopmentMethod = spec.DevelopmentMethodStrictSDDTDDV2
 	locked.BaselineLock = &lock
 	if err := locked.Validate(); err != nil {

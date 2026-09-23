@@ -26,6 +26,9 @@ type Result struct {
 	Project                    string
 	Change                     string
 	TargetTree                 string
+	Committed                  bool
+	CommitSHA                  string
+	CommitMessage              *string
 	ValidationLevel            string
 	EnabledGates               []string
 	DisabledGates              []string
@@ -55,9 +58,20 @@ func Apply(ctx context.Context, artifact, repoPath string) (Result, error) {
 }
 
 func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Options) (Result, error) {
+	commitMode, err := ParseCommitMode(string(opts.CommitMode))
+	if err != nil {
+		return Result{}, err
+	}
+	opts.CommitMode = commitMode
 	pkg, err := packageverify.Load(artifact)
 	if err != nil {
 		return Result{}, fmt.Errorf("verify package: %w", err)
+	}
+	if commitMode != CommitModeNone && pkg.Change.Commit == nil {
+		return Result{}, fmt.Errorf("%w: artifact has no commit.message", ErrCommitBlocked)
+	}
+	if commitMode == CommitModePrompt && opts.ConfirmCommit == nil {
+		return Result{}, fmt.Errorf("%w: prompt mode requires an interactive confirmation", ErrCommitBlocked)
 	}
 	repo, err := resolveRepo(ctx, repoPath)
 	if err != nil {
@@ -117,6 +131,32 @@ func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Optio
 	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", gitApplyCheck, "-"); err != nil {
 		return Result{}, fmt.Errorf("%w: real git apply --check failed: %v", ErrApplyFailed, err)
 	}
+	var commitSnapshot *artifactCommitSnapshot
+	if commitMode != CommitModeNone {
+		if err := validateArtifactCommitIdentity(ctx, repo); err != nil {
+			return Result{}, fmt.Errorf("%w: commit identity precondition: %v", ErrCommitBlocked, err)
+		}
+		snapshot, err := captureArtifactCommitSnapshot(ctx, repo, assessment.ConsumerHead)
+		if err != nil {
+			return Result{}, fmt.Errorf("%w: capture commit baseline: %v", ErrApplyFailed, err)
+		}
+		commitSnapshot = &snapshot
+	}
+	if commitMode == CommitModePrompt {
+		approved, err := opts.ConfirmCommit(pkg.Change.Commit.Message, assessment.TargetTree)
+		if err != nil {
+			return Result{}, fmt.Errorf("%w: commit confirmation failed: %v", ErrCommitBlocked, err)
+		}
+		if !approved {
+			return Result{}, fmt.Errorf("%w: commit declined", ErrCommitBlocked)
+		}
+		if err := verifyAssessmentStable(ctx, repo, pkg, assessment); err != nil {
+			return Result{}, fmt.Errorf("baseline changed during commit confirmation: %w", err)
+		}
+		if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", gitApplyCheck, "-"); err != nil {
+			return Result{}, fmt.Errorf("%w: real git apply --check failed after confirmation: %v", ErrApplyFailed, err)
+		}
+	}
 	if _, err := gitutil.Bytes(ctx, repo, nil, bytes.NewReader(pkg.Patch), "apply", "-"); err != nil {
 		return Result{}, fmt.Errorf("%w: real git apply failed: %v", ErrApplyFailed, err)
 	}
@@ -135,7 +175,16 @@ func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Optio
 		}
 		return Result{}, fmt.Errorf("post-apply target_tree mismatch: got %s want %s; patch reversed", gotTree, assessment.TargetTree)
 	}
-	return resultForPackage(pkg, gotTree, assessment, consumerPolicyResult), nil
+	result := resultForPackage(pkg, gotTree, assessment, consumerPolicyResult)
+	if commitSnapshot != nil {
+		commitSHA, err := createArtifactCommit(ctx, repo, *commitSnapshot, gotTree, pkg.Change.Commit.Message, pkg.Patch)
+		if err != nil {
+			return Result{}, fmt.Errorf("%w: %v", ErrApplyFailed, err)
+		}
+		result.CommitSHA = commitSHA
+		result.Committed = true
+	}
+	return result, nil
 }
 
 func Preflight(ctx context.Context, artifact, repoPath string) (Result, error) {
@@ -194,10 +243,16 @@ func PreflightWithOptions(ctx context.Context, artifact, repoPath string, opts O
 
 func resultForPackage(pkg packageverify.Package, targetTree string, assessment baselineAssessment, policyResult policyexec.Result) Result {
 	summary := pkg.Policy.ValidationSummary()
+	var commitMessage *string
+	if pkg.Change.Commit != nil {
+		message := pkg.Change.Commit.Message
+		commitMessage = &message
+	}
 	return Result{
 		Project:                    pkg.Manifest.Project,
 		Change:                     pkg.Manifest.Change,
 		TargetTree:                 targetTree,
+		CommitMessage:              commitMessage,
 		ValidationLevel:            summary.Level,
 		EnabledGates:               append([]string{}, summary.EnabledGates...),
 		DisabledGates:              append([]string{}, summary.DisabledGates...),

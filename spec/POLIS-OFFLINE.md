@@ -28,17 +28,34 @@ Run the executable directly from this bundle:
 ./bin/polis doctor
 ./bin/polis init --repo /path/to/repository --profile auto
 ./bin/polis plan --repo /path/to/repository
-./bin/polis start --repo /path/to/repository --policy /outside/policy-v3.json --contract /outside/draft-v3.json --out /outside/locked-v4.json
-./bin/polis capture-red --repo /path/to/repository --contract /outside/locked-v4.json --out /outside/regression.patch
-./bin/polis build --repo /path/to/repository --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/locked-v4.json --regression-patch /outside/regression.patch [--defer-gate gate-id ...] --out /outside/output
+./bin/polis start --repo /path/to/repository --policy /outside/policy-v3.json --contract /outside/draft-v5.json --out /outside/locked-v6.json
+./bin/polis capture-red --repo /path/to/repository --contract /outside/locked-v6.json --out /outside/regression.patch
+./bin/polis build --repo /path/to/repository --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/locked-v6.json --regression-patch /outside/regression.patch [--defer-gate gate-id ...] --out /outside/output
 ./bin/polis verify /outside/output/artifact.polis
 ./bin/polis preflight --repo /path/to/repository [--baseline-mode strict|compatible|permissive] /outside/output/artifact.polis
-./bin/polis apply --repo /path/to/repository [--baseline-mode strict|compatible|permissive] /outside/output/artifact.polis
+./bin/polis apply --repo /path/to/repository [--baseline-mode strict|compatible|permissive] [--commit-mode none|prompt|auto] /outside/output/artifact.polis
 ```
 
 Use `polis sign` separately when a detached Ed25519 signature is required.
 The external policy, locked contract, regression patch, package, and signature
 should remain outside the target worktree in the canonical zero-residue flow.
+
+The legacy strict schema-v3 draft to locked schema-v4 flow remains supported.
+To include commit intent, put an optional `commit.message` in the schema-v5
+draft before `start`; `start` locks it as schema v6 and `build` packages it in
+the existing `polis/polis-change.json` member. Package format v5 and its
+eight-member inventory do not change. A trusted detached signature
+authenticates the message when verified; package checksums alone do not prove
+producer identity.
+
+`apply` remains apply-only by default (`--commit-mode none`). `prompt` displays
+the exact message and validated target tree before real mutation and requires
+interactive confirmation. `auto` explicitly authorizes a local commit without
+confirmation. Both committing modes require commit metadata, create exactly one
+commit with the validated consumer HEAD as parent and the validated target tree,
+and leave the repository clean on success. Refusal or a non-interactive prompt
+is blocked without repository mutation. Commit mode does not run hooks, sign,
+push, or change remote refs.
 
 `strict` is the default validation level. `standard` and `minimal` reduce only
 optional project-quality gates; policy, contract, path, baseline-compatibility,
@@ -56,6 +73,10 @@ New builds use package format v5 and Evidence v3. Repeat `--defer-gate <id>` on
 `plan` to preview or on `build` to skip an enabled producer gate. The packaged
 consumer policy still requires every enabled gate during `preflight` and
 `apply`. Formats v2-v4 retain their Evidence v2 semantics.
+
+The offline kit includes Change Contract schema v5/v6 resources for commit
+metadata; historical contract schemas v1-v4 remain supported under their
+existing rules.
 
 The bundle does not contain a target repository or project-specific policy.
 It can therefore be copied between projects without carrying project data.

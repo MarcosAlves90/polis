@@ -62,6 +62,7 @@ type Inspection struct {
 	DeferredGates               []string                `json:"deferred_gates"`
 	ConsumerValidationRequired  bool                    `json:"consumer_validation_required"`
 	ChangeContractSchemaVersion int                     `json:"change_contract_schema_version"`
+	Commit                      *spec.CommitMetadata    `json:"commit,omitempty"`
 	Kind                        string                  `json:"kind"`
 	BaseCommit                  string                  `json:"base_commit"`
 	TargetTree                  string                  `json:"target_tree"`
@@ -115,6 +116,10 @@ func Inspect(filename string) (Inspection, error) {
 		Kind: pkg.Change.Kind, BaseCommit: pkg.Manifest.BaseCommit, TargetTree: pkg.Manifest.TargetTree,
 		EvidenceEvents: len(events),
 	}
+	if pkg.Change.Commit != nil {
+		commit := *pkg.Change.Commit
+		inspection.Commit = &commit
+	}
 	summary := pkg.Policy.ValidationSummary()
 	inspection.EnabledGates = append([]string(nil), summary.EnabledGates...)
 	inspection.DisabledGates = append([]string(nil), summary.DisabledGates...)
@@ -149,6 +154,9 @@ func Load(filename string) (Package, error) {
 	if err != nil {
 		return Package{}, err
 	}
+	if err := validateChangeContractFormatCompatibility(contracts.manifest.FormatVersion, contracts.change.SchemaVersion); err != nil {
+		return Package{}, err
+	}
 	if err := validateInventory(contents, contracts.manifest.FormatVersion); err != nil {
 		return Package{}, err
 	}
@@ -167,6 +175,16 @@ func Load(filename string) (Package, error) {
 		return Package{}, err
 	}
 	return packageFromContents(contents, contracts, regressionPatch, deferredGates), nil
+}
+
+func validateChangeContractFormatCompatibility(formatVersion, changeSchemaVersion int) error {
+	if changeSchemaVersion == spec.CommitIntentDraftChangeContractSchemaVersion {
+		return errors.New("package cannot contain draft Change Contract schema v5")
+	}
+	if changeSchemaVersion == spec.CommitIntentLockedChangeContractSchemaVersion && formatVersion != spec.FormatVersion {
+		return fmt.Errorf("locked Change Contract schema v6 requires package format v%d", spec.FormatVersion)
+	}
+	return nil
 }
 
 func loadArchiveContents(filename string) (map[string][]byte, error) {
@@ -261,7 +279,7 @@ func decodeContracts(contents map[string][]byte) (decodedContracts, error) {
 }
 
 func verifyLockedDevelopmentBaseline(manifest spec.Manifest, change spec.ChangeContract, contents map[string][]byte) error {
-	if change.SchemaVersion != spec.LockedChangeContractSchemaVersion {
+	if !change.IsLockedStrictDevelopment() {
 		return nil
 	}
 	if change.BaselineLock == nil || change.Specification == nil {

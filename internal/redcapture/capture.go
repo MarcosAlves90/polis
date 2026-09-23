@@ -100,8 +100,8 @@ func loadRedGreenContract(repo, filename string) (spec.ChangeContract, error) {
 	if err != nil {
 		return spec.ChangeContract{}, fmt.Errorf("invalid change contract: %w", err)
 	}
-	if contract.SchemaVersion != spec.LockedChangeContractSchemaVersion || contract.DevelopmentMethod != spec.DevelopmentMethodStrictSDDTDDV2 || contract.BaselineLock == nil {
-		return spec.ChangeContract{}, errors.New("POLIS V6 capture-red requires locked Change Contract schema v4 produced by polis start")
+	if !contract.IsLockedStrictDevelopment() || contract.DevelopmentMethod != spec.DevelopmentMethodStrictSDDTDDV2 || contract.BaselineLock == nil {
+		return spec.ChangeContract{}, errors.New("POLIS V6 capture-red requires locked Change Contract schema v4 or v6 produced by polis start")
 	}
 	if !contract.RequiresRedGreen() {
 		return spec.ChangeContract{}, errors.New("capture-red requires a red_green change contract")

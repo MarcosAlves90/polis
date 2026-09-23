@@ -8,13 +8,18 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
-	LegacyChangeContractSchemaVersion = 1
-	ChangeContractSchemaVersion       = 2
-	StrictChangeContractSchemaVersion = 3
-	LockedChangeContractSchemaVersion = 4
+	LegacyChangeContractSchemaVersion             = 1
+	ChangeContractSchemaVersion                   = 2
+	StrictChangeContractSchemaVersion             = 3
+	LockedChangeContractSchemaVersion             = 4
+	CommitIntentDraftChangeContractSchemaVersion  = 5
+	CommitIntentLockedChangeContractSchemaVersion = 6
+	MaxCommitMessageRunes                         = 16_384
+	MaxCommitMessageBytes                         = 64 << 10
 )
 
 const (
@@ -81,6 +86,7 @@ type BaselineLock struct {
 type ChangeContract struct {
 	SchemaVersion     int                       `json:"schema_version"`
 	Kind              string                    `json:"kind"`
+	Commit            *CommitMetadata           `json:"commit,omitempty"`
 	Scope             *ChangeScope              `json:"scope,omitempty"`
 	TestScope         *ChangeScope              `json:"test_scope,omitempty"`
 	DevelopmentMethod string                    `json:"development_method,omitempty"`
@@ -91,11 +97,39 @@ type ChangeContract struct {
 	Regression        RegressionContract        `json:"regression"`
 }
 
+type CommitMetadata struct {
+	Message string `json:"message"`
+}
+
+func (m CommitMetadata) Validate() error {
+	if m.Message == "" {
+		return errors.New("commit.message must be non-empty")
+	}
+	if !utf8.ValidString(m.Message) {
+		return errors.New("commit.message must be valid UTF-8")
+	}
+	if strings.IndexByte(m.Message, 0) >= 0 {
+		return errors.New("commit.message must not contain NUL")
+	}
+	if utf8.RuneCountInString(m.Message) > MaxCommitMessageRunes || len(m.Message) > MaxCommitMessageBytes {
+		return fmt.Errorf("commit.message exceeds the maximum of %d Unicode scalar values or %d UTF-8 bytes", MaxCommitMessageRunes, MaxCommitMessageBytes)
+	}
+	return nil
+}
+
 type ChangeScope struct {
 	AllowedPaths []string `json:"allowed_paths"`
 }
 
 func DecodeChangeContract(raw []byte) (ChangeContract, error) {
+	if !utf8.Valid(raw) {
+		var version struct {
+			SchemaVersion int `json:"schema_version"`
+		}
+		if err := json.Unmarshal(raw, &version); err == nil && (version.SchemaVersion == CommitIntentDraftChangeContractSchemaVersion || version.SchemaVersion == CommitIntentLockedChangeContractSchemaVersion) {
+			return ChangeContract{}, errors.New("decode change contract: schema v5/v6 must be valid UTF-8")
+		}
+	}
 	var c ChangeContract
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -112,8 +146,16 @@ func DecodeChangeContract(raw []byte) (ChangeContract, error) {
 }
 
 func (c ChangeContract) Validate() error {
-	if c.SchemaVersion != LegacyChangeContractSchemaVersion && c.SchemaVersion != ChangeContractSchemaVersion && c.SchemaVersion != StrictChangeContractSchemaVersion && c.SchemaVersion != LockedChangeContractSchemaVersion {
+	if c.SchemaVersion != LegacyChangeContractSchemaVersion && c.SchemaVersion != ChangeContractSchemaVersion && c.SchemaVersion != StrictChangeContractSchemaVersion && c.SchemaVersion != LockedChangeContractSchemaVersion && c.SchemaVersion != CommitIntentDraftChangeContractSchemaVersion && c.SchemaVersion != CommitIntentLockedChangeContractSchemaVersion {
 		return fmt.Errorf("unsupported change contract schema_version %d", c.SchemaVersion)
+	}
+	if c.Commit != nil {
+		if c.SchemaVersion != CommitIntentDraftChangeContractSchemaVersion && c.SchemaVersion != CommitIntentLockedChangeContractSchemaVersion {
+			return fmt.Errorf("change contract schema v%d must not contain commit metadata", c.SchemaVersion)
+		}
+		if err := c.Commit.Validate(); err != nil {
+			return err
+		}
 	}
 	switch c.Kind {
 	case ChangeKindFeature, ChangeKindDefect, ChangeKindBehaviorPreserving:
@@ -164,7 +206,7 @@ func (c ChangeContract) Validate() error {
 
 func (c ChangeContract) validateStrictDevelopment() error {
 	wantMethod := DevelopmentMethodStrictSDDTDDV1
-	if c.SchemaVersion == LockedChangeContractSchemaVersion {
+	if c.IsLockedStrictDevelopment() {
 		wantMethod = DevelopmentMethodStrictSDDTDDV2
 	}
 	if c.DevelopmentMethod != wantMethod {
@@ -190,14 +232,14 @@ func (c ChangeContract) validateStrictDevelopment() error {
 	if err := c.Specification.Validate(); err != nil {
 		return fmt.Errorf("specification: %w", err)
 	}
-	if c.SchemaVersion == StrictChangeContractSchemaVersion {
+	if c.SchemaVersion == StrictChangeContractSchemaVersion || c.SchemaVersion == CommitIntentDraftChangeContractSchemaVersion {
 		if c.BaselineLock != nil {
-			return errors.New("change contract schema v3 must not contain baseline_lock")
+			return fmt.Errorf("change contract schema v%d must not contain baseline_lock", c.SchemaVersion)
 		}
 		return nil
 	}
 	if c.BaselineLock == nil {
-		return errors.New("change contract schema v4 requires baseline_lock")
+		return fmt.Errorf("change contract schema v%d requires baseline_lock", c.SchemaVersion)
 	}
 	if err := c.BaselineLock.Validate(); err != nil {
 		return fmt.Errorf("baseline_lock: %w", err)
@@ -359,7 +401,11 @@ func (s DevelopmentSpecification) TraceabilityLinks() []TraceabilityLink {
 }
 
 func (c ChangeContract) IsStrictDevelopment() bool {
-	return c.SchemaVersion == StrictChangeContractSchemaVersion || c.SchemaVersion == LockedChangeContractSchemaVersion
+	return c.SchemaVersion == StrictChangeContractSchemaVersion || c.SchemaVersion == LockedChangeContractSchemaVersion || c.SchemaVersion == CommitIntentDraftChangeContractSchemaVersion || c.SchemaVersion == CommitIntentLockedChangeContractSchemaVersion
+}
+
+func (c ChangeContract) IsLockedStrictDevelopment() bool {
+	return c.SchemaVersion == LockedChangeContractSchemaVersion || c.SchemaVersion == CommitIntentLockedChangeContractSchemaVersion
 }
 
 func (c ChangeContract) RequiresRedGreen() bool {

@@ -30,9 +30,9 @@ The canonical V6 delivery state sequence is:
 
 ```text
 external Project Policy v3 + clean Git baseline
-  -> accepted strict Change Contract schema-v3 draft
+  -> accepted strict Change Contract schema-v3 or schema-v5 draft
   -> polis start --policy <external-policy>
-  -> locked Change Contract schema v4 / strict_sdd_tdd_v2
+  -> locked Change Contract schema v4 or schema v6 / strict_sdd_tdd_v2
   -> development proof appropriate to change kind
   -> polis build --policy <same-effective-policy>
   -> polis verify
@@ -59,8 +59,8 @@ It MUST:
 - require the supplied effective Project Policy to validate as schema v3;
 - require the external policy path to be outside the target worktree;
 - canonicalize the validated external policy before hashing it;
-- accept an external strict schema-v3 draft using `strict_sdd_tdd_v1`;
-- emit an external schema-v4 contract using `strict_sdd_tdd_v2`;
+- accept an external strict schema-v3 or schema-v5 draft using `strict_sdd_tdd_v1`;
+- lock schema v3 to v4 and schema v5 to v6, both using `strict_sdd_tdd_v2`;
 - bind Git object format, base commit, base tree, SHA-256 of the canonical effective Project Policy, and canonical Specification SHA-256;
 - never serialize the external policy pathname;
 - never create `.polis`, modify HEAD, modify the real index, modidwfy existing worktree files, or write tool-specific Git metadata;
@@ -118,9 +118,9 @@ A `behavior_preserving` change MUST use Green-to-Green characterization. The sam
 
 ## 6. `capture-red`
 
-V6 `capture-red` accepts only a locked schema-v4 contract whose semantics require Red-to-Green.
+V6 `capture-red` accepts only a locked schema-v4 or schema-v6 contract whose semantics require Red-to-Green.
 
-An unlocked schema-v3 draft MUST be rejected with guidance to run `polis start` first.
+A schema-v3 or schema-v5 draft MUST be rejected with guidance to run `polis start` first.
 
 For a schema-v4 contract, `capture-red` revalidates repository-dependent baseline facts available from the target repository: Git object format, base commit, base tree, and Specification identity. It does not require a repository policy file; the effective policy hash was already locked by `start` and is revalidated when policy bytes are available to producer/package verification boundaries.
 
@@ -134,7 +134,7 @@ Canonical V6 `build` uses `--policy <external-policy>` and requires:
 
 - effective Project Policy schema v3;
 - the same canonical effective policy bytes whose SHA-256 is locked in `baseline_lock.policy_sha256`;
-- locked Change Contract schema v4;
+- locked Change Contract schema v4 or v6;
 - `development_method: strict_sdd_tdd_v2`;
 - valid repository-dependent `baseline_lock` facts against the producer repository;
 - regression patch exactly when the change requires Red-to-Green;
@@ -177,7 +177,7 @@ A policy hash mismatch MUST fail before an artifact is accepted. The canonical p
 
 When `--policy` is omitted, committed-policy compatibility MAY remain as defined in section 4.2.
 
-Change Contract schemas v1-v3 are decode-compatible but invalid producer input.
+Change Contract schemas v1-v3 and draft schema v5 are invalid `build` input. Locked schema v4 remains supported for compatibility; new schema-v6 contracts are also valid producer input.
 
 Temporary target-tree construction and embedded-baseline construction MUST keep temporary index/object writes outside the target repository's persistent Git object database.
 
@@ -189,11 +189,24 @@ A producer MUST skip each deferred gate's command and any gate-specific side eff
 
 Package verification MUST authenticate the package members and validate the complete policy/evidence trace, including the enabled deferred inventory and matching `DEFERRED` events. A consumer MUST compile the packaged policy with an empty deferral set and execute every enabled gate during both `preflight` and `apply`. A failing or blocked consumer gate MUST prevent real apply mutation. Text and JSON reports from plan, build, verify, inspect, preflight, and apply MUST show deferred gates and whether consumer validation is required; successful consumer reports MUST identify consumer validation as `PASS`.
 
+### 7.3 Change Contract v5/v6 and commit intent
+
+Change Contract schemas v1-v4 retain their existing closed meaning. A `commit` property MUST be rejected in those versions. Add a new strict draft schema v5 and locked schema v6:
+
+- schema v5 uses `strict_sdd_tdd_v1`, has no `baseline_lock`, and may contain an optional `commit` object;
+- `polis start` accepts draft schema v3 or v5, preserves any commit message exactly, and locks them as v4 or v6 respectively;
+- schema v6 uses `strict_sdd_tdd_v2`, requires the normal `baseline_lock`, and may contain the same optional `commit` object;
+- `polis build` accepts locked schemas v4 and v6; it MUST reject draft schema v5 and other unsupported producer schemas.
+
+The optional object is exactly `{"message": "..."}`. It records producer intent and MUST NOT authorize a commit or contain authorization, identity, timestamp, hook, signing, or remote-operation fields. A present message MUST be non-empty, valid UTF-8, contain no NUL, contain no more than 16,384 Unicode scalar values, and occupy no more than 64 KiB when encoded as UTF-8. POLIS MUST preserve the decoded message bytes, including whitespace, multiline body, and final-newline presence. It MUST NOT impose universal Conventional Commit rules or synthesize a message.
+
+Commit metadata remains in the existing `polis/polis-change.json` member. New artifacts continue to use package format v5, Evidence v3, and the existing eight-member package inventory. The manifest Change Contract digest and package checksums bind the exact member. A detached signature authenticates the message transitively only when verified with a trusted key; an unsigned package MUST NOT be described as authenticated to a producer identity.
+
 ## 8. Reader and consumer compatibility
 
-`verify` and `inspect` remain capable of validating historical package/contract schemas already supported by V5 when those artifacts are otherwise valid. Formats v2/v3 keep their historical local-object-database baseline behavior; format v4 adds authenticated embedded baseline proof while retaining Evidence v2 semantics, and format v5 adds Evidence v3 deferred-gate semantics without redefining older package behavior.
+`verify` and `inspect` remain capable of validating historical package/contract schemas already supported by V5 when those artifacts are otherwise valid. Formats v2/v3 keep their historical local-object-database baseline behavior; format v4 adds authenticated embedded baseline proof while retaining Evidence v2 semantics, and format v5 adds Evidence v3 deferred-gate semantics without redefining older package behavior. Change Contract schemas v1-v4 retain their historical structure; schema v5/v6 add optional artifact-backed commit intent without changing package format.
 
-For locked schema-v4 Change Contracts, package verification MUST prove that the packaged Project Policy SHA-256 equals `baseline_lock.policy_sha256`. For package formats v4 and v5 it MUST additionally validate the embedded baseline digest, canonical object inventory, Git object identities, complete locked tree/blob closure, and locked base commit/tree relationship before consumer admission. Consumer `preflight` and `apply` therefore MUST NOT require `.polis/policy.json` in the target repository.
+For locked schema-v4 and schema-v6 Change Contracts, package verification MUST prove that the packaged Project Policy SHA-256 equals `baseline_lock.policy_sha256`. For package formats v4 and v5 it MUST additionally validate the embedded baseline digest, canonical object inventory, Git object identities, complete locked tree/blob closure, and locked base commit/tree relationship before consumer admission. Consumer `preflight` and `apply` therefore MUST NOT require `.polis/policy.json` in the target repository.
 
 At consumer boundaries, `preflight` and `apply` execute validation with the packaged effective policy, validate deterministic target-tree identity and scope, and perform fail-closed patch checks. The consumer baseline mode is explicit and defaults to `strict`:
 
@@ -217,6 +230,22 @@ Embedded baseline objects MUST be materialized only into temporary isolated Git 
 
 `preflight` remains read-only with respect to the target. `apply` repeats validation and MUST NOT reuse a cached preflight PASS or cached override authorization. Immediately before real mutation, `apply` MUST require the real consumer `HEAD` and clean status to remain exactly the state that completed isolated validation; a newly changed but otherwise compatible `HEAD` requires a fresh validation pass.
 
+### 8.1 Consumer-authorized local commit
+
+`polis apply` accepts `--commit-mode none|prompt|auto`; omission and the zero value mean `none`. `preflight` has no commit mode and remains read-only. The presence of `commit.message` in an artifact never authorizes a commit.
+
+- `none` applies the validated payload without creating a commit or changing HEAD/the real index. When metadata exists, output may show it as a suggestion.
+- `prompt` requires commit metadata and a real interactive input. After artifact, baseline, isolated target, and predictable commit preconditions pass, POLIS displays the exact message and validated target tree before the first real-repository mutation. A refusal or unavailable TTY returns blocked authorization (exit 4), does not wait on non-interactive input, and leaves HEAD, index, and worktree unchanged.
+- `auto` requires commit metadata and explicit consumer authorization by the option. It does not prompt.
+
+For `prompt` accepted or `auto`, POLIS MUST revalidate the actual consumer state after authorization, apply only the exact verified payload, and pass the existing post-apply check that the real worktree tree equals the dynamically validated consumer target tree before constructing any commit. Git author and committer identities and timestamps come from the consumer environment; required identity values MUST be checked before mutation.
+
+Commit construction MUST use an explicit temporary index and exact payload to materialize the validated target tree. The real index MUST NOT be used to derive that tree. `git commit-tree` MUST create exactly one commit whose tree is the validated consumer target tree, sole parent is the consumer HEAD validated immediately before mutation, and message bytes equal the decoded artifact message. The message is sent as stdin, not shell text. POLIS MUST verify those commit fields, move HEAD with a compare-and-swap against the expected old OID, align and verify the real index, and require clean status before PASS. It MUST NOT run commit hooks or request signing and MUST NOT push, update a remote ref, or create a branch, tag, PR, or release.
+
+Before real mutation POLIS records enough external temporary state to verify the logical original HEAD/ref, real index, and clean worktree. Any post-mutation failure MUST reverse the exact patch, restore the original index, and restore HEAD with a guarded compare-and-swap if it moved; it MUST verify the original logical state before returning an error. A failed rollback is explicit and never PASS. Since Git does not transactionally remove immutable objects, unreachable objects written while constructing a failed candidate may remain until normal garbage collection; POLIS MUST NOT delete object files manually. Byte-for-byte object-database rollback is outside this contract.
+
+Apply text and JSON results report whether a commit was made. JSON includes `committed`, `commit_sha` (null when not committed), and `commit_message` (the exact artifact value or null). `inspect` exposes the optional message without inventing one.
+
 ## 8. Offline runtime bundle
 
 `polis export --out <bundle.zip> [--executable <file>] [--runtime <GOOS/GOARCH>]` MUST emit one self-contained ZIP bundle for offline POLIS V6 use. The bundle is a runtime distribution and is distinct from a delivery `.polis` package. When `--executable` is omitted, the current executable is embedded; when `--runtime` is omitted, the current `GOOS/GOARCH` is recorded. An explicit target runtime MUST use the `GOOS/GOARCH` form and determines the executable member suffix without executing the embedded binary.
@@ -226,7 +255,7 @@ The bundle MUST contain:
 - a `polis` executable for the declared target `GOOS` and `GOARCH` (or the exporting runtime when no target is declared);
 - `POLIS-OFFLINE.md` with the offline operating instructions;
 - `spec/POLIS-SPEC-v6.md`;
-- the V6 policy, Change Contract v3/v4, package manifest, evidence-event, and signature schemas;
+- the V6 policy, Change Contract v3-v6, package manifest, evidence-event, and signature schemas;
 - `manifest.json` declaring the POLIS version, runtime, executable path, prerequisites, and `network_required: false`;
 - `SHA256SUMS` covering every other bundle member.
 
@@ -236,7 +265,7 @@ Using the bundle MUST NOT require Go or another programming-language runtime, an
 
 ## 9. Zero-residue target invariant
 
-Successful canonical external-policy execution MUST leave no tool-owned state in the target repository after command completion.
+Successful canonical external-policy execution MUST leave no unintended tool-owned state in the target repository after command completion. For `apply --commit-mode none` and omitted mode, the existing no-commit state contract remains unchanged. An explicitly authorized successful `prompt` or `auto` mode intentionally leaves the new local commit, its HEAD/ref update, and matching real index as the requested product result; these are not temporary tool residue.
 
 For `start`, `capture-red`, `build`, `preflight`, and `apply`, this includes, where applicable:
 
@@ -244,10 +273,10 @@ For `start`, `capture-red`, `build`, `preflight`, and `apply`, this includes, wh
 - no `.git/polis` directory or persistent result/evidence file;
 - no linked-worktree administration created under the target Git metadata;
 - no temporary indexes, lock files, or tool-owned configuration entries;
-- no tool-created persistent Git objects caused solely by temporary tree/index construction;
+- no tool-created persistent Git objects caused solely by temporary tree/index construction, except objects required by the explicitly authorized committed result;
 - no generated payload reference to the tool name merely because the payload was produced by the tool.
 
-Temporary files, clones, object databases, and evidence may exist outside the target repository while a command is running. A successful command MUST remove its temporary external state before returning when that state is owned by the command. Cleanup failure that can leave tool-owned residue MUST fail closed.
+Temporary files, clones, object databases, and evidence may exist outside the target repository while a command is running. A successful command MUST remove its temporary external state before returning when that state is owned by the command. Cleanup failure that can leave tool-owned residue MUST fail closed. On a failed commit-mode attempt, unreachable content-addressed Git objects may remain as defined in section 8.1; HEAD/ref, index, and worktree still MUST be restored and verified.
 
 `apply` evidence is ephemeral by default: it is written outside the target repository, validated before real mutation, and removed before successful return. The default successful result does not expose a persistent evidence path.
 
@@ -255,7 +284,7 @@ The zero-residue invariant does not rename or remove canonical members inside th
 
 ## 11. Traceability
 
-Strict schema-v4 Specification traceability remains authoritative:
+Strict locked schema-v4/v6 Specification traceability remains authoritative:
 
 ```text
 REQ -> AC -> regression proof
@@ -269,18 +298,18 @@ V6 preserves the following contracts unless explicitly superseded above:
 
 - exact reader compatibility for historical package formats v2/v3/v4; new builds use format v5 with the authenticated baseline member and Evidence v3;
 - Project Policy schema v3 gate registry, its backward-compatible `validation_level` reinforcement setting, and additive `depends_on` dependency declarations;
-- Change Contract schema v4 structure;
+- Change Contract schema v1-v4 structures and the new v5/v6 draft/locked pair described in section 7.3;
 - Evidence v2 package member, digest, and bounded-output contract for formats v2-v4; format v5 Evidence v3 adds the explicit deferred-gate inventory and `DEFERRED` terminal status while retaining bounded output;
 - coverage adapters and strict `>` threshold semantics;
 - bounded stdout/stderr retention and full-stream digests;
 - direct argv execution and declared environments;
 - detached Ed25519 signature model;
 - explicit consumer baseline-compatibility admission with `strict` default and deterministic exact target-tree validation for the admitted consumer base;
-- transactional apply preserving HEAD and the real index;
+- transactional apply preserving HEAD and the real index by default; explicitly authorized commit mode advances them only after exact target-tree verification;
 - existing package/member resource limits, with the 32 MiB embedded-baseline member limit for v4/v5 while the 64 MiB archive and aggregate caps remain unchanged.
 
 ## 13. Major-version rationale
 
 V6 remains a semantic major because producer operations that were valid in V5 become invalid: a caller cannot create a new artifact directly from Change Contract schema v2 or unlocked strict schema v3. The required `polis start` lock and development proof are part of the producer contract.
 
-This V6 refinement introduces package format v5 and Evidence v3 for new builds without changing the Project Policy or Change Contract schema versions. Formats v2-v4 retain their original Evidence v2 semantics and remain part of the supported reader compatibility contract.
+This V6 refinement introduces package format v5 and Evidence v3 for new builds and adds Change Contract schemas v5/v6 for optional commit intent. Existing Change Contract schemas v1-v4 and package formats v2-v4 retain their original meanings; formats v2-v4 retain Evidence v2 semantics and remain part of the supported reader compatibility contract.

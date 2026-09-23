@@ -58,6 +58,10 @@ func git(t *testing.T, repo string, args ...string) string {
 }
 
 func lockedApplyFixtureContract(t *testing.T, repo string) string {
+	return lockedApplyFixtureContractWithMessage(t, repo, nil)
+}
+
+func lockedApplyFixtureContractWithMessage(t *testing.T, repo string, commitMessage *string) string {
 	t.Helper()
 	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
 	pass := spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}
@@ -80,6 +84,10 @@ func lockedApplyFixtureContract(t *testing.T, repo string) string {
 		},
 		Behavior: pass, Affected: pass, Regression: spec.RegressionContract{Mode: spec.RegressionModeGreenGreen, Command: &regression},
 	}
+	if commitMessage != nil {
+		draft.SchemaVersion = spec.CommitIntentDraftChangeContractSchemaVersion
+		draft.Commit = &spec.CommitMetadata{Message: *commitMessage}
+	}
 	raw, err := json.Marshal(draft)
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +107,15 @@ func repoWithArtifact(t *testing.T) (repo, artifact, target string) {
 	return repoWithPolicyArtifact(t, policyBytes(t))
 }
 
+func repoWithCommitArtifact(t *testing.T, message string) (repo, artifact, target string) {
+	return repoWithPolicyArtifactAndCommit(t, policyBytes(t), nil, &message)
+}
+
 func repoWithPolicyArtifact(t *testing.T, projectPolicy []byte, deferredGates ...string) (repo, artifact, target string) {
+	return repoWithPolicyArtifactAndCommit(t, projectPolicy, deferredGates, nil)
+}
+
+func repoWithPolicyArtifactAndCommit(t *testing.T, projectPolicy []byte, deferredGates []string, commitMessage *string) (repo, artifact, target string) {
 	t.Helper()
 	repo = filepath.Join(t.TempDir(), "repo")
 	if err := os.MkdirAll(filepath.Join(repo, ".polis"), 0o755); err != nil {
@@ -126,7 +142,7 @@ func repoWithPolicyArtifact(t *testing.T, projectPolicy []byte, deferredGates ..
 	}
 	git(t, repo, "add", ".")
 	git(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "base")
-	contractPath := lockedApplyFixtureContract(t, repo)
+	contractPath := lockedApplyFixtureContractWithMessage(t, repo, commitMessage)
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
