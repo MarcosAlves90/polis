@@ -27,7 +27,9 @@ The first vertical slice is the public `devstart.Start` behavior. The test is is
 - `TestApplyAutoCommitsExactArtifactIntent` first failed because apply returned without creating a commit; it passed after exact-tree commit construction was added.
 - The first commit-object implementation passed an unsupported `--cleanup` flag to `git commit-tree`; the observed command failure led to removing that flag, and the exact multiline-message test then passed.
 - The post-ref index-lock failure test initially found rollback trying to rewrite an unchanged index while another process held `.git/index.lock`; rollback now skips that unnecessary write and the test passes.
-- Current focused tests pass for artifact transport, auto and prompt modes, no-final-newline message preservation, missing intent/identity, confirmation target tree, Git hook/signing tripwires, commit construction/ref-CAS/index/final-verification failures, rollback, CLI options, and nullable JSON output.
+- Focused coverage now includes exact message bounds/whitespace, historical v1-v4 rejection, v5-to-v6 start with and without commit metadata, artifact build/verify/inspect transport, and default apply-only behavior for a v6 artifact without intent.
+- Git integration coverage includes explicit none, prompt accept/decline, auto, exact and no-final-newline messages, strict/compatible/permissive consumer parents, validated target trees, remote-ref preservation, hook/signing tripwires, wrong candidate trees, ref-CAS conflicts, index failures, final-verification failures, and logical rollback.
+- CLI end-to-end tests exercise start -> build -> verify -> inspect -> auto commit and the same schema-v6 path without metadata through default apply. CLI tests also cover TTY refusal, exact prompt contents, all mode flags, and nullable JSON results.
 - The captured `internal/devstart/commit_intent_red_test.go` remains byte-for-byte unchanged. Unowned schema identifiers were removed; the repository-wide search is part of final validation.
 
 ## Full validation gates
