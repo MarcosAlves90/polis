@@ -66,7 +66,7 @@ func SnapshotWithPolicy(ctx context.Context, repo string, specification *spec.De
 }
 
 func ValidateRepositoryBase(ctx context.Context, repo string, change spec.ChangeContract) error {
-	if change.SchemaVersion != spec.LockedChangeContractSchemaVersion {
+	if !change.IsLockedStrictDevelopment() {
 		return nil
 	}
 	if change.BaselineLock == nil || change.Specification == nil {
@@ -105,7 +105,7 @@ func ValidateBuildRepository(ctx context.Context, repo string, change spec.Chang
 	if err := ValidateRepositoryBase(ctx, repo, change); err != nil {
 		return err
 	}
-	if change.SchemaVersion != spec.LockedChangeContractSchemaVersion {
+	if !change.IsLockedStrictDevelopment() {
 		return nil
 	}
 	root, err := gitutil.ResolveRoot(ctx, repo, gitutil.ResolveRootOptions{EmptyAsDot: true, GitError: "not a Git worktree"})
@@ -125,7 +125,7 @@ func ValidateBuildRepository(ctx context.Context, repo string, change spec.Chang
 }
 
 func ValidateRepository(ctx context.Context, repo string, change spec.ChangeContract) error {
-	if change.SchemaVersion != spec.LockedChangeContractSchemaVersion {
+	if !change.IsLockedStrictDevelopment() {
 		return nil
 	}
 	if change.BaselineLock == nil || change.Specification == nil {
@@ -152,7 +152,7 @@ func ValidateRepository(ctx context.Context, repo string, change spec.ChangeCont
 }
 
 func ValidatePolicy(change spec.ChangeContract, policyRaw []byte) error {
-	if change.SchemaVersion != spec.LockedChangeContractSchemaVersion {
+	if !change.IsLockedStrictDevelopment() {
 		return nil
 	}
 	if change.BaselineLock == nil {
@@ -170,7 +170,7 @@ func Validate(ctx context.Context, repo string, change spec.ChangeContract) erro
 	if err := ValidateRepository(ctx, repo, change); err != nil {
 		return err
 	}
-	if change.SchemaVersion != spec.LockedChangeContractSchemaVersion {
+	if !change.IsLockedStrictDevelopment() {
 		return nil
 	}
 	policyRaw, _, err := policyload.LoadCommitted(ctx, repo)

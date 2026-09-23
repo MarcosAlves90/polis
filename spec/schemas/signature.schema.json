@@ -1,6 +1,5 @@
 {
   "$schema":"https://json-schema.org/draft/2020-12/schema",
-  "$id":"https://polis.dev/spec/v5/signature.schema.json",
   "title":"POLIS Detached Signature v1",
   "type":"object",
   "additionalProperties":false,

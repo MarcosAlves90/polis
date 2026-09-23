@@ -1,6 +1,5 @@
 {
   "$schema":"https://json-schema.org/draft/2020-12/schema",
-  "$id":"https://polis.dev/spec/v6/evidence-event.schema.json",
   "title":"POLIS Evidence Event v3",
   "$defs":{
     "gate":{"enum":["behavior","regression","affected","test.complete","coverage","lint","typecheck","build","smoke","compatibility","dependency","migration","security","platform","integrity","target-tree","policy"]},

@@ -1,6 +1,6 @@
 {
   "title": "End-to-End Software Project Delivery Guide",
-  "version": "6.6.0",
+  "version": "6.7.0",
   "language": "en",
   "theme": "Configurable Validation with Mandatory Integrity",
   "architecture": {
@@ -36,13 +36,13 @@
   },
   "portable_trust_boundary": {
     "bounded_input": "Treat .polis bytes as untrusted and reject archives, members, evidence lines, and command output exceeding normative bounds.",
-    "scope": "Change Contract v2+ declares scope.allowed_paths; strict v3/v4 additionally declare test_scope, and producer plus consumer validate authorized paths.",
+    "scope": "Change Contract v2+ declares scope.allowed_paths; strict v3-v6 declare test_scope, and producer plus consumer validate authorized paths.",
     "environment": "Every executable schema-v3 command declares inherit or clean environment semantics; clean passes only named variables and never serializes values.",
     "evidence": "V6 command evidence persists byte counts, SHA-256 digests, truncation state, command identity, environment names, and semantic oracle results instead of raw stdout/stderr; each policy execution also records its effective validation level and complete enabled/disabled project-gate inventory.",
     "authentication": "Detached Ed25519 signatures authenticate SHA-256 of exact .polis bytes when the consumer supplies a trusted public key; package contents never define trust roots.",
     "preflight": "Consumer preflight repeats package verification, the selected baseline-compatibility admission, locked-base development proof, isolated validation, deterministic consumer target-tree, scope, packaged policy, and git apply --check without applying the payload. Strict is the default; compatible accepts proven descendants; permissive may accept unproven ancestry only with explicit risk reporting and without suppressing conflicts. Apply never reuses a previous preflight result.",
-    "development": "V6 requires a strict schema-v3 Specification draft to be locked by polis start into schema v4 before implementation. The canonical zero-residue path supplies Project Policy schema v3 explicitly from outside the target repository and locks its canonical SHA-256. New builds accept only schema v4. Feature/defect use Red-to-Green; behavior-preserving uses Green-to-Green; REQ-to-AC proof traceability and captured-test immutability are mandatory.",
-    "target_residue": "Canonical external-policy execution leaves no tool-owned files, configuration, linked-worktree administration, persistent temporary Git objects, or evidence metadata in the target repository. Temporary validation state and default apply evidence live outside the target and are removed before successful return."
+    "development": "V6 accepts a strict schema-v3 or schema-v5 draft for polis start, which locks it as schema v4 or v6 before implementation. New builds accept locked schema v4 for compatibility and schema v6 for the new contract flow. The canonical zero-residue path supplies Project Policy schema v3 explicitly from outside the target repository and locks its canonical SHA-256. Feature/defect use Red-to-Green; behavior-preserving uses Green-to-Green; REQ-to-AC proof traceability and captured-test immutability are mandatory.",
+    "target_residue": "Canonical external-policy execution leaves no unintended tool-owned files, configuration, linked-worktree administration, temporary Git objects, or evidence metadata in the target repository. Apply-only mode retains existing HEAD/index behavior. Explicitly authorized commit mode intentionally leaves its verified local commit and matching HEAD/index as the product result; temporary validation state and default apply evidence are removed before successful return."
   },
   "resource_limits": {
     "archive_bytes": 67108864,
@@ -68,14 +68,14 @@
     "Orient and resolve repository identity, permissions, objective, changed behavior, protected behavior, compatibility surface, and non-goals.",
     "Inspect tests, architecture, contracts, CI, release tooling, current policy requirements, and relevant runtime evidence.",
     "Resolve an effective Project Policy schema v3 and choose its validation reinforcement level before delivery work. Strict remains the default; standard and minimal may reduce only explicitly identified project-quality gates, with reasons. For the canonical zero-residue path, keep it outside the target repository; polis init --dry-run may generate validated policy JSON without creating .polis. A committed .polis/policy.json remains a compatibility option, not a requirement.",
-    "Write or revise the versioned behavior Specification and external strict Change Contract schema-v3 draft before production implementation.",
-    "Run polis start --policy <external-policy> on the clean committed baseline to produce the mandatory locked schema-v4 contract. The lock binds canonical effective-policy bytes by SHA-256; do not implement before this state transition.",
-    "For feature/defect work, add the test-only Red delta and run polis capture-red with the locked v4 contract before production implementation. For behavior-preserving work, keep the characterization command Green on the locked baseline.",
+    "Write or revise the versioned behavior Specification and external strict Change Contract schema-v3 or schema-v5 draft before production implementation.",
+    "Run polis start --policy <external-policy> on the clean committed baseline to lock schema v3 as v4 or schema v5 as v6. The lock binds canonical effective-policy bytes by SHA-256; do not implement before this state transition.",
+    "For feature/defect work, add the test-only Red delta and run polis capture-red with the corresponding locked v4/v6 contract before production implementation. For behavior-preserving work, keep the characterization command Green on the locked baseline.",
     "Implement bounded Red-Green-Refactor slices while preserving captured strict test bytes, declared test_scope, and scope.",
     "Run repository-required affected and complete validation using the same effective Project Policy. Record the selected level and actual enabled/disabled gate inventory; structural, integrity, security, selected baseline-compatibility, scope, deterministic target-tree, development-proof, and transactional-apply invariants remain mandatory.",
-    "Invoke polis build --policy <same-effective-policy> only with the locked schema-v4 contract and regression patch exactly when Red-to-Green requires it. Reject policy hash drift before accepting the artifact.",
+    "Invoke polis build --policy <same-effective-policy> only with a locked schema-v4 or schema-v6 contract and regression patch exactly when Red-to-Green requires it. Reject policy hash drift before accepting the artifact.",
     "Accept an artifact only after canonical polis verify; use polis inspect for validated metadata and REQ-to-AC proof traceability.",
-    "Before mutation, run polis preflight using the default strict consumer baseline unless a deliberate compatible or permissive mode is required. Compatible requires descendant ancestry plus full payload/target validation; permissive may proceed without proven ancestry only with explicit risk reporting while retaining locked-base proof and all conflict/validation gates. Then use polis apply, which repeats validation against the same observed consumer HEAD, consumes the packaged policy, preserves HEAD/index, and leaves no default tool-owned target-repository state.",
+    "Before mutation, run polis preflight using the default strict consumer baseline unless a deliberate compatible or permissive mode is required. Compatible requires descendant ancestry plus full payload/target validation; permissive may proceed without proven ancestry only with explicit risk reporting while retaining locked-base proof and all conflict/validation gates. Then use polis apply, which repeats validation against the same observed consumer HEAD and consumes the packaged policy. Apply-only remains the default; explicit --commit-mode prompt or auto may create exactly one local commit from the verified consumer target tree and never performs remote operations.",
     "Treat GitHub Release publication as a separate explicit operation after source validation and commit; run publisher preflight without --publish first."
   ],
   "non_goals": [
@@ -91,7 +91,7 @@
   "v6_contracts": {
     "package_format": 5,
     "policy_schema": 3,
-    "change_contract_schema": "schema v4 locked is mandatory for new V6 builds; schemas v1-v3 are read-compatible migration inputs only",
+    "change_contract_schema": "locked schema v4 remains supported; new schema-v5 drafts lock as schema v6; new builds accept locked v4 or v6; schemas v1-v3 and draft v5 are not build inputs",
     "evidence_contract": 3,
     "signature_schema": 1,
     "canonical_member_count": 8,
@@ -100,7 +100,9 @@
       "Project Policy v2",
       "Change Contract v1",
       "Change Contract v2",
-      "strict Change Contract v3"
+      "strict Change Contract v3",
+      "strict Change Contract v5 draft",
+      "locked Change Contract v6"
     ],
     "invariants": [
       "explicit consumer baseline compatibility mode with strict default",
@@ -115,19 +117,23 @@
       "strict feature/defect Red-to-Green proof",
       "strict behavior-preserving Green-to-Green proof",
       "schema-v4 locked development baseline",
+      "apply-only default and consumer-authorized exact-tree commit mode",
       "requirement-to-acceptance proof traceability",
       "effective policy hash bound independently of repository pathname",
       "zero tool-specific target residue after successful canonical external-policy execution"
     ],
     "change_contract_supported_schemas": {
       "producer": [
-        "4"
+        "4",
+        "6"
       ],
       "reader": [
         "1",
         "2",
         "3",
-        "4"
+        "4",
+        "5",
+        "6"
       ],
       "rule": "Reader compatibility MUST NOT authorize a new legacy producer build."
     }

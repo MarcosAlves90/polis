@@ -1,6 +1,5 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://polis.dev/spec/v5/change-contract.schema.json",
   "title": "POLIS Change Contract supported schemas",
   "oneOf": [
     {
@@ -14,6 +13,12 @@
     },
     {
       "$ref": "change-contract-v4.schema.json"
+    },
+    {
+      "$ref": "change-contract-v5.schema.json"
+    },
+    {
+      "$ref": "change-contract-v6.schema.json"
     }
   ]
 }

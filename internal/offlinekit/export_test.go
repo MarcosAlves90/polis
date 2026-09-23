@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 const testVersion = "6.6.0"
@@ -49,8 +51,9 @@ func TestExportCreatesVerifiableOfflineBundle(t *testing.T) {
 	}
 
 	files := readArchive(t, bundle)
-	if len(files) != 12 {
-		t.Fatalf("member count=%d want=12", len(files))
+	wantMemberCount := len(spec.OfflineResources()) + 3 // executable, manifest, and checksums
+	if len(files) != wantMemberCount {
+		t.Fatalf("member count=%d want=%d", len(files), wantMemberCount)
 	}
 	manifestRaw := files[manifestMember]
 	var document testManifest

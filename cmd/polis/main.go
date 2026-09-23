@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"unicode"
 
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
 	"github.com/MarcosAlves90/polis/v6/internal/offlinekit"
@@ -22,6 +24,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/redcapture"
 	artifactsig "github.com/MarcosAlves90/polis/v6/internal/signature"
 	"github.com/MarcosAlves90/polis/v6/spec"
+	"golang.org/x/term"
 )
 
 const version = "6.7.0"
@@ -37,6 +40,7 @@ const (
 	applyLabel           = "POLIS APPLY"
 	baselineModeHelp     = "consumer baseline mode: strict, compatible, or permissive"
 	overrideBaselineHelp = "explicitly waive unavailable baseline development proof; requires permissive mode"
+	commitModeHelp       = "artifact-backed commit behavior: none, prompt, or auto"
 )
 
 const (
@@ -60,13 +64,13 @@ var commandHelpEntries = []commandHelpEntry{
 	{name: "doctor", usage: "polis doctor [--format text|json]", summary: "check Git and runtime prerequisites"},
 	{name: "init", usage: "polis init [--repo <path>] [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]", summary: "create or preview a Project Policy"},
 	{name: "plan", usage: "polis plan [--repo <path>] [--policy <policy-v3.json>] [--defer-gate <id> ...] [--format text|json]", summary: "compile and report the effective Project Policy"},
-	{name: "start", usage: "polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3.json> --out <locked-v4.json>", summary: "lock a strict Change Contract baseline"},
+	{name: "start", usage: "polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3-or-v5.json> --out <locked-v4-or-v6.json>", summary: "lock a strict Change Contract baseline"},
 	{name: captureRedCommand, usage: "polis capture-red --repo <path> --contract <change.json> --out <regression.patch>", summary: "capture the required Red proof"},
 	{name: "build", usage: "polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--defer-gate <id> ...] [--format text|json] --out <directory>", summary: "build a .polis delivery package"},
 	{name: "verify", usage: "polis verify [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate a .polis artifact"},
 	{name: "inspect", usage: "polis inspect [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "inspect validated artifact metadata"},
 	{name: "preflight", usage: "polis preflight [--repo <path>] [--baseline-mode strict|compatible|permissive] [--allow-missing-baseline-proof] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate an artifact without applying it"},
-	{name: "apply", usage: "polis apply [--repo <path>] [--baseline-mode strict|compatible|permissive] [--allow-missing-baseline-proof] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate and apply an artifact transactionally"},
+	{name: "apply", usage: "polis apply [--repo <path>] [--baseline-mode strict|compatible|permissive] [--allow-missing-baseline-proof] [--commit-mode none|prompt|auto] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate and apply an artifact transactionally"},
 	{name: "sign", usage: "polis sign --key <private.pem> --out <artifact.polis.sig> [--format text|json] <artifact.polis>", summary: "create a detached artifact signature"},
 	{name: "export", usage: "polis export --out <polis-offline.zip> [--format text|json] [--executable <file>] [--runtime <GOOS/GOARCH>]", summary: "create a self-contained offline runtime bundle"},
 }
@@ -209,6 +213,10 @@ func writeInspectionText(out io.Writer, inspection packageverify.Inspection) {
 		inspection.Project, inspection.Change, inspection.FormatVersion, inspection.PolicySchemaVersion,
 		inspection.ValidationLevel, strings.Join(inspection.EnabledGates, ", "), strings.Join(inspection.DisabledGates, ", "), strings.Join(inspection.DeferredGates, ", "), inspection.ConsumerValidationRequired, inspection.ChangeContractSchemaVersion,
 		inspection.Kind, inspection.BaseCommit, inspection.TargetTree, strings.Join(inspection.AllowedPaths, ", "), inspection.EvidenceEvents)
+	if inspection.Commit != nil {
+		fmt.Fprintf(out, "Commit message:\n%s", escapeCommitMessageForDisplay(inspection.Commit.Message))
+		fmt.Fprintln(out)
+	}
 	for _, link := range inspection.Traceability {
 		fmt.Fprintf(out, "Trace: %s -> %s -> %s\n", link.RequirementID, link.AcceptanceCriterionID, link.Proof)
 	}
@@ -425,13 +433,13 @@ func runStart(args []string, out, errOut io.Writer) int {
 	fs.SetOutput(errOut)
 	repo := fs.String("repo", "", repoHelp)
 	policy := fs.String("policy", "", externalPolicyHelp)
-	contract := fs.String("contract", "", "strict schema-v3 draft Change Contract outside the worktree")
-	outPath := fs.String("out", "", "locked schema-v4 Change Contract output outside the worktree")
+	contract := fs.String("contract", "", "strict schema-v3 or v5 draft Change Contract outside the worktree")
+	outPath := fs.String("out", "", "locked schema-v4 or v6 Change Contract output outside the worktree")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() != 0 || *repo == "" || *contract == "" || *outPath == "" {
-		fmt.Fprintln(errOut, "usage: polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3.json> --out <locked-v4.json>")
+		fmt.Fprintln(errOut, "usage: polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3-or-v5.json> --out <locked-v4-or-v6.json>")
 		return exitUsage
 	}
 	result, err := devstart.Start(context.Background(), devstart.Options{Repo: *repo, Policy: *policy, Contract: *contract, Out: *outPath})
@@ -503,6 +511,7 @@ type applyCLIOptions struct {
 	repo                      string
 	baselineMode              packageapply.BaselineMode
 	allowMissingBaselineProof bool
+	commitMode                packageapply.CommitMode
 	format                    string
 	signaturePath             string
 	trustedKey                string
@@ -523,6 +532,10 @@ func runApply(args []string, out, errOut io.Writer) int {
 	result, err := packageapply.ApplyWithOptions(context.Background(), opts.artifact, opts.repo, packageapply.Options{
 		BaselineMode:              opts.baselineMode,
 		AllowMissingBaselineProof: opts.allowMissingBaselineProof,
+		CommitMode:                opts.commitMode,
+		ConfirmCommit: func(message, targetTree string) (bool, error) {
+			return confirmArtifactCommit(os.Stdin, errOut, message, targetTree, stdinIsTerminal(os.Stdin))
+		},
 	})
 	if err != nil {
 		return writeFailure(errOut, opts.format, applyLabel, applyExitCode(err), err)
@@ -537,6 +550,7 @@ func parseApplyCLIOptions(args []string, errOut io.Writer) (applyCLIOptions, boo
 	repo := fs.String("repo", ".", targetRepoHelp)
 	baselineModeValue := fs.String("baseline-mode", string(packageapply.BaselineModeStrict), baselineModeHelp)
 	allowMissingBaselineProof := fs.Bool("allow-missing-baseline-proof", false, overrideBaselineHelp)
+	commitModeValue := fs.String("commit-mode", string(packageapply.CommitModeNone), commitModeHelp)
 	format := fs.String("format", "text", outputFormatHelp)
 	signaturePath, trustedKey := signatureFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -546,18 +560,23 @@ func parseApplyCLIOptions(args []string, errOut io.Writer) (applyCLIOptions, boo
 	if modeErr != nil {
 		fmt.Fprintln(errOut, modeErr)
 	}
+	commitMode, commitModeErr := packageapply.ParseCommitMode(*commitModeValue)
+	if commitModeErr != nil {
+		fmt.Fprintln(errOut, commitModeErr)
+	}
 	if *allowMissingBaselineProof && baselineMode != packageapply.BaselineModePermissive {
 		fmt.Fprintln(errOut, "--allow-missing-baseline-proof requires --baseline-mode permissive")
 	}
-	valid := fs.NArg() == 1 && validFormat(*format) && validSignaturePair(*signaturePath, *trustedKey) && modeErr == nil && (!*allowMissingBaselineProof || baselineMode == packageapply.BaselineModePermissive)
+	valid := fs.NArg() == 1 && validFormat(*format) && validSignaturePair(*signaturePath, *trustedKey) && modeErr == nil && commitModeErr == nil && (!*allowMissingBaselineProof || baselineMode == packageapply.BaselineModePermissive)
 	if !valid {
-		fmt.Fprintln(errOut, "usage: polis apply [--repo <path>] [--baseline-mode strict|compatible|permissive] [--allow-missing-baseline-proof] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>")
+		fmt.Fprintln(errOut, "usage: polis apply [--repo <path>] [--baseline-mode strict|compatible|permissive] [--allow-missing-baseline-proof] [--commit-mode none|prompt|auto] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>")
 		return applyCLIOptions{}, false
 	}
 	return applyCLIOptions{
 		repo:                      *repo,
 		baselineMode:              baselineMode,
 		allowMissingBaselineProof: *allowMissingBaselineProof,
+		commitMode:                commitMode,
 		format:                    *format,
 		signaturePath:             *signaturePath,
 		trustedKey:                *trustedKey,
@@ -567,6 +586,8 @@ func parseApplyCLIOptions(args []string, errOut io.Writer) (applyCLIOptions, boo
 
 func applyExitCode(err error) int {
 	switch {
+	case errors.Is(err, packageapply.ErrCommitBlocked):
+		return exitBlocked
 	case errors.Is(err, packageapply.ErrBaselineMismatch):
 		return exitBaselineMismatch
 	case errors.Is(err, packageapply.ErrValidationFailed):
@@ -578,7 +599,11 @@ func applyExitCode(err error) int {
 
 func writeApplySuccess(out io.Writer, format string, result packageapply.Result) {
 	if format == "json" {
-		payload := map[string]any{"status": "PASS", "project": result.Project, "change": result.Change, "target_tree": result.TargetTree, "validation_level": result.ValidationLevel, "enabled_gates": result.EnabledGates, "disabled_gates": result.DisabledGates, "producer_deferred_gates": result.ProducerDeferredGates, "outstanding_deferred_gates": result.OutstandingDeferredGates, "consumer_validation_required": result.ConsumerValidationRequired, "consumer_validation_status": result.ConsumerValidationStatus, "consumer_gate_statuses": result.ConsumerGateStatuses}
+		var commitSHA any
+		if result.Committed {
+			commitSHA = result.CommitSHA
+		}
+		payload := map[string]any{"status": "PASS", "project": result.Project, "change": result.Change, "target_tree": result.TargetTree, "committed": result.Committed, "commit_sha": commitSHA, "commit_message": result.CommitMessage, "validation_level": result.ValidationLevel, "enabled_gates": result.EnabledGates, "disabled_gates": result.DisabledGates, "producer_deferred_gates": result.ProducerDeferredGates, "outstanding_deferred_gates": result.OutstandingDeferredGates, "consumer_validation_required": result.ConsumerValidationRequired, "consumer_validation_status": result.ConsumerValidationStatus, "consumer_gate_statuses": result.ConsumerGateStatuses}
 		addBaselineResultFields(payload, result)
 		if result.EvidencePath != "" {
 			payload["evidence"] = result.EvidencePath
@@ -588,9 +613,73 @@ func writeApplySuccess(out io.Writer, format string, result packageapply.Result)
 	}
 	fmt.Fprintf(out, applyLabel+": PASS\nProject: %s\nChange: %s\nTarget: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\nProducer deferred gates: %s\nOutstanding deferred gates: %s\nConsumer validation required: %t\nConsumer validation status: %s\nConsumer gate statuses: %v\n", result.Project, result.Change, result.TargetTree, result.ValidationLevel, strings.Join(result.EnabledGates, ", "), strings.Join(result.DisabledGates, ", "), displayGateList(result.ProducerDeferredGates), displayGateList(result.OutstandingDeferredGates), result.ConsumerValidationRequired, result.ConsumerValidationStatus, result.ConsumerGateStatuses)
 	writeBaselineResultText(out, result)
+	if result.Committed {
+		fmt.Fprintln(out, "Committed: yes")
+		fmt.Fprintf(out, "Commit SHA: %s\n", result.CommitSHA)
+		if result.CommitMessage != nil {
+			writeCommitMessage(out, "Commit message", *result.CommitMessage)
+		}
+	} else {
+		fmt.Fprintln(out, "Committed: no")
+		if result.CommitMessage != nil {
+			writeCommitMessage(out, "Suggested commit message", *result.CommitMessage)
+		}
+	}
 	if result.EvidencePath != "" {
 		fmt.Fprintf(out, "Evidence: %s\n", result.EvidencePath)
 	}
+}
+
+func confirmArtifactCommit(reader io.Reader, writer io.Writer, message, targetTree string, terminal bool) (bool, error) {
+	if !terminal {
+		return false, errors.New("--commit-mode prompt requires a terminal")
+	}
+	fmt.Fprintf(writer, "Target tree: %s\nArtifact commit message:\n%s", targetTree, escapeCommitMessageForDisplay(message))
+	fmt.Fprintln(writer)
+	fmt.Fprint(writer, "Create this local commit? [y/N]: ")
+	line, err := bufio.NewReader(reader).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	answer := strings.TrimSpace(line)
+	return strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes"), nil
+}
+
+func writeCommitMessage(out io.Writer, label, message string) {
+	fmt.Fprintf(out, "%s:\n%s", label, escapeCommitMessageForDisplay(message))
+	fmt.Fprintln(out)
+}
+
+func escapeCommitMessageForDisplay(message string) string {
+	var escaped strings.Builder
+	for _, r := range message {
+		switch r {
+		case '\n':
+			escaped.WriteString(`\n`)
+		case '\r':
+			escaped.WriteString(`\r`)
+		case '\t':
+			escaped.WriteString(`\t`)
+		case '\b':
+			escaped.WriteString(`\b`)
+		case '\f':
+			escaped.WriteString(`\f`)
+		default:
+			if unicode.IsControl(r) && r <= 0xFF {
+				fmt.Fprintf(&escaped, `\x%02x`, r)
+			} else if unicode.IsControl(r) {
+				fmt.Fprintf(&escaped, `\u%04x`, r)
+			} else {
+				escaped.WriteRune(r)
+			}
+		}
+	}
+	return escaped.String()
+}
+
+func stdinIsTerminal(reader io.Reader) bool {
+	file, ok := reader.(*os.File)
+	return ok && term.IsTerminal(int(file.Fd()))
 }
 
 func displayGateList(gates []string) string {
@@ -741,9 +830,25 @@ func verifyDetached(artifact, signaturePath, trustedKey string) error {
 func validFormat(format string) bool { return format == "text" || format == "json" }
 
 func writeJSON(w io.Writer, value any) {
-	enc := json.NewEncoder(w)
+	var encoded strings.Builder
+	enc := json.NewEncoder(&encoded)
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(value)
+	if err := enc.Encode(value); err != nil {
+		return
+	}
+	_, _ = io.WriteString(w, escapeJSONC1Controls(encoded.String()))
+}
+
+func escapeJSONC1Controls(encoded string) string {
+	var escaped strings.Builder
+	for _, r := range encoded {
+		if r >= 0x80 && r <= 0x9F {
+			fmt.Fprintf(&escaped, `\u%04x`, r)
+		} else {
+			escaped.WriteRune(r)
+		}
+	}
+	return escaped.String()
 }
 
 func writeFailure(w io.Writer, format, label string, code int, err error) int {

@@ -200,8 +200,8 @@ func loadBuildInputs(repo string, opts Options) ([]byte, spec.ChangeContract, []
 }
 
 func requireV6ProducerContract(change spec.ChangeContract) error {
-	if change.SchemaVersion != spec.LockedChangeContractSchemaVersion || change.DevelopmentMethod != spec.DevelopmentMethodStrictSDDTDDV2 || change.BaselineLock == nil {
-		return errors.New("POLIS V6 build requires locked Change Contract schema v4 produced by polis start")
+	if !change.IsLockedStrictDevelopment() || change.DevelopmentMethod != spec.DevelopmentMethodStrictSDDTDDV2 || change.BaselineLock == nil {
+		return errors.New("POLIS V6 build requires locked Change Contract schema v4 or v6 produced by polis start")
 	}
 	return nil
 }

@@ -58,6 +58,10 @@ func git(t *testing.T, repo string, args ...string) string {
 }
 
 func lockedApplyFixtureContract(t *testing.T, repo string) string {
+	return lockedApplyFixtureContractWithMessage(t, repo, nil)
+}
+
+func lockedApplyFixtureContractWithMessage(t *testing.T, repo string, commitMessage *string) string {
 	t.Helper()
 	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
 	pass := spec.CommandSpec{Argv: fixturePassCommand(), Cwd: ".", TimeoutSeconds: 60, Environment: env}
@@ -80,6 +84,10 @@ func lockedApplyFixtureContract(t *testing.T, repo string) string {
 		},
 		Behavior: pass, Affected: pass, Regression: spec.RegressionContract{Mode: spec.RegressionModeGreenGreen, Command: &regression},
 	}
+	if commitMessage != nil {
+		draft.SchemaVersion = spec.CommitIntentDraftChangeContractSchemaVersion
+		draft.Commit = &spec.CommitMetadata{Message: *commitMessage}
+	}
 	raw, err := json.Marshal(draft)
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +107,68 @@ func repoWithArtifact(t *testing.T) (repo, artifact, target string) {
 	return repoWithPolicyArtifact(t, policyBytes(t))
 }
 
+type commitArtifactFixture struct {
+	repo     string
+	artifact string
+	target   string
+}
+
+var (
+	commitArtifactFixtureRoot string
+	commitArtifactFixtures    = make(map[string]commitArtifactFixture)
+)
+
+func repoWithCommitArtifact(t *testing.T, message string) (repo, artifact, target string) {
+	t.Helper()
+	if fixture, ok := commitArtifactFixtures[message]; ok {
+		repo := cloneCommitTestRepo(t, fixture.repo)
+		if remotes := git(t, repo, "remote"); remotes != "" {
+			git(t, repo, "remote", "remove", "origin")
+		}
+		artifactBytes, err := os.ReadFile(fixture.artifact)
+		if err != nil {
+			t.Fatalf("read cached commit artifact fixture: %v", err)
+		}
+		artifact := filepath.Join(t.TempDir(), "commit-intent.polis")
+		if err := os.WriteFile(artifact, artifactBytes, 0o600); err != nil {
+			t.Fatalf("copy cached commit artifact fixture: %v", err)
+		}
+		return repo, artifact, fixture.target
+	}
+
+	repo, artifact, target = repoWithPolicyArtifactAndCommit(t, policyBytes(t), nil, &message)
+	fixtureDir := filepath.Join(commitArtifactFixtureRoot, "commit-"+commitArtifactFixtureKey(message))
+	if err := os.MkdirAll(fixtureDir, 0o755); err != nil {
+		t.Fatalf("create cached commit fixture directory: %v", err)
+	}
+	cachedRepo := filepath.Join(fixtureDir, "repo")
+	command := exec.Command("git", "clone", "--quiet", repo, cachedRepo)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("cache commit fixture repository: %v\n%s", err, output)
+	}
+	git(t, cachedRepo, "remote", "remove", "origin")
+	cachedArtifact := filepath.Join(fixtureDir, "artifact.polis")
+	artifactBytes, err := os.ReadFile(artifact)
+	if err != nil {
+		t.Fatalf("read commit artifact fixture: %v", err)
+	}
+	if err := os.WriteFile(cachedArtifact, artifactBytes, 0o600); err != nil {
+		t.Fatalf("cache commit artifact fixture: %v", err)
+	}
+	commitArtifactFixtures[message] = commitArtifactFixture{repo: cachedRepo, artifact: cachedArtifact, target: target}
+	return repo, artifact, target
+}
+
+func commitArtifactFixtureKey(message string) string {
+	digest := sha256.Sum256([]byte(message))
+	return hex.EncodeToString(digest[:])
+}
+
 func repoWithPolicyArtifact(t *testing.T, projectPolicy []byte, deferredGates ...string) (repo, artifact, target string) {
+	return repoWithPolicyArtifactAndCommit(t, projectPolicy, deferredGates, nil)
+}
+
+func repoWithPolicyArtifactAndCommit(t *testing.T, projectPolicy []byte, deferredGates []string, commitMessage *string) (repo, artifact, target string) {
 	t.Helper()
 	repo = filepath.Join(t.TempDir(), "repo")
 	if err := os.MkdirAll(filepath.Join(repo, ".polis"), 0o755); err != nil {
@@ -126,7 +195,7 @@ func repoWithPolicyArtifact(t *testing.T, projectPolicy []byte, deferredGates ..
 	}
 	git(t, repo, "add", ".")
 	git(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "base")
-	contractPath := lockedApplyFixtureContract(t, repo)
+	contractPath := lockedApplyFixtureContractWithMessage(t, repo, commitMessage)
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

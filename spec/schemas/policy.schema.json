@@ -1,6 +1,5 @@
 {
   "$schema":"https://json-schema.org/draft/2020-12/schema",
-  "$id":"https://polis.dev/spec/v5/policy.schema.json",
   "title":"POLIS Project Policy v3",
   "type":"object",
   "additionalProperties":false,

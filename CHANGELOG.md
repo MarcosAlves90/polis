@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Add optional artifact-bound commit messages and consumer-authorized `none`, `prompt`, and `auto` apply modes that commit exactly the validated consumer tree.
 - Add repeatable `--defer-gate` support to plan/build, with canonical gate selection, dependency-closure checks, and explicit producer/consumer responsibility reports.
 - Add Evidence v3 deferred-gate inventory and `DEFERRED` status for new format-v5 packages while preserving Evidence v2 behavior for formats v2-v4.
 - Report authenticated deferred obligations in verify/inspect and consumer gate outcomes in preflight/apply text and JSON.
@@ -16,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Advance new packages to format v5 using the existing eight-member embedded-baseline layout; retain exact v2/v3/v4 reader compatibility.
 - Update current offline schemas, V6 specification, usage guide, and delivery-guide metadata for package v5 and Evidence v3.
+- Remove unowned schema `$id` values while retaining the standard JSON Schema `$schema` declarations.
 
 ## [6.7.0] - 2026-09-17
 

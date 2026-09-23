@@ -274,3 +274,23 @@ this Linux workspace. The repository CI still defines those platform jobs, but a
 fresh cross-platform result requires the change to run in those environments; no
 remote workflow was triggered because publication/push/remote mutation was outside
 the authorized scope.
+
+## POLIS V6 artifact-backed commit — Issue #3 — 2026-09-23
+
+This change carries optional commit intent in Change Contract schema v5/v6 and
+adds consumer-authorized local commits to `apply`. The default remains
+apply-only. It also removes absolute schema identifiers on an unowned domain
+while retaining standard JSON Schema dialect declarations.
+
+GitHub Actions run `35910900279` at head `587bb66` passed the quality gate,
+Ubuntu/macOS/Windows jobs, and GitGuardian:
+
+- `go test ./...` — PASS on Ubuntu, macOS, and Windows.
+- Normative `go-coverprofile-v1` line-union metric: `5806 / 7095 = 81.832276250881%`, strictly greater than `80.0%` — PASS.
+- `go vet ./...`, `go build ./...`, `go mod verify`, and the race detector — PASS.
+- Windows `internal/packageapply` — PASS in `511.603s`, below the Go test package's `600s` timeout.
+- Formatting and `git diff --check` — PASS.
+- Local `go test ./internal/packageapply -count=1` with cached shared commit fixtures — PASS in `184.061s`.
+- Offline export — PASS; verified 14-member archive includes Change Contract v5/v6 schemas and declares `network_required: false`; `unzip -t` found no archive errors.
+- Tracked repository search for unowned schema URLs — PASS, no matches.
+- `npm run verify` — unavailable because the repository has no `package.json`.

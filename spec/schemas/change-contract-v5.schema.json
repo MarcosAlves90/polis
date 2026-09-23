@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "POLIS Locked Strict Change Contract v4",
+  "title": "POLIS Strict Change Contract v5",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,14 +10,13 @@
     "test_scope",
     "development_method",
     "specification",
-    "baseline_lock",
     "behavior",
     "affected",
     "regression"
   ],
   "properties": {
     "schema_version": {
-      "const": 4
+      "const": 5
     },
     "kind": {
       "enum": [
@@ -43,13 +42,26 @@
     },
     "regression": {},
     "development_method": {
-      "const": "strict_sdd_tdd_v2"
+      "const": "strict_sdd_tdd_v1"
     },
-    "baseline_lock": {
-      "$ref": "#/$defs/baselineLock"
+    "commit": {
+      "$ref": "#/$defs/commit"
     }
   },
   "$defs": {
+    "commit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message"],
+      "properties": {
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384,
+          "pattern": "^[^\\x00]*$"
+        }
+      }
+    },
     "scope": {
       "type": "object",
       "additionalProperties": false,
@@ -335,81 +347,6 @@
           "$ref": "#/$defs/command"
         }
       }
-    },
-    "baselineLock": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "git_object_format",
-        "base_commit",
-        "base_tree",
-        "policy_sha256",
-        "specification_sha256"
-      ],
-      "properties": {
-        "git_object_format": {
-          "enum": [
-            "sha1",
-            "sha256"
-          ]
-        },
-        "base_commit": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
-        },
-        "base_tree": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
-        },
-        "policy_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "specification_sha256": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "git_object_format": {
-                "const": "sha1"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "base_commit": {
-                "pattern": "^[0-9a-f]{40}$"
-              },
-              "base_tree": {
-                "pattern": "^[0-9a-f]{40}$"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "git_object_format": {
-                "const": "sha256"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "base_commit": {
-                "pattern": "^[0-9a-f]{64}$"
-              },
-              "base_tree": {
-                "pattern": "^[0-9a-f]{64}$"
-              }
-            }
-          }
-        }
-      ]
     }
   },
   "allOf": [

@@ -10,7 +10,7 @@ import (
 
 func TestChangeContractJSONSchemasCoverSupportedVersions(t *testing.T) {
 	root := "schemas"
-	for _, name := range []string{"change-contract-v1.schema.json", "change-contract-v2.schema.json", "change-contract-v3.schema.json", "change-contract-v4.schema.json"} {
+	for _, name := range []string{"change-contract-v1.schema.json", "change-contract-v2.schema.json", "change-contract-v3.schema.json", "change-contract-v4.schema.json", "change-contract-v5.schema.json", "change-contract-v6.schema.json"} {
 		raw, err := os.ReadFile(filepath.Join(root, name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
@@ -36,7 +36,7 @@ func TestChangeContractJSONSchemasCoverSupportedVersions(t *testing.T) {
 	for _, item := range aggregate.OneOf {
 		got = append(got, item.Ref)
 	}
-	want := []string{"change-contract-v1.schema.json", "change-contract-v2.schema.json", "change-contract-v3.schema.json", "change-contract-v4.schema.json"}
+	want := []string{"change-contract-v1.schema.json", "change-contract-v2.schema.json", "change-contract-v3.schema.json", "change-contract-v4.schema.json", "change-contract-v5.schema.json", "change-contract-v6.schema.json"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("aggregate refs=%v want=%v", got, want)
 	}

@@ -7,14 +7,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
-	LegacyChangeContractSchemaVersion = 1
-	ChangeContractSchemaVersion       = 2
-	StrictChangeContractSchemaVersion = 3
-	LockedChangeContractSchemaVersion = 4
+	LegacyChangeContractSchemaVersion             = 1
+	ChangeContractSchemaVersion                   = 2
+	StrictChangeContractSchemaVersion             = 3
+	LockedChangeContractSchemaVersion             = 4
+	CommitIntentDraftChangeContractSchemaVersion  = 5
+	CommitIntentLockedChangeContractSchemaVersion = 6
+	MaxCommitMessageRunes                         = 16_384
+	MaxCommitMessageBytes                         = 64 << 10
 )
 
 const (
@@ -81,6 +87,7 @@ type BaselineLock struct {
 type ChangeContract struct {
 	SchemaVersion     int                       `json:"schema_version"`
 	Kind              string                    `json:"kind"`
+	Commit            *CommitMetadata           `json:"commit,omitempty"`
 	Scope             *ChangeScope              `json:"scope,omitempty"`
 	TestScope         *ChangeScope              `json:"test_scope,omitempty"`
 	DevelopmentMethod string                    `json:"development_method,omitempty"`
@@ -91,11 +98,140 @@ type ChangeContract struct {
 	Regression        RegressionContract        `json:"regression"`
 }
 
+type CommitMetadata struct {
+	Message string `json:"message"`
+}
+
+// UnmarshalJSON checks the raw commit.message string before encoding/json can
+// replace unpaired UTF-16 surrogate escapes with U+FFFD.
+func (m *CommitMetadata) UnmarshalJSON(data []byte) error {
+	type plain CommitMetadata
+
+	dec := json.NewDecoder(bytes.NewReader(data))
+	first, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	opening, ok := first.(json.Delim)
+	if !ok || opening != '{' {
+		return json.Unmarshal(data, (*plain)(m))
+	}
+
+	for dec.More() {
+		keyToken, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return errors.New("commit metadata object key must be a string")
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return err
+		}
+		if strings.EqualFold(key, "message") {
+			if err := rejectUnpairedSurrogateEscapes(value); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return err
+	}
+	if err := ensureDecoderEOF(dec, "commit metadata"); err != nil {
+		return err
+	}
+
+	strict := json.NewDecoder(bytes.NewReader(data))
+	strict.DisallowUnknownFields()
+	var decoded plain
+	if err := strict.Decode(&decoded); err != nil {
+		return err
+	}
+	if err := ensureDecoderEOF(strict, "commit metadata"); err != nil {
+		return err
+	}
+	*m = CommitMetadata(decoded)
+	return nil
+}
+
+func rejectUnpairedSurrogateEscapes(raw []byte) error {
+	if len(raw) < 2 || raw[0] != '"' {
+		return nil
+	}
+	for i := 1; i < len(raw)-1; {
+		if raw[i] != '\\' {
+			i++
+			continue
+		}
+		i++
+		if i >= len(raw)-1 {
+			return nil // The JSON decoder reports the malformed escape.
+		}
+		if raw[i] != 'u' {
+			i++
+			continue
+		}
+		if i+4 >= len(raw) {
+			return nil // The JSON decoder reports the malformed escape.
+		}
+		unit, err := strconv.ParseUint(string(raw[i+1:i+5]), 16, 16)
+		if err != nil {
+			return nil // The JSON decoder reports the malformed escape.
+		}
+		switch {
+		case unit >= 0xD800 && unit <= 0xDBFF:
+			next := i + 5
+			if next+5 >= len(raw) || raw[next] != '\\' || raw[next+1] != 'u' {
+				return errors.New("commit.message must not contain an unpaired Unicode surrogate escape")
+			}
+			low, err := strconv.ParseUint(string(raw[next+2:next+6]), 16, 16)
+			if err != nil {
+				return nil // The JSON decoder reports the malformed escape.
+			}
+			if low < 0xDC00 || low > 0xDFFF {
+				return errors.New("commit.message must not contain an unpaired Unicode surrogate escape")
+			}
+			i = next + 6
+		case unit >= 0xDC00 && unit <= 0xDFFF:
+			return errors.New("commit.message must not contain an unpaired Unicode surrogate escape")
+		default:
+			i += 5
+		}
+	}
+	return nil
+}
+
+func (m CommitMetadata) Validate() error {
+	if m.Message == "" {
+		return errors.New("commit.message must be non-empty")
+	}
+	if !utf8.ValidString(m.Message) {
+		return errors.New("commit.message must be valid UTF-8")
+	}
+	if strings.IndexByte(m.Message, 0) >= 0 {
+		return errors.New("commit.message must not contain NUL")
+	}
+	if utf8.RuneCountInString(m.Message) > MaxCommitMessageRunes || len(m.Message) > MaxCommitMessageBytes {
+		return fmt.Errorf("commit.message exceeds the maximum of %d Unicode scalar values or %d UTF-8 bytes", MaxCommitMessageRunes, MaxCommitMessageBytes)
+	}
+	return nil
+}
+
 type ChangeScope struct {
 	AllowedPaths []string `json:"allowed_paths"`
 }
 
 func DecodeChangeContract(raw []byte) (ChangeContract, error) {
+	if !utf8.Valid(raw) {
+		var version struct {
+			SchemaVersion int `json:"schema_version"`
+		}
+		if err := json.Unmarshal(raw, &version); err == nil && (version.SchemaVersion == CommitIntentDraftChangeContractSchemaVersion || version.SchemaVersion == CommitIntentLockedChangeContractSchemaVersion) {
+			return ChangeContract{}, errors.New("decode change contract: schema v5/v6 must be valid UTF-8")
+		}
+	}
 	var c ChangeContract
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -112,8 +248,16 @@ func DecodeChangeContract(raw []byte) (ChangeContract, error) {
 }
 
 func (c ChangeContract) Validate() error {
-	if c.SchemaVersion != LegacyChangeContractSchemaVersion && c.SchemaVersion != ChangeContractSchemaVersion && c.SchemaVersion != StrictChangeContractSchemaVersion && c.SchemaVersion != LockedChangeContractSchemaVersion {
+	if c.SchemaVersion != LegacyChangeContractSchemaVersion && c.SchemaVersion != ChangeContractSchemaVersion && c.SchemaVersion != StrictChangeContractSchemaVersion && c.SchemaVersion != LockedChangeContractSchemaVersion && c.SchemaVersion != CommitIntentDraftChangeContractSchemaVersion && c.SchemaVersion != CommitIntentLockedChangeContractSchemaVersion {
 		return fmt.Errorf("unsupported change contract schema_version %d", c.SchemaVersion)
+	}
+	if c.Commit != nil {
+		if c.SchemaVersion != CommitIntentDraftChangeContractSchemaVersion && c.SchemaVersion != CommitIntentLockedChangeContractSchemaVersion {
+			return fmt.Errorf("change contract schema v%d must not contain commit metadata", c.SchemaVersion)
+		}
+		if err := c.Commit.Validate(); err != nil {
+			return err
+		}
 	}
 	switch c.Kind {
 	case ChangeKindFeature, ChangeKindDefect, ChangeKindBehaviorPreserving:
@@ -164,7 +308,7 @@ func (c ChangeContract) Validate() error {
 
 func (c ChangeContract) validateStrictDevelopment() error {
 	wantMethod := DevelopmentMethodStrictSDDTDDV1
-	if c.SchemaVersion == LockedChangeContractSchemaVersion {
+	if c.IsLockedStrictDevelopment() {
 		wantMethod = DevelopmentMethodStrictSDDTDDV2
 	}
 	if c.DevelopmentMethod != wantMethod {
@@ -190,14 +334,14 @@ func (c ChangeContract) validateStrictDevelopment() error {
 	if err := c.Specification.Validate(); err != nil {
 		return fmt.Errorf("specification: %w", err)
 	}
-	if c.SchemaVersion == StrictChangeContractSchemaVersion {
+	if c.SchemaVersion == StrictChangeContractSchemaVersion || c.SchemaVersion == CommitIntentDraftChangeContractSchemaVersion {
 		if c.BaselineLock != nil {
-			return errors.New("change contract schema v3 must not contain baseline_lock")
+			return fmt.Errorf("change contract schema v%d must not contain baseline_lock", c.SchemaVersion)
 		}
 		return nil
 	}
 	if c.BaselineLock == nil {
-		return errors.New("change contract schema v4 requires baseline_lock")
+		return fmt.Errorf("change contract schema v%d requires baseline_lock", c.SchemaVersion)
 	}
 	if err := c.BaselineLock.Validate(); err != nil {
 		return fmt.Errorf("baseline_lock: %w", err)
@@ -359,7 +503,11 @@ func (s DevelopmentSpecification) TraceabilityLinks() []TraceabilityLink {
 }
 
 func (c ChangeContract) IsStrictDevelopment() bool {
-	return c.SchemaVersion == StrictChangeContractSchemaVersion || c.SchemaVersion == LockedChangeContractSchemaVersion
+	return c.SchemaVersion == StrictChangeContractSchemaVersion || c.SchemaVersion == LockedChangeContractSchemaVersion || c.SchemaVersion == CommitIntentDraftChangeContractSchemaVersion || c.SchemaVersion == CommitIntentLockedChangeContractSchemaVersion
+}
+
+func (c ChangeContract) IsLockedStrictDevelopment() bool {
+	return c.SchemaVersion == LockedChangeContractSchemaVersion || c.SchemaVersion == CommitIntentLockedChangeContractSchemaVersion
 }
 
 func (c ChangeContract) RequiresRedGreen() bool {

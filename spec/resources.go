@@ -11,7 +11,7 @@ type OfflineResource struct {
 // The offline kit embeds only the resources needed to operate and describe the
 // current V6 protocol. The source files remain the canonical copies.
 //
-//go:embed POLIS-OFFLINE.md POLIS-SPEC-v6.md schemas/policy.schema.json schemas/change-contract.schema.json schemas/change-contract-v3.schema.json schemas/change-contract-v4.schema.json schemas/manifest.schema.json schemas/evidence-event.schema.json schemas/signature.schema.json
+//go:embed POLIS-OFFLINE.md POLIS-SPEC-v6.md schemas/policy.schema.json schemas/change-contract.schema.json schemas/change-contract-v3.schema.json schemas/change-contract-v4.schema.json schemas/change-contract-v5.schema.json schemas/change-contract-v6.schema.json schemas/manifest.schema.json schemas/evidence-event.schema.json schemas/signature.schema.json
 var offlineResources embed.FS
 
 var offlineResourcePaths = []string{
@@ -20,6 +20,8 @@ var offlineResourcePaths = []string{
 	"schemas/change-contract.schema.json",
 	"schemas/change-contract-v3.schema.json",
 	"schemas/change-contract-v4.schema.json",
+	"schemas/change-contract-v5.schema.json",
+	"schemas/change-contract-v6.schema.json",
 	"schemas/evidence-event.schema.json",
 	"schemas/manifest.schema.json",
 	"schemas/policy.schema.json",
