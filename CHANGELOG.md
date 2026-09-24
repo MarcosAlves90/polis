@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+### Changed
+
+## [6.8.0] - 2026-09-24
+
+### Added
+
 - Add optional contract-bound Implementation Plan schema v1 and `polis implementation-plan`, with deterministic steps, scope and baseline binding, dependency ordering, and project-gate validation.
 - Validate an explicitly supplied Implementation Plan during `capture-red` and `build`; planned builds use package format v6 with the exact plan bytes as a ninth checksummed member, manifest digest, and inspect traceability.
 - Add optional artifact-bound commit messages and consumer-authorized `none`, `prompt`, and `auto` apply modes that commit exactly the validated consumer tree.
@@ -224,7 +230,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Aligned the Go module identity with the repository before the V4 semantic import-path migration.
 - Made Git-based CI fixtures deterministic across Windows line-ending behavior.
 
-[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.7.0...HEAD
+[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.8.0...HEAD
+[6.8.0]: https://github.com/MarcosAlves90/polis/compare/v6.7.0...v6.8.0
 [6.7.0]: https://github.com/MarcosAlves90/polis/compare/v6.6.0...v6.7.0
 [6.6.0]: https://github.com/MarcosAlves90/polis/compare/v6.5.0...v6.6.0
 [6.5.0]: https://github.com/MarcosAlves90/polis/compare/v6.4.0...v6.5.0

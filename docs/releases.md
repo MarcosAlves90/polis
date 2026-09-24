@@ -27,20 +27,20 @@ The repository must be clean before preflight or publication.
 By default the script resolves `gh` from `PATH`:
 
 ```bash
-./scripts/github-release.sh --tag v6.6.0
+./scripts/github-release.sh --tag v6.8.0
 ```
 
 Set `POLIS_GH` when a specific GitHub CLI should be the default for the shell/session:
 
 ```bash
-POLIS_GH="$HOME/tools/gh" ./scripts/github-release.sh --tag v6.6.0
+POLIS_GH="$HOME/tools/gh" ./scripts/github-release.sh --tag v6.8.0
 ```
 
 Use `--gh` for an explicit per-invocation override. `--gh` takes precedence over `POLIS_GH`:
 
 ```bash
 ./scripts/github-release.sh \
-  --tag v6.6.0 \
+  --tag v6.8.0 \
   --gh /opt/github-cli/bin/gh
 ```
 
@@ -56,8 +56,8 @@ exporter and cross-compile `./cmd/polis` for the target runtimes. Only the host
 exporter is executed; target binaries are embedded as bytes.
 
 ```bash
-POLIS_GO=/opt/go/bin/go ./scripts/github-release.sh --tag v6.6.0
-./scripts/github-release.sh --tag v6.6.0 --go /opt/go/bin/go
+POLIS_GO=/opt/go/bin/go ./scripts/github-release.sh --tag v6.8.0
+./scripts/github-release.sh --tag v6.8.0 --go /opt/go/bin/go
 ```
 
 ## Preflight first
@@ -68,7 +68,7 @@ temporary directory. It does not create a tag, push a tag, or create a GitHub
 Release:
 
 ```bash
-./scripts/github-release.sh --tag v6.6.0
+./scripts/github-release.sh --tag v6.8.0
 ```
 
 A successful preflight ends with:
@@ -99,7 +99,7 @@ Any ambiguity or conflict is a hard failure.
 After reviewing preflight, repeat the command with `--publish`:
 
 ```bash
-./scripts/github-release.sh --tag v6.6.0 --publish
+./scripts/github-release.sh --tag v6.8.0 --publish
 ```
 
 If the tag does not exist, the script creates an annotated tag at the already-resolved source commit and pushes only that tag. It then calls `gh release create` with `--verify-tag`. This prevents GitHub CLI from silently creating a missing tag from the repository default branch.
@@ -116,14 +116,14 @@ remain supported.
 Generated GitHub release notes are the default:
 
 ```bash
-./scripts/github-release.sh --tag v6.6.0 --publish
+./scripts/github-release.sh --tag v6.8.0 --publish
 ```
 
 Use maintained notes instead:
 
 ```bash
 ./scripts/github-release.sh \
-  --tag v6.6.0 \
+  --tag v6.8.0 \
   --notes-file ./RELEASE_NOTES.md \
   --publish
 ```
@@ -132,8 +132,8 @@ Optional release metadata:
 
 ```bash
 ./scripts/github-release.sh \
-  --tag v6.6.0-rc.1 \
-  --title "POLIS V6.6.0-rc.1" \
+  --tag v6.8.0-rc.1 \
+  --title "POLIS V6.8.0-rc.1" \
   --prerelease \
   --latest false \
   --publish
@@ -148,7 +148,7 @@ the release. It always includes the host runtime plus `linux/amd64` and
 `windows/amd64`, deduplicating a target that is already the host runtime:
 
 ```text
-polis-v6.6.0-offline-<GOOS>-<GOARCH>.zip
+polis-v6.8.0-offline-<GOOS>-<GOARCH>.zip
 ```
 
 Each bundle contains the compiled V6 CLI for its declared target, embedded
@@ -168,7 +168,7 @@ Pass `--asset` more than once when needed:
 
 ```bash
 ./scripts/github-release.sh \
-  --tag v6.6.0 \
+  --tag v6.8.0 \
   --asset ./release-assets/polis-linux-amd64.tar.gz \
   --asset ./release-assets/polis-darwin-arm64.tar.gz
 ```
@@ -191,7 +191,7 @@ Add `--publish` only after reviewing the preflight output:
 
 ```bash
 ./scripts/github-release.sh \
-  --tag v6.6.0 \
+  --tag v6.8.0 \
   --asset ./release-assets/polis-linux-amd64.tar.gz \
   --publish
 ```
@@ -201,7 +201,7 @@ Add `--publish` only after reviewing the preflight output:
 Use a remote other than `origin` only when that is intentionally the Git remote that owns the release tag:
 
 ```bash
-./scripts/github-release.sh --tag v6.6.0 --remote upstream
+./scripts/github-release.sh --tag v6.8.0 --remote upstream
 ```
 
 Show the complete CLI contract with:
