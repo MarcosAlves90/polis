@@ -21,7 +21,7 @@ func TestREADMEIsLandingPage(t *testing.T) {
 		"## Installation",
 		"go install github.com/MarcosAlves90/polis/v6/cmd/polis@latest",
 		"polis help",
-		"go install github.com/MarcosAlves90/polis/v6/cmd/polis@v6.6.0",
+		"go install github.com/MarcosAlves90/polis/v6/cmd/polis@v6.8.0",
 		"[installation guide](docs/installation.md)",
 		"[Usage and V6 workflows](docs/usage.md)",
 		"[latest release](https://github.com/MarcosAlves90/polis/releases/latest)",
