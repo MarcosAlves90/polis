@@ -45,7 +45,7 @@ For feature/defect Red-to-Green work, test steps precede the capture-Red proof s
 
 For `behavior_preserving` Green-to-Green work, baseline characterization precedes implementation, target characterization follows implementation, and complete validation follows. The plan MUST NOT create a Red step or require a regression patch.
 
-Validation steps reference existing contract proof commands (`regression`, `behavior`, `affected`) and enabled Project Policy gate IDs/order. They MUST NOT contain executable commands or replace Project Policy authority.
+Validation steps reference existing contract proof commands (`regression`, `behavior`, `affected`) and enabled Project Policy gate IDs/order. Across all validation steps, the plan MUST reference every enabled gate exactly once and in effective execution order. They MUST NOT contain executable commands or replace Project Policy authority.
 
 ## Creation contract
 

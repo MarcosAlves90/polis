@@ -81,10 +81,17 @@ type Inspection struct {
 }
 
 type ImplementationPlanTraceability struct {
-	RequirementID         string   `json:"requirement_id"`
-	AcceptanceCriterionID string   `json:"acceptance_criterion_id"`
-	Proof                 string   `json:"proof"`
-	PlanStepIDs           []string `json:"plan_step_ids"`
+	RequirementID             string                            `json:"requirement_id"`
+	AcceptanceCriterionID     string                            `json:"acceptance_criterion_id"`
+	Proof                     string                            `json:"proof"`
+	TestPlanStepIDs           []string                          `json:"test_plan_step_ids"`
+	ImplementationPlanStepIDs []string                          `json:"implementation_plan_step_ids"`
+	ProofPlanSteps            []ImplementationPlanStepReference `json:"proof_plan_steps"`
+}
+
+type ImplementationPlanStepReference struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
 }
 
 type Package struct {
@@ -174,12 +181,25 @@ func traceabilityForImplementationPlan(change spec.ChangeContract, plan spec.Imp
 	traceability := make([]ImplementationPlanTraceability, 0, len(links))
 	for _, link := range links {
 		entry := ImplementationPlanTraceability{
-			RequirementID: link.RequirementID, AcceptanceCriterionID: link.AcceptanceCriterionID, Proof: link.Proof,
-			PlanStepIDs: make([]string, 0),
+			RequirementID:             link.RequirementID,
+			AcceptanceCriterionID:     link.AcceptanceCriterionID,
+			Proof:                     link.Proof,
+			TestPlanStepIDs:           make([]string, 0),
+			ImplementationPlanStepIDs: make([]string, 0),
+			ProofPlanSteps:            make([]ImplementationPlanStepReference, 0),
 		}
 		for _, step := range plan.Steps {
-			if containsString(step.Requirements, link.RequirementID) && containsString(step.AcceptanceCriteria, link.AcceptanceCriterionID) {
-				entry.PlanStepIDs = append(entry.PlanStepIDs, step.ID)
+			matchesRequirementAndCriterion := containsString(step.Requirements, link.RequirementID) && containsString(step.AcceptanceCriteria, link.AcceptanceCriterionID)
+			if matchesRequirementAndCriterion {
+				switch step.Kind {
+				case spec.ImplementationPlanStepTest:
+					entry.TestPlanStepIDs = append(entry.TestPlanStepIDs, step.ID)
+				case spec.ImplementationPlanStepImplementation:
+					entry.ImplementationPlanStepIDs = append(entry.ImplementationPlanStepIDs, step.ID)
+				}
+			}
+			if containsString(step.ContractProofs, link.Proof) {
+				entry.ProofPlanSteps = append(entry.ProofPlanSteps, ImplementationPlanStepReference{ID: step.ID, Kind: step.Kind})
 			}
 		}
 		traceability = append(traceability, entry)

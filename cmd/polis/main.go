@@ -221,7 +221,13 @@ func writeInspectionText(out io.Writer, inspection packageverify.Inspection) {
 	if inspection.ImplementationPlanPresent {
 		fmt.Fprintf(out, "Plan schema: %d\nPlan strategy: %s\nPlan steps: %d\n", inspection.ImplementationPlanSchemaVersion, inspection.ImplementationPlanStrategy, inspection.ImplementationPlanStepCount)
 		for _, trace := range inspection.ImplementationPlanTraceability {
-			fmt.Fprintf(out, "Plan trace: %s -> %s -> %s via %s\n", trace.RequirementID, trace.AcceptanceCriterionID, trace.Proof, strings.Join(trace.PlanStepIDs, ", "))
+			proofSteps := make([]string, 0, len(trace.ProofPlanSteps))
+			for _, step := range trace.ProofPlanSteps {
+				proofSteps = append(proofSteps, fmt.Sprintf("%s (%s)", step.ID, step.Kind))
+			}
+			fmt.Fprintf(out, "Plan trace: %s -> %s; proof=%s; test steps=%s; implementation steps=%s; proof steps=%s\n",
+				trace.RequirementID, trace.AcceptanceCriterionID, trace.Proof,
+				strings.Join(trace.TestPlanStepIDs, ", "), strings.Join(trace.ImplementationPlanStepIDs, ", "), strings.Join(proofSteps, ", "))
 		}
 	}
 	if inspection.Commit != nil {

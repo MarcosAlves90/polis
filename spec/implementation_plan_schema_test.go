@@ -2,6 +2,7 @@ package spec
 
 import (
 	"encoding/json"
+	"regexp"
 	"testing"
 )
 
@@ -46,6 +47,66 @@ func TestImplementationPlanSchemaIsEmbeddedAndClosed(t *testing.T) {
 	for _, field := range []string{"schema_version", "change_contract_sha256", "git_object_format", "base_commit", "base_tree", "strategy", "steps"} {
 		if !containsPlanValue(anyStrings(schema["required"]), field) {
 			t.Errorf("implementation plan schema does not require %q", field)
+		}
+	}
+}
+
+func TestImplementationPlanSchemaStepIDPatternsMatchRuntime(t *testing.T) {
+	var raw []byte
+	for _, resource := range OfflineResources() {
+		if resource.Path == "schemas/implementation-plan.schema.json" {
+			raw = resource.Data
+			break
+		}
+	}
+	if len(raw) == 0 {
+		t.Fatal("implementation plan schema is missing from offline resources")
+	}
+	var schema struct {
+		Definitions struct {
+			Step struct {
+				Properties map[string]struct {
+					Pattern string `json:"pattern"`
+					Items   struct {
+						Pattern string `json:"pattern"`
+					} `json:"items"`
+				} `json:"properties"`
+			} `json:"step"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatalf("parse implementation plan schema: %v", err)
+	}
+	idPattern := schema.Definitions.Step.Properties["id"].Pattern
+	dependencyPattern := schema.Definitions.Step.Properties["depends_on"].Items.Pattern
+	wantPattern := canonicalPlanStepIDPattern.String()
+	if idPattern != wantPattern || dependencyPattern != wantPattern {
+		t.Fatalf("schema plan ID patterns differ from runtime: id=%q depends_on=%q runtime=%q", idPattern, dependencyPattern, wantPattern)
+	}
+	idRegexp, err := regexp.Compile(idPattern)
+	if err != nil {
+		t.Fatalf("compile schema plan ID pattern: %v", err)
+	}
+	dependencyRegexp, err := regexp.Compile(dependencyPattern)
+	if err != nil {
+		t.Fatalf("compile schema dependency ID pattern: %v", err)
+	}
+	for _, test := range []struct {
+		id        string
+		wantValid bool
+	}{
+		{id: "PLAN-001", wantValid: true},
+		{id: "PLAN-999", wantValid: true},
+		{id: "PLAN-1000", wantValid: true},
+		{id: "PLAN-18446744073709551616", wantValid: true},
+		{id: "PLAN-000"},
+		{id: "PLAN-0001"},
+	} {
+		if got := idRegexp.MatchString(test.id); got != test.wantValid {
+			t.Errorf("schema id pattern match for %q = %t, want %t", test.id, got, test.wantValid)
+		}
+		if got := dependencyRegexp.MatchString(test.id); got != test.wantValid {
+			t.Errorf("schema dependency pattern match for %q = %t, want %t", test.id, got, test.wantValid)
 		}
 	}
 }

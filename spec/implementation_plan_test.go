@@ -243,8 +243,8 @@ func TestImplementationPlanValidateRejectsMalformedStructure(t *testing.T) {
 		}, wantError: "more than"},
 		{name: "malformed step ID", mutate: func(p ImplementationPlan) ImplementationPlan { p.Steps[0].ID = "STEP-001"; return p }, wantError: "PLAN-"},
 		{name: "non-canonical step ID", mutate: func(p ImplementationPlan) ImplementationPlan { p.Steps[0].ID = "PLAN-0001"; return p }, wantError: "not a canonical"},
-		{name: "overflow step ID", mutate: func(p ImplementationPlan) ImplementationPlan {
-			p.Steps[0].ID = "PLAN-999999999999999999999999"
+		{name: "zero step ID", mutate: func(p ImplementationPlan) ImplementationPlan {
+			p.Steps[0].ID = "PLAN-000"
 			return p
 		}, wantError: "not a canonical"},
 		{name: "empty objective", mutate: func(p ImplementationPlan) ImplementationPlan { p.Steps[0].Objective = "  "; return p }, wantError: "objective"},
@@ -296,10 +296,38 @@ func TestImplementationPlanRequiresSerializedOrderToMatchTopologicalOrder(t *tes
 
 func TestImplementationPlanProjectGatesFollowEffectiveExecutionOrder(t *testing.T) {
 	plan := validRedGreenImplementationPlan(strings.Repeat("a", 64))
-	plan.Steps[3].ProjectGates = []string{ProjectGateOrder[0], ProjectGateOrder[2]}
+	plan.Steps[3].ProjectGates = append([]string(nil), ProjectGateOrder...)
 	if err := plan.ValidateProjectGates(ProjectGateOrder); err != nil {
 		t.Fatalf("canonical project gate order rejected: %v", err)
 	}
+
+	splitPlan := cloneImplementationPlan(plan)
+	splitPlan.Steps[3].ProjectGates = []string{ProjectGateOrder[0]}
+	splitPlan.Steps = append(splitPlan.Steps, ImplementationPlanStep{
+		ID: "PLAN-005", Kind: ImplementationPlanStepValidation, Objective: "Continue final validation",
+		ProjectGates: append([]string(nil), ProjectGateOrder[1:]...),
+	})
+	if err := splitPlan.ValidateProjectGates(ProjectGateOrder); err != nil {
+		t.Fatalf("complete gate inventory split across validation steps rejected: %v", err)
+	}
+
+	for _, test := range []struct {
+		name  string
+		gates []string
+	}{
+		{name: "empty gate list"},
+		{name: "ordered subset", gates: []string{ProjectGateOrder[0], ProjectGateOrder[2]}},
+		{name: "missing final enabled gate", gates: append([]string(nil), ProjectGateOrder[:len(ProjectGateOrder)-1]...)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			incompletePlan := cloneImplementationPlan(plan)
+			incompletePlan.Steps[3].ProjectGates = test.gates
+			if err := incompletePlan.ValidateProjectGates(ProjectGateOrder); err == nil || !strings.Contains(err.Error(), "omits enabled Project Policy gate") {
+				t.Fatalf("incomplete project gate inventory accepted: %v", err)
+			}
+		})
+	}
+
 	plan.Steps[3].ProjectGates = []string{ProjectGateOrder[2], ProjectGateOrder[0]}
 	if err := plan.ValidateProjectGates(ProjectGateOrder); err == nil || !strings.Contains(err.Error(), "execution order") {
 		t.Fatalf("out-of-order project gates accepted: %v", err)
@@ -307,6 +335,47 @@ func TestImplementationPlanProjectGatesFollowEffectiveExecutionOrder(t *testing.
 	plan.Steps[3].ProjectGates = []string{"unknown.gate"}
 	if err := plan.ValidateProjectGates(ProjectGateOrder); err == nil || !strings.Contains(err.Error(), "outside the effective policy") {
 		t.Fatalf("unknown project gate accepted: %v", err)
+	}
+
+	duplicatePlan := cloneImplementationPlan(plan)
+	duplicatePlan.Steps[3].ProjectGates = []string{ProjectGateOrder[0]}
+	duplicatePlan.Steps = append(duplicatePlan.Steps, ImplementationPlanStep{
+		ID: "PLAN-005", Kind: ImplementationPlanStepValidation, Objective: "Repeat a project gate",
+		ProjectGates: append([]string{ProjectGateOrder[0]}, ProjectGateOrder[1:]...),
+	})
+	if err := duplicatePlan.ValidateProjectGates(ProjectGateOrder); err == nil || !strings.Contains(err.Error(), "more than once") {
+		t.Fatalf("project gate repeated across validation steps accepted: %v", err)
+	}
+}
+
+func TestImplementationPlanStepIDsUseCanonicalPositiveOrdinals(t *testing.T) {
+	for _, test := range []struct {
+		id        string
+		wantValid bool
+	}{
+		{id: "PLAN-001", wantValid: true},
+		{id: "PLAN-999", wantValid: true},
+		{id: "PLAN-1000", wantValid: true},
+		{id: "PLAN-18446744073709551616", wantValid: true},
+		{id: "PLAN-000"},
+		{id: "PLAN-0001"},
+		{id: "STEP-001"},
+	} {
+		t.Run(test.id, func(t *testing.T) {
+			plan := ImplementationPlan{
+				SchemaVersion: ImplementationPlanSchemaVersion, ChangeContractSHA256: strings.Repeat("a", 64),
+				GitObjectFormat: "sha1", BaseCommit: strings.Repeat("1", 40), BaseTree: strings.Repeat("2", 40),
+				Strategy: ImplementationPlanStrategyRedGreen,
+				Steps:    []ImplementationPlanStep{{ID: test.id, Kind: ImplementationPlanStepImplementation, Objective: "Implement the requirement"}},
+			}
+			err := plan.Validate()
+			if test.wantValid && err != nil {
+				t.Fatalf("canonical plan step ID rejected: %v", err)
+			}
+			if !test.wantValid && err == nil {
+				t.Fatal("non-canonical plan step ID accepted")
+			}
+		})
 	}
 }
 

@@ -157,7 +157,7 @@ deferred gate.
 - Project Policy uses schema v3 with command environments and gate configuration.
 - New builds accept locked Change Contract schema v4 for compatibility and schema v6 for the new producer flow. Schema v5 is a draft accepted by `polis start`, which locks it as v6. Schemas v1-v4 retain their existing meaning.
 - Formats v5 and v6 use Evidence v3 to record deferred gates as `DEFERRED`; formats v2-v4 retain Evidence v2 semantics. Both use bounded-output counts and digests, not raw streams.
-- `polis inspect` reports plan presence, schema, strategy, step count, and requirement-to-plan-to-proof traceability after successful package verification; historical and unplanned artifacts report plan absence.
+- `polis inspect` reports plan presence, schema, strategy, step count, and requirement-to-plan-to-proof traceability after successful package verification. JSON separates test and implementation step IDs; `proof_plan_steps` lists each step declaring the linked contract proof with its ID and kind. Historical and unplanned artifacts report plan absence.
 - `polis build --defer-gate <id>` may repeat the option. Deferred gates are skipped by the producer and run with the packaged policy during consumer `preflight` and `apply`.
 - Detached Ed25519 signatures authenticate exact package bytes.
 - Coverage adapters are Go coverprofile, LCOV, and Cobertura.

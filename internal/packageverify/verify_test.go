@@ -7,12 +7,46 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
+
+func TestTraceabilityForImplementationPlanSeparatesStepRoles(t *testing.T) {
+	change := spec.ChangeContract{Specification: &spec.DevelopmentSpecification{
+		AcceptanceCriteria: []spec.AcceptanceCriterion{{
+			ID: "AC-001", Requirements: []string{"REQ-001"}, Proof: spec.ProofGateRegression,
+		}},
+	}}
+	plan := spec.ImplementationPlan{Steps: []spec.ImplementationPlanStep{
+		{ID: "PLAN-001", Kind: spec.ImplementationPlanStepTest, Requirements: []string{"REQ-001"}, AcceptanceCriteria: []string{"AC-001"}},
+		{ID: "PLAN-002", Kind: spec.ImplementationPlanStepProof, ContractProofs: []string{"regression"}},
+		{ID: "PLAN-003", Kind: spec.ImplementationPlanStepImplementation, Requirements: []string{"REQ-001"}, AcceptanceCriteria: []string{"AC-001"}},
+		{ID: "PLAN-004", Kind: spec.ImplementationPlanStepValidation, ContractProofs: []string{"regression", "behavior", "affected"}},
+	}}
+
+	traceability := traceabilityForImplementationPlan(change, plan)
+	if len(traceability) != 1 {
+		t.Fatalf("traceability entries=%v, want one", traceability)
+	}
+	trace := traceability[0]
+	if !reflect.DeepEqual(trace.TestPlanStepIDs, []string{"PLAN-001"}) {
+		t.Errorf("test step IDs=%v, want [PLAN-001]", trace.TestPlanStepIDs)
+	}
+	if !reflect.DeepEqual(trace.ImplementationPlanStepIDs, []string{"PLAN-003"}) {
+		t.Errorf("implementation step IDs=%v, want [PLAN-003]", trace.ImplementationPlanStepIDs)
+	}
+	wantProofSteps := []ImplementationPlanStepReference{
+		{ID: "PLAN-002", Kind: spec.ImplementationPlanStepProof},
+		{ID: "PLAN-004", Kind: spec.ImplementationPlanStepValidation},
+	}
+	if !reflect.DeepEqual(trace.ProofPlanSteps, wantProofSteps) {
+		t.Errorf("proof plan steps=%v, want %v", trace.ProofPlanSteps, wantProofSteps)
+	}
+}
 
 func canonicalPolicyBytes(t *testing.T) []byte {
 	t.Helper()

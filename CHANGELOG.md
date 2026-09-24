@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Keep unplanned new packages on format v5 and use format v6 only when a plan is supplied; retain exact reader compatibility for formats v2-v5.
 - Update current offline schemas, V6 specification, usage guide, and delivery-guide metadata for package v6 and Implementation Plan v1.
 - Remove unowned schema `$id` values while retaining the standard JSON Schema `$schema` declarations.
+- Require planned artifacts to cover every enabled Project Policy gate exactly once, report test, implementation, and proof traceability separately, and use the same canonical step-ID rule in the schema and decoder.
 
 ## [6.7.0] - 2026-09-17
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -791,8 +792,12 @@ func TestBuildPackagesExactOptionalImplementationPlanAsFormatV6(t *testing.T) {
 		t.Fatalf("plan traceability=%+v", inspection.ImplementationPlanTraceability)
 	}
 	trace := inspection.ImplementationPlanTraceability[0]
-	if trace.Proof != spec.ProofGateRegression || len(trace.PlanStepIDs) < 2 {
-		t.Fatalf("plan traceability does not identify plan steps and proof: %+v", trace)
+	wantProofSteps := []packageverify.ImplementationPlanStepReference{
+		{ID: "PLAN-002", Kind: spec.ImplementationPlanStepProof},
+		{ID: "PLAN-004", Kind: spec.ImplementationPlanStepValidation},
+	}
+	if trace.Proof != spec.ProofGateRegression || !reflect.DeepEqual(trace.TestPlanStepIDs, []string{"PLAN-001"}) || !reflect.DeepEqual(trace.ImplementationPlanStepIDs, []string{"PLAN-003"}) || !reflect.DeepEqual(trace.ProofPlanSteps, wantProofSteps) {
+		t.Fatalf("Red/Green traceability does not identify test, implementation, and proof steps: %+v", trace)
 	}
 }
 
@@ -836,7 +841,11 @@ func TestBuildPackagesOptionalImplementationPlanForGreenGreen(t *testing.T) {
 	if !inspection.ImplementationPlanPresent || inspection.ImplementationPlanStrategy != spec.ImplementationPlanStrategyGreenGreen {
 		t.Fatalf("Green/Green plan not exposed by inspect: %+v", inspection)
 	}
-	if len(inspection.ImplementationPlanTraceability) != 1 || len(inspection.ImplementationPlanTraceability[0].PlanStepIDs) < 2 {
+	wantGreenGreenProofSteps := []packageverify.ImplementationPlanStepReference{
+		{ID: "PLAN-001", Kind: spec.ImplementationPlanStepTest},
+		{ID: "PLAN-003", Kind: spec.ImplementationPlanStepTest},
+	}
+	if len(inspection.ImplementationPlanTraceability) != 1 || !reflect.DeepEqual(inspection.ImplementationPlanTraceability[0].TestPlanStepIDs, []string{"PLAN-001", "PLAN-003"}) || !reflect.DeepEqual(inspection.ImplementationPlanTraceability[0].ImplementationPlanStepIDs, []string{"PLAN-002"}) || !reflect.DeepEqual(inspection.ImplementationPlanTraceability[0].ProofPlanSteps, wantGreenGreenProofSteps) {
 		t.Fatalf("Green/Green traceability omits plan step links: %+v", inspection.ImplementationPlanTraceability)
 	}
 }

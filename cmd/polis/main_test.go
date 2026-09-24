@@ -269,11 +269,25 @@ func TestRunPlannedGreenGreenCommands(t *testing.T) {
 	if !ok || trace["requirement_id"] != "REQ-001" || trace["acceptance_criterion_id"] != "AC-001" || trace["proof"] != spec.ProofGateRegression {
 		t.Fatalf("planned inspect trace=%v", traceability[0])
 	}
-	stepIDs, ok := trace["plan_step_ids"].([]any)
-	if !ok || len(stepIDs) < 2 {
-		t.Fatalf("planned inspect omitted plan step references: %v", trace)
+	testStepIDs, ok := trace["test_plan_step_ids"].([]any)
+	if !ok || len(testStepIDs) != 2 || testStepIDs[0] != "PLAN-001" || testStepIDs[1] != "PLAN-003" {
+		t.Fatalf("planned inspect test step references=%v", trace["test_plan_step_ids"])
 	}
-	assertCLITextContains(t, []string{"inspect", artifact}, "Implementation plan: true", "Plan schema: 1", "Plan strategy: green_green", "Plan trace: REQ-001 -> AC-001 -> regression via")
+	implementationStepIDs, ok := trace["implementation_plan_step_ids"].([]any)
+	if !ok || len(implementationStepIDs) != 1 || implementationStepIDs[0] != "PLAN-002" {
+		t.Fatalf("planned inspect implementation step references=%v", trace["implementation_plan_step_ids"])
+	}
+	proofSteps, ok := trace["proof_plan_steps"].([]any)
+	if !ok || len(proofSteps) != 2 {
+		t.Fatalf("planned inspect proof step references=%v", trace["proof_plan_steps"])
+	}
+	for i, wantID := range []string{"PLAN-001", "PLAN-003"} {
+		proofStep, ok := proofSteps[i].(map[string]any)
+		if !ok || proofStep["id"] != wantID || proofStep["kind"] != spec.ImplementationPlanStepTest {
+			t.Fatalf("planned inspect proof step %d=%v", i, proofSteps[i])
+		}
+	}
+	assertCLITextContains(t, []string{"inspect", artifact}, "Implementation plan: true", "Plan schema: 1", "Plan strategy: green_green", "Plan trace: REQ-001 -> AC-001; proof=regression; test steps=PLAN-001, PLAN-003; implementation steps=PLAN-002; proof steps=PLAN-001 (test), PLAN-003 (test)")
 	if output, err := exec.Command("git", "-C", repo, "restore", "--", "app.txt").CombinedOutput(); err != nil {
 		t.Fatalf("restore source before consumer validation: %v\n%s", err, output)
 	}

@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -29,7 +28,10 @@ const (
 	ImplementationPlanStepValidation     = "validation"
 )
 
-var planStepIDPattern = regexp.MustCompile(`^PLAN-[0-9]{3,}$`)
+var (
+	planStepIDPattern          = regexp.MustCompile(`^PLAN-[0-9]{3,}$`)
+	canonicalPlanStepIDPattern = regexp.MustCompile(`^PLAN-(00[1-9]|0[1-9][0-9]|[1-9][0-9]{2,})$`)
+)
 
 // ImplementationPlan is a subordinate, deterministic sequence for one exact
 // locked Change Contract. It carries references, not executable commands.
@@ -237,8 +239,7 @@ func (p ImplementationPlan) Validate() error {
 		if !planStepIDPattern.MatchString(step.ID) {
 			return fmt.Errorf("steps[%d].id must use PLAN- followed by at least three digits", i)
 		}
-		ordinal, err := strconv.ParseUint(strings.TrimPrefix(step.ID, "PLAN-"), 10, 64)
-		if err != nil || ordinal == 0 || fmt.Sprintf("PLAN-%03d", ordinal) != step.ID {
+		if !canonicalPlanStepIDPattern.MatchString(step.ID) {
 			return fmt.Errorf("steps[%d].id %q is not a canonical plan step ID", i, step.ID)
 		}
 		if _, exists := stepIndexes[step.ID]; exists {
@@ -340,16 +341,26 @@ func (p ImplementationPlan) ValidateProjectGates(executionOrder []string) error 
 		positions[gateID] = i
 	}
 	lastPosition := -1
+	seenPlanGates := make(map[string]struct{}, len(executionOrder))
 	for stepIndex, step := range p.Steps {
 		for _, gateID := range step.ProjectGates {
 			position, ok := positions[gateID]
 			if !ok {
 				return fmt.Errorf("steps[%d].project_gates references gate %q outside the effective policy", stepIndex, gateID)
 			}
+			if _, duplicate := seenPlanGates[gateID]; duplicate {
+				return fmt.Errorf("implementation plan references project gate %q more than once", gateID)
+			}
 			if position < lastPosition {
 				return fmt.Errorf("steps[%d].project_gates do not follow effective policy execution order", stepIndex)
 			}
 			lastPosition = position
+			seenPlanGates[gateID] = struct{}{}
+		}
+	}
+	for _, gateID := range executionOrder {
+		if _, present := seenPlanGates[gateID]; !present {
+			return fmt.Errorf("implementation plan omits enabled Project Policy gate %q", gateID)
 		}
 	}
 	return nil
