@@ -413,4 +413,7 @@ func TestVerifyV6RetainsHistoricalArtifactReadCompatibility(t *testing.T) {
 	if inspection.ChangeContractSchemaVersion != spec.LegacyChangeContractSchemaVersion {
 		t.Fatalf("historical change schema=%d", inspection.ChangeContractSchemaVersion)
 	}
+	if inspection.ImplementationPlanPresent {
+		t.Fatalf("historical artifact unexpectedly reports an implementation plan: %+v", inspection)
+	}
 }

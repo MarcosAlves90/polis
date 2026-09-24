@@ -270,6 +270,32 @@ the unchanged strict `>80.0%` gate. Vet, formatting, module integrity, build,
 doctor, offline export inspection, and diff checks passed on macOS arm64. The
 repository has no `package.json`, so `npm run verify` could not run.
 
+## Issue #5 — optional contract-bound implementation plans
+
+**Red observed:** focused validator regressions failed for excessive JSON
+nesting, serialized order that disagreed with deterministic topological order,
+and missing final validation proofs for both supported strategies.
+
+**Green:** bounded JSON nesting, topological serialization, and final strategy
+proofs are now enforced. Added malformed-input, planning-boundary, CLI usage
+and flag, producer, and format-v6 package coverage. End-to-end tests cover both
+Red-to-Green and Green-to-Green planned package flows, including CLI preflight
+and apply. Integrity tests reject plan digest, checksum, tampering, and detached
+signature failures. Compatibility checks cover unplanned format v2, v4, and v5.
+Boundary review also removed repeated requirement prose from generated
+objectives and added a pre-write 1 MiB plan-size guard. The full suite found and
+fixed a stale version-specific inventory assertion that still rejected format
+v6. Schema-parity tests also ensure decoding rejects null arrays and
+case-insensitive aliases that the published JSON Schema disallows. Manifest
+decoding also rejects the v6-only digest on earlier formats, even when null.
+
+**Validation:** all 646 tests in 23 packages and the race suite passed. Project
+line-union coverage was `6219 / 7740 = 80.348837%`, above the unchanged strict
+`>80%` gate. Vet, build, module verification, formatting, diff checks, and
+offline export inspection passed. `npm run verify` is unavailable because the
+repository has no `package.json`. See [0035-implementation-plan.md](0035-implementation-plan.md)
+for the focused Red/Green evidence.
+
 ## SDD-0013 — Sonar maintainability cleanup
 
 ### Static-analysis Red

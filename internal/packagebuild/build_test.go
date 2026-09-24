@@ -10,7 +10,9 @@ import (
 	"testing"
 
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
+	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
 	"github.com/MarcosAlves90/polis/v6/internal/redcapture"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
@@ -636,7 +638,7 @@ func strictDoubleFeatureContract(t *testing.T) string {
 	contract := spec.ChangeContract{
 		SchemaVersion:     spec.StrictChangeContractSchemaVersion,
 		Kind:              spec.ChangeKindFeature,
-		Scope:             &spec.ChangeScope{AllowedPaths: []string{"."}},
+		Scope:             &spec.ChangeScope{AllowedPaths: []string{"double.go", "strict_feature_test.go"}},
 		TestScope:         &spec.ChangeScope{AllowedPaths: []string{"strict_feature_test.go"}},
 		DevelopmentMethod: spec.DevelopmentMethodStrictSDDTDDV1,
 		Specification: &spec.DevelopmentSpecification{
@@ -671,6 +673,19 @@ func strictDoubleFeatureContract(t *testing.T) string {
 
 func strictDoubleFeatureFixture(t *testing.T) (string, string, string) {
 	t.Helper()
+	repo, contract := strictDoubleFeatureLockedFixture(t)
+	if err := os.WriteFile(filepath.Join(repo, "strict_feature_test.go"), []byte("package polisfixture\nimport \"testing\"\nfunc TestStrictFeatureDouble(t *testing.T){if Double(2)!=4{t.Fatal(\"STRICT-FEATURE-RED\")}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	redPatch := filepath.Join(t.TempDir(), "strict-feature-red.patch")
+	if _, err := redcapture.Capture(context.Background(), redcapture.Options{Repo: repo, Contract: contract, Out: redPatch}); err != nil {
+		t.Fatalf("capture strict feature Red: %v", err)
+	}
+	return repo, contract, redPatch
+}
+
+func strictDoubleFeatureLockedFixture(t *testing.T) (string, string) {
+	t.Helper()
 	repo := newRepo(t, false)
 	upgradeFixturePolicyToV3(t, repo)
 	if err := os.WriteFile(filepath.Join(repo, "double.go"), []byte("package polisfixture\nfunc Double(n int) int { return n }\n"), 0o644); err != nil {
@@ -683,14 +698,50 @@ func strictDoubleFeatureFixture(t *testing.T) (string, string, string) {
 	if _, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Contract: draft, Out: contract}); err != nil {
 		t.Fatalf("polis start strict feature: %v", err)
 	}
+	return repo, contract
+}
+
+func TestPlannedRedGreenEndToEnd(t *testing.T) {
+	repo, contractPath := strictDoubleFeatureLockedFixture(t)
+	planPath := filepath.Join(t.TempDir(), "implementation-plan.json")
+	created, err := implementationplan.Create(context.Background(), implementationplan.Options{Repo: repo, Contract: contractPath, Out: planPath})
+	if err != nil {
+		t.Fatalf("create plan from clean locked baseline: %v", err)
+	}
+	if created.Plan.Strategy != spec.ImplementationPlanStrategyRedGreen {
+		t.Fatalf("generated strategy=%q", created.Plan.Strategy)
+	}
 	if err := os.WriteFile(filepath.Join(repo, "strict_feature_test.go"), []byte("package polisfixture\nimport \"testing\"\nfunc TestStrictFeatureDouble(t *testing.T){if Double(2)!=4{t.Fatal(\"STRICT-FEATURE-RED\")}}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	redPatch := filepath.Join(t.TempDir(), "strict-feature-red.patch")
-	if _, err := redcapture.Capture(context.Background(), redcapture.Options{Repo: repo, Contract: contract, Out: redPatch}); err != nil {
-		t.Fatalf("capture strict feature Red: %v", err)
+	if _, err := redcapture.Capture(context.Background(), redcapture.Options{Repo: repo, Contract: contractPath, ImplementationPlan: planPath, Out: redPatch}); err != nil {
+		t.Fatalf("capture planned Red proof: %v", err)
 	}
-	return repo, contract, redPatch
+	if err := os.WriteFile(filepath.Join(repo, "double.go"), []byte("package polisfixture\nfunc Double(n int) int { return n * 2 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	built, err := Build(context.Background(), Options{
+		Repo: repo, Project: "polis", Change: "strict-double-planned-e2e", Out: t.TempDir(),
+		Contract: contractPath, RegressionPatch: redPatch, ImplementationPlan: planPath,
+	})
+	if err != nil {
+		t.Fatalf("planned Red/Green build: %v", err)
+	}
+	pkg, err := packageverify.Load(built.Path)
+	if err != nil {
+		t.Fatalf("verify planned Red/Green artifact: %v", err)
+	}
+	inspection, err := packageverify.Inspect(built.Path)
+	if err != nil {
+		t.Fatalf("inspect planned Red/Green artifact: %v", err)
+	}
+	if pkg.Manifest.FormatVersion != spec.ImplementationPlanFormatVersion || pkg.ImplementationPlan == nil || !inspection.ImplementationPlanPresent || inspection.ImplementationPlanStrategy != spec.ImplementationPlanStrategyRedGreen {
+		t.Fatalf("planned Red/Green delivery is incomplete: format=%d plan=%+v inspection=%+v", pkg.Manifest.FormatVersion, pkg.ImplementationPlan, inspection)
+	}
+	if len(inspection.ImplementationPlanTraceability) != 1 || inspection.ImplementationPlanTraceability[0].RequirementID != "REQ-001" || inspection.ImplementationPlanTraceability[0].AcceptanceCriterionID != "AC-001" {
+		t.Fatalf("planned Red/Green traceability=%+v", inspection.ImplementationPlanTraceability)
+	}
 }
 
 func TestBuildStrictFeatureReproducesRedGreen(t *testing.T) {
@@ -701,6 +752,190 @@ func TestBuildStrictFeatureReproducesRedGreen(t *testing.T) {
 	if _, err := Build(context.Background(), Options{Repo: repo, Project: "polis", Change: "strict-double", Out: t.TempDir(), Contract: contract, RegressionPatch: redPatch}); err != nil {
 		t.Fatalf("strict feature build: %v", err)
 	}
+}
+
+func TestBuildPackagesExactOptionalImplementationPlanAsFormatV6(t *testing.T) {
+	repo, contractPath, redPatch := strictDoubleFeatureFixture(t)
+	if err := os.WriteFile(filepath.Join(repo, "double.go"), []byte("package polisfixture\nfunc Double(n int) int { return n * 2 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	planPath, planRaw := buildPlanFile(t, repo, contractPath)
+	result, err := Build(context.Background(), Options{
+		Repo: repo, Project: "polis", Change: "strict-double-planned", Out: t.TempDir(),
+		Contract: contractPath, RegressionPatch: redPatch, ImplementationPlan: planPath,
+	})
+	if err != nil {
+		t.Fatalf("planned strict feature build: %v", err)
+	}
+	pkg, err := packageverify.Load(result.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Manifest.FormatVersion != spec.ImplementationPlanFormatVersion || pkg.ImplementationPlan == nil {
+		t.Fatalf("planned package format=%d plan=%+v", pkg.Manifest.FormatVersion, pkg.ImplementationPlan)
+	}
+	if got := pkg.Manifest.ImplementationPlanSHA256; got == "" {
+		t.Fatal("planned manifest omitted exact plan digest")
+	}
+	if !strings.Contains(string(pkg.ImplementationPlanRaw), string(planRaw)) {
+		t.Fatal("package did not preserve exact plan bytes")
+	}
+	inspection, err := packageverify.Inspect(result.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inspection.ImplementationPlanPresent || inspection.ImplementationPlanSchemaVersion != spec.ImplementationPlanSchemaVersion || inspection.ImplementationPlanStrategy != spec.ImplementationPlanStrategyRedGreen || inspection.ImplementationPlanStepCount != 4 {
+		t.Fatalf("planned package inspection=%+v", inspection)
+	}
+	if len(inspection.ImplementationPlanTraceability) != 1 || inspection.ImplementationPlanTraceability[0].RequirementID != "REQ-001" || inspection.ImplementationPlanTraceability[0].AcceptanceCriterionID != "AC-001" {
+		t.Fatalf("plan traceability=%+v", inspection.ImplementationPlanTraceability)
+	}
+	trace := inspection.ImplementationPlanTraceability[0]
+	if trace.Proof != spec.ProofGateRegression || len(trace.PlanStepIDs) < 2 {
+		t.Fatalf("plan traceability does not identify plan steps and proof: %+v", trace)
+	}
+}
+
+func TestBuildPackagesOptionalImplementationPlanForGreenGreen(t *testing.T) {
+	repo, contractPath := strictBehaviorPreservingFixture(t)
+	planPath := filepath.Join(t.TempDir(), "implementation-plan.json")
+	created, err := implementationplan.Create(context.Background(), implementationplan.Options{Repo: repo, Contract: contractPath, Out: planPath})
+	if err != nil {
+		t.Fatalf("create plan from clean locked baseline: %v", err)
+	}
+	if created.Plan.Strategy != spec.ImplementationPlanStrategyGreenGreen {
+		t.Fatalf("generated strategy=%q", created.Plan.Strategy)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "value.go"), []byte("package polisfixture\nconst preservedValue = 42\nfunc Value() int { return preservedValue }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Build(context.Background(), Options{
+		Repo: repo, Project: "polis", Change: "strict-green-green-planned", Out: t.TempDir(),
+		Contract: contractPath, ImplementationPlan: planPath,
+	})
+	if err != nil {
+		t.Fatalf("planned Green/Green build: %v", err)
+	}
+	pkg, err := packageverify.Load(result.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Manifest.FormatVersion != spec.ImplementationPlanFormatVersion || pkg.ImplementationPlan == nil || pkg.ImplementationPlan.Strategy != spec.ImplementationPlanStrategyGreenGreen {
+		t.Fatalf("planned Green/Green package format=%d plan=%+v", pkg.Manifest.FormatVersion, pkg.ImplementationPlan)
+	}
+	if len(pkg.RegressionPatch) != 0 {
+		t.Fatalf("Green/Green package unexpectedly contains a Red regression patch: %q", pkg.RegressionPatch)
+	}
+	if len(pkg.ImplementationPlan.Steps) != 4 || pkg.ImplementationPlan.Steps[0].Kind != spec.ImplementationPlanStepTest || pkg.ImplementationPlan.Steps[1].Kind != spec.ImplementationPlanStepImplementation || pkg.ImplementationPlan.Steps[2].Kind != spec.ImplementationPlanStepTest || pkg.ImplementationPlan.Steps[3].Kind != spec.ImplementationPlanStepValidation {
+		t.Fatalf("unexpected packaged Green/Green order: %+v", pkg.ImplementationPlan.Steps)
+	}
+	inspection, err := packageverify.Inspect(result.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inspection.ImplementationPlanPresent || inspection.ImplementationPlanStrategy != spec.ImplementationPlanStrategyGreenGreen {
+		t.Fatalf("Green/Green plan not exposed by inspect: %+v", inspection)
+	}
+	if len(inspection.ImplementationPlanTraceability) != 1 || len(inspection.ImplementationPlanTraceability[0].PlanStepIDs) < 2 {
+		t.Fatalf("Green/Green traceability omits plan step links: %+v", inspection.ImplementationPlanTraceability)
+	}
+}
+
+func TestBuildRejectsMismatchedImplementationPlanBeforePackaging(t *testing.T) {
+	t.Run("contract mismatch", func(t *testing.T) {
+		repo, contractPath, redPatch := strictDoubleFeatureFixture(t)
+		planPath, _ := buildPlanFile(t, repo, contractPath)
+		plan := readBuildPlan(t, planPath)
+		plan.ChangeContractSHA256 = strings.Repeat("f", 64)
+		runBuildRejectingInvalidPlan(t, repo, contractPath, redPatch, planPath, plan, "different Change Contract")
+	})
+	t.Run("scope mismatch", func(t *testing.T) {
+		repo, contractPath, redPatch := strictDoubleFeatureFixture(t)
+		planPath, _ := buildPlanFile(t, repo, contractPath)
+		plan := readBuildPlan(t, planPath)
+		for i := range plan.Steps {
+			if plan.Steps[i].Kind == spec.ImplementationPlanStepImplementation {
+				plan.Steps[i].AllowedPaths = []string{"internal/uncontracted.go"}
+			}
+		}
+		runBuildRejectingInvalidPlan(t, repo, contractPath, redPatch, planPath, plan, "outside Change Contract scope")
+	})
+}
+
+func readBuildPlan(t *testing.T, path string) spec.ImplementationPlan {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := spec.DecodeImplementationPlan(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan
+}
+
+func runBuildRejectingInvalidPlan(t *testing.T, repo, contractPath, redPatch, planPath string, plan spec.ImplementationPlan, wantError string) {
+	t.Helper()
+	invalidRaw, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, invalidRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	_, err = Build(context.Background(), Options{Repo: repo, Project: "polis", Change: "bad-plan", Out: out, Contract: contractPath, RegressionPatch: redPatch, ImplementationPlan: planPath})
+	if err == nil || !strings.Contains(err.Error(), wantError) {
+		t.Fatalf("invalid plan accepted: error=%v, want containing %q", err, wantError)
+	}
+	entries, err := os.ReadDir(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("invalid plan produced package files: %v", entries)
+	}
+}
+
+func buildPlanFile(t *testing.T, repo, contractPath string) (string, []byte) {
+	t.Helper()
+	contractRaw, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract, err := spec.DecodeChangeContract(contractRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := policyplan.Load(context.Background(), policyplan.Options{Repo: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := make(map[string]struct{}, len(execution.EnabledGates))
+	for _, id := range execution.EnabledGates {
+		enabled[id] = struct{}{}
+	}
+	gateOrder := make([]string, 0, len(enabled))
+	for _, id := range execution.ExecutionOrder {
+		if _, ok := enabled[id]; ok {
+			gateOrder = append(gateOrder, id)
+		}
+	}
+	plan, err := implementationplan.Generate(contract, contractRaw, gateOrder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = append(raw, '\n')
+	path := filepath.Join(t.TempDir(), "implementation-plan.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path, raw
 }
 
 func TestBuildStrictFeatureRejectsRedTestLaundering(t *testing.T) {

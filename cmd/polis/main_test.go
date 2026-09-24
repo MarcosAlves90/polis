@@ -137,13 +137,162 @@ func TestRunHelp(t *testing.T) {
 		if code := run(args, &out, &errOut); code != exitPass {
 			t.Fatalf("args=%v code=%d stdout=%s stderr=%s", args, code, out.String(), errOut.String())
 		}
-		for _, fragment := range []string{"POLIS V6", "Usage:", "doctor", "export", "polis help <command>"} {
+		for _, fragment := range []string{"POLIS V6", "Usage:", "doctor", "implementation-plan", "export", "polis help <command>"} {
 			if !strings.Contains(out.String(), fragment) {
 				t.Errorf("args=%v help missing %q: %s", args, fragment, out.String())
 			}
 		}
 		if errOut.Len() != 0 {
 			t.Errorf("args=%v unexpected stderr=%q", args, errOut.String())
+		}
+	}
+}
+
+func TestRunImplementationPlanHelpAndRequiredArguments(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"help", "implementation-plan"}, &out, &errOut); code != exitPass {
+		t.Fatalf("help code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	for _, fragment := range []string{"polis implementation-plan --repo <path>", "--contract <locked-v4-or-v6.json>", "--out <external-plan.json>", "--format text|json"} {
+		if !strings.Contains(out.String(), fragment) {
+			t.Errorf("implementation-plan help missing %q: %s", fragment, out.String())
+		}
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"implementation-plan"}, &out, &errOut); code != exitUsage {
+		t.Fatalf("missing-argument code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "usage: polis implementation-plan") {
+		t.Fatalf("missing-argument usage=%q", errOut.String())
+	}
+}
+
+func TestRunImplementationPlanProducesTextAndJSON(t *testing.T) {
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			repo := makeBuildRepo(t)
+			policyPath := filepath.Join(t.TempDir(), "policy.json")
+			policyRaw, err := os.ReadFile(filepath.Join(repo, ".polis", "policy.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(policyPath, policyRaw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			contract := lockedCLIContract(t, repo, policyPath)
+			planPath := filepath.Join(t.TempDir(), "implementation-plan.json")
+			args := []string{"implementation-plan", "--repo", repo, "--policy", policyPath, "--contract", contract, "--out", planPath, "--format", format}
+			var out, errOut bytes.Buffer
+			if code := run(args, &out, &errOut); code != exitPass {
+				t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+			}
+			planRaw, err := os.ReadFile(planPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := spec.DecodeImplementationPlan(planRaw)
+			if err != nil {
+				t.Fatalf("generated plan is invalid: %v", err)
+			}
+			if plan.Strategy != spec.ImplementationPlanStrategyGreenGreen || len(plan.Steps) == 0 {
+				t.Fatalf("unexpected generated plan: %+v", plan)
+			}
+			if format == "text" {
+				for _, fragment := range []string{"POLIS IMPLEMENTATION PLAN: PASS", "Strategy: Green -> Green", "Requirements: 1", "Acceptance criteria: 1", "Steps:", "PLAN-001  TEST", "PLAN-002  IMPLEMENTATION", planPath, "SHA256:"} {
+					if !strings.Contains(out.String(), fragment) {
+						t.Errorf("text output missing %q: %s", fragment, out.String())
+					}
+				}
+				if strings.Contains(out.String(), policyPath) {
+					t.Fatalf("output leaked external policy path %q: %s", policyPath, out.String())
+				}
+				return
+			}
+			var payload struct {
+				Status string                  `json:"status"`
+				Path   string                  `json:"plan_path"`
+				SHA256 string                  `json:"sha256"`
+				Plan   spec.ImplementationPlan `json:"plan"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+				t.Fatalf("decode JSON output: %v: %s", err, out.String())
+			}
+			if payload.Status != "PASS" || payload.Path != planPath || payload.SHA256 == "" || payload.Plan.Strategy != plan.Strategy || len(payload.Plan.Steps) != len(plan.Steps) {
+				t.Fatalf("unexpected JSON result: %+v", payload)
+			}
+		})
+	}
+}
+
+func TestRunPlannedGreenGreenCommands(t *testing.T) {
+	repo := makeBuildRepo(t)
+	contract := lockedCLIContract(t, repo)
+	planPath := filepath.Join(t.TempDir(), "implementation-plan.json")
+	planResult := runCLIJSON(t, "implementation-plan", "--repo", repo, "--contract", contract, "--out", planPath, "--format", "json")
+	assertJSONFields(t, planResult, map[string]string{"status": "PASS", "plan_path": planPath})
+	planRaw, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := spec.DecodeImplementationPlan(planRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Strategy != spec.ImplementationPlanStrategyGreenGreen {
+		t.Fatalf("CLI created strategy=%q", plan.Strategy)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("planned change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(t.TempDir(), "out")
+	runCLIJSON(t, "build", "--repo", repo, "--project", "polis", "--change", "planned-green-green", "--contract", contract, "--implementation-plan", planPath, "--format", "json", "--out", outDir)
+	entries, err := os.ReadDir(outDir)
+	if err != nil || len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), ".polis") {
+		t.Fatalf("planned build output=%v err=%v", entries, err)
+	}
+	artifact := filepath.Join(outDir, entries[0].Name())
+	verify := runCLIJSON(t, "verify", "--format", "json", artifact)
+	assertJSONFields(t, verify, map[string]string{"status": "PASS"})
+	inspection := runCLIJSON(t, "inspect", "--format", "json", artifact)
+	if present, ok := inspection["implementation_plan_present"].(bool); !ok || !present {
+		t.Fatalf("planned inspect presence=%v", inspection["implementation_plan_present"])
+	}
+	if inspection["implementation_plan_strategy"] != spec.ImplementationPlanStrategyGreenGreen || inspection["implementation_plan_step_count"] != float64(len(plan.Steps)) {
+		t.Fatalf("planned inspect metadata=%v", inspection)
+	}
+	traceability, ok := inspection["implementation_plan_traceability"].([]any)
+	if !ok || len(traceability) != 1 {
+		t.Fatalf("planned inspect traceability=%v", inspection["implementation_plan_traceability"])
+	}
+	trace, ok := traceability[0].(map[string]any)
+	if !ok || trace["requirement_id"] != "REQ-001" || trace["acceptance_criterion_id"] != "AC-001" || trace["proof"] != spec.ProofGateRegression {
+		t.Fatalf("planned inspect trace=%v", traceability[0])
+	}
+	stepIDs, ok := trace["plan_step_ids"].([]any)
+	if !ok || len(stepIDs) < 2 {
+		t.Fatalf("planned inspect omitted plan step references: %v", trace)
+	}
+	assertCLITextContains(t, []string{"inspect", artifact}, "Implementation plan: true", "Plan schema: 1", "Plan strategy: green_green", "Plan trace: REQ-001 -> AC-001 -> regression via")
+	if output, err := exec.Command("git", "-C", repo, "restore", "--", "app.txt").CombinedOutput(); err != nil {
+		t.Fatalf("restore source before consumer validation: %v\n%s", err, output)
+	}
+	preflight := runCLIJSON(t, "preflight", "--repo", repo, "--format", "json", artifact)
+	assertJSONFields(t, preflight, map[string]string{"status": "PASS"})
+	apply := runCLIJSON(t, "apply", "--repo", repo, "--format", "json", artifact)
+	assertJSONFields(t, apply, map[string]string{"status": "PASS"})
+	assertFileContents(t, filepath.Join(repo, "app.txt"), "planned change\n")
+}
+
+func TestCaptureRedAndBuildAcceptImplementationPlanFlag(t *testing.T) {
+	for _, command := range [][]string{
+		{"capture-red", "--repo", t.TempDir(), "--contract", "missing.json", "--implementation-plan", "missing-plan.json", "--out", filepath.Join(t.TempDir(), "red.patch")},
+		{"build", "--repo", t.TempDir(), "--project", "polis", "--change", "planned", "--contract", "missing.json", "--implementation-plan", "missing-plan.json", "--out", t.TempDir()},
+	} {
+		var out, errOut bytes.Buffer
+		_ = run(command, &out, &errOut)
+		if strings.Contains(errOut.String(), "flag provided but not defined") {
+			t.Fatalf("command rejected optional implementation-plan flag: %s", errOut.String())
 		}
 	}
 }
@@ -868,12 +1017,15 @@ func TestRunDoctorJSON(t *testing.T) {
 func TestRunV6TrustBoundaryCommands(t *testing.T) {
 	repo, built := buildV6CLIArtifact(t)
 
-	assertCLITextContains(t, []string{"inspect", built.Path}, "POLIS INSPECT: PASS", built.TargetTree, "Deferred gates: coverage", "Consumer validation required: true")
+	assertCLITextContains(t, []string{"inspect", built.Path}, "POLIS INSPECT: PASS", built.TargetTree, "Deferred gates: coverage", "Consumer validation required: true", "Implementation plan: false")
 	inspection := runCLIJSON(t, "inspect", "--format", "json", built.Path)
 	assertJSONFields(t, inspection, map[string]string{
 		"project":     "polis",
 		"target_tree": built.TargetTree,
 	})
+	if present, ok := inspection["implementation_plan_present"].(bool); !ok || present {
+		t.Fatalf("unplanned artifact implementation_plan_present=%v", inspection["implementation_plan_present"])
+	}
 	if deferred, ok := inspection["deferred_gates"].([]any); !ok || len(deferred) != 1 || deferred[0] != "coverage" || inspection["consumer_validation_required"] != true {
 		t.Fatalf("inspect deferral=%v consumer_required=%v", inspection["deferred_gates"], inspection["consumer_validation_required"])
 	}

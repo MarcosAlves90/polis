@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
+	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
 	"github.com/MarcosAlves90/polis/v6/internal/offlinekit"
 	"github.com/MarcosAlves90/polis/v6/internal/packageapply"
 	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
@@ -65,8 +66,9 @@ var commandHelpEntries = []commandHelpEntry{
 	{name: "init", usage: "polis init [--repo <path>] [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]", summary: "create or preview a Project Policy"},
 	{name: "plan", usage: "polis plan [--repo <path>] [--policy <policy-v3.json>] [--defer-gate <id> ...] [--format text|json]", summary: "compile and report the effective Project Policy"},
 	{name: "start", usage: "polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3-or-v5.json> --out <locked-v4-or-v6.json>", summary: "lock a strict Change Contract baseline"},
-	{name: captureRedCommand, usage: "polis capture-red --repo <path> --contract <change.json> --out <regression.patch>", summary: "capture the required Red proof"},
-	{name: "build", usage: "polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--defer-gate <id> ...] [--format text|json] --out <directory>", summary: "build a .polis delivery package"},
+	{name: "implementation-plan", usage: "polis implementation-plan --repo <path> [--policy <policy-v3.json>] --contract <locked-v4-or-v6.json> --out <external-plan.json> [--format text|json]", summary: "generate an optional contract-bound implementation plan"},
+	{name: captureRedCommand, usage: "polis capture-red --repo <path> --contract <change.json> [--implementation-plan <plan.json>] --out <regression.patch>", summary: "capture the required Red proof"},
+	{name: "build", usage: "polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--defer-gate <id> ...] [--format text|json] --out <directory>", summary: "build a .polis delivery package"},
 	{name: "verify", usage: "polis verify [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate a .polis artifact"},
 	{name: "inspect", usage: "polis inspect [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "inspect validated artifact metadata"},
 	{name: "preflight", usage: "polis preflight [--repo <path>] [--baseline-mode strict|compatible|permissive] [--allow-missing-baseline-proof] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate an artifact without applying it"},
@@ -130,6 +132,8 @@ func run(args []string, out, errOut io.Writer) int {
 		return runPlan(args[1:], out, errOut)
 	case "start":
 		return runStart(args[1:], out, errOut)
+	case "implementation-plan":
+		return runImplementationPlan(args[1:], out, errOut)
 	case captureRedCommand:
 		return runCaptureRed(args[1:], out, errOut)
 	case "verify":
@@ -213,6 +217,13 @@ func writeInspectionText(out io.Writer, inspection packageverify.Inspection) {
 		inspection.Project, inspection.Change, inspection.FormatVersion, inspection.PolicySchemaVersion,
 		inspection.ValidationLevel, strings.Join(inspection.EnabledGates, ", "), strings.Join(inspection.DisabledGates, ", "), strings.Join(inspection.DeferredGates, ", "), inspection.ConsumerValidationRequired, inspection.ChangeContractSchemaVersion,
 		inspection.Kind, inspection.BaseCommit, inspection.TargetTree, strings.Join(inspection.AllowedPaths, ", "), inspection.EvidenceEvents)
+	fmt.Fprintf(out, "Implementation plan: %t\n", inspection.ImplementationPlanPresent)
+	if inspection.ImplementationPlanPresent {
+		fmt.Fprintf(out, "Plan schema: %d\nPlan strategy: %s\nPlan steps: %d\n", inspection.ImplementationPlanSchemaVersion, inspection.ImplementationPlanStrategy, inspection.ImplementationPlanStepCount)
+		for _, trace := range inspection.ImplementationPlanTraceability {
+			fmt.Fprintf(out, "Plan trace: %s -> %s -> %s via %s\n", trace.RequirementID, trace.AcceptanceCriterionID, trace.Proof, strings.Join(trace.PlanStepIDs, ", "))
+		}
+	}
 	if inspection.Commit != nil {
 		fmt.Fprintf(out, "Commit message:\n%s", escapeCommitMessageForDisplay(inspection.Commit.Message))
 		fmt.Fprintln(out)
@@ -451,20 +462,69 @@ func runStart(args []string, out, errOut io.Writer) int {
 	return exitPass
 }
 
+func runImplementationPlan(args []string, out, errOut io.Writer) int {
+	fs := flag.NewFlagSet("implementation-plan", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	repo := fs.String("repo", "", repoHelp)
+	policy := fs.String("policy", "", externalPolicyHelp)
+	contract := fs.String("contract", "", "locked schema-v4 or v6 Change Contract outside the worktree")
+	outPath := fs.String("out", "", "generated Implementation Plan JSON outside the worktree")
+	format := fs.String("format", "text", outputFormatHelp)
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 0 || *repo == "" || *contract == "" || *outPath == "" || !validFormat(*format) {
+		fmt.Fprintln(errOut, "usage: polis implementation-plan --repo <path> [--policy <policy-v3.json>] --contract <locked-v4-or-v6.json> --out <external-plan.json> [--format text|json]")
+		return exitUsage
+	}
+	result, err := implementationplan.Create(context.Background(), implementationplan.Options{Repo: *repo, Policy: *policy, Contract: *contract, Out: *outPath})
+	if err != nil {
+		return writeFailure(errOut, *format, "POLIS IMPLEMENTATION-PLAN", exitValidationFailed, err)
+	}
+	if *format == "json" {
+		writeJSON(out, map[string]any{"status": "PASS", "plan_path": result.Path, "sha256": result.SHA256, "plan": result.Plan})
+	} else {
+		strategy := "Red -> Green"
+		if result.Plan.Strategy == spec.ImplementationPlanStrategyGreenGreen {
+			strategy = "Green -> Green"
+		}
+		requirements := make(map[string]struct{})
+		criteria := make(map[string]struct{})
+		for _, step := range result.Plan.Steps {
+			for _, id := range step.Requirements {
+				requirements[id] = struct{}{}
+			}
+			for _, id := range step.AcceptanceCriteria {
+				criteria[id] = struct{}{}
+			}
+		}
+		fmt.Fprintf(out, "POLIS IMPLEMENTATION PLAN: PASS\nStrategy: %s\nRequirements: %d\nAcceptance criteria: %d\nSteps: %d\n", strategy, len(requirements), len(criteria), len(result.Plan.Steps))
+		for _, step := range result.Plan.Steps {
+			fmt.Fprintf(out, "%s  %-14s %q\n", step.ID, strings.ToUpper(string(step.Kind)), step.Objective)
+			if len(step.Requirements) > 0 || len(step.AcceptanceCriteria) > 0 || len(step.ContractProofs) > 0 || len(step.ProjectGates) > 0 {
+				fmt.Fprintf(out, "  requirements: %s; acceptance criteria: %s; proofs: %s; project gates: %s\n", strings.Join(step.Requirements, ", "), strings.Join(step.AcceptanceCriteria, ", "), strings.Join(step.ContractProofs, ", "), strings.Join(step.ProjectGates, ", "))
+			}
+		}
+		fmt.Fprintf(out, "Plan: %s\nSHA256: %s\n", result.Path, result.SHA256)
+	}
+	return exitPass
+}
+
 func runCaptureRed(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet(captureRedCommand, flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	repo := fs.String("repo", "", repoHelp)
 	contract := fs.String("contract", "", "defect Change Contract JSON outside the worktree")
+	implementationPlanPath := fs.String("implementation-plan", "", "optional contract-bound Implementation Plan JSON outside the worktree")
 	outPath := fs.String("out", "", "output regression patch outside the worktree")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() != 0 || *repo == "" || *contract == "" || *outPath == "" {
-		fmt.Fprintln(errOut, "usage: polis capture-red --repo <path> --contract <change.json> --out <regression.patch>")
+		fmt.Fprintln(errOut, "usage: polis capture-red --repo <path> --contract <change.json> [--implementation-plan <plan.json>] --out <regression.patch>")
 		return exitUsage
 	}
-	result, err := redcapture.Capture(context.Background(), redcapture.Options{Repo: *repo, Contract: *contract, Out: *outPath})
+	result, err := redcapture.Capture(context.Background(), redcapture.Options{Repo: *repo, Contract: *contract, ImplementationPlan: *implementationPlanPath, Out: *outPath})
 	if err != nil {
 		fmt.Fprintf(errOut, "POLIS CAPTURE-RED: FAIL: %v\n", err)
 		return exitUsage
@@ -483,6 +543,7 @@ func runBuild(args []string, out, errOut io.Writer) int {
 	outDir := fs.String("out", "", "output directory")
 	contract := fs.String("contract", "", "delivery Change Contract JSON outside the worktree")
 	regressionPatch := fs.String("regression-patch", "", "validated Red-state patch for defect contracts")
+	implementationPlanPath := fs.String("implementation-plan", "", "optional contract-bound Implementation Plan JSON outside the worktree")
 	format := fs.String("format", "text", outputFormatHelp)
 	var deferredGates argvFlag
 	fs.Var(&deferredGates, "defer-gate", "defer enabled gate validation to the consumer; repeat for each gate")
@@ -490,11 +551,11 @@ func runBuild(args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 	if fs.NArg() != 0 || !validFormat(*format) || *repo == "" || *project == "" || *change == "" || *outDir == "" || *contract == "" {
-		fmt.Fprintln(errOut, "usage: polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--defer-gate <id> ...] [--format text|json] --out <directory>")
+		fmt.Fprintln(errOut, "usage: polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--defer-gate <id> ...] [--format text|json] --out <directory>")
 		return exitUsage
 	}
 	result, err := packagebuild.Build(context.Background(), packagebuild.Options{
-		Repo: *repo, Policy: *policy, Project: *project, Change: *change, Out: *outDir, Contract: *contract, RegressionPatch: *regressionPatch, DeferredGates: deferredGates,
+		Repo: *repo, Policy: *policy, Project: *project, Change: *change, Out: *outDir, Contract: *contract, RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlanPath, DeferredGates: deferredGates,
 	})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS BUILD", exitUsage, err)

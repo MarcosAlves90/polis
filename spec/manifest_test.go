@@ -2,6 +2,7 @@ package spec
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -85,6 +86,42 @@ func TestManifestV4AndV5RequireEmbeddedBaselineDigest(t *testing.T) {
 		if err := m.Validate(); err == nil {
 			t.Fatalf("format v%d manifest without baseline_sha256 accepted", version)
 		}
+	}
+}
+
+func TestManifestV6RequiresPlanDigestAndHistoricalFormatsRejectIt(t *testing.T) {
+	manifest := Manifest{
+		FormatVersion: ImplementationPlanFormatVersion, Project: "gitrex", Change: "planned-change",
+		GitObjectFormat: "sha1", BaseCommit: string(makeHex('1', 40)), TargetTree: string(makeHex('2', 40)),
+		PolicySHA256: hA, ChangeContractSHA256: hB, RegressionPatchSHA256: hC, PayloadSHA256: hD,
+		BaselineSHA256: hE, ImplementationPlanSHA256: strings.Repeat("f", 64),
+	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("valid format-v6 manifest rejected: %v", err)
+	}
+	manifest.ImplementationPlanSHA256 = ""
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("format-v6 manifest without plan digest accepted")
+	}
+	manifest.FormatVersion = FormatVersion
+	manifest.BaselineSHA256 = hE
+	manifest.ImplementationPlanSHA256 = strings.Repeat("f", 64)
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("format-v5 manifest with plan digest accepted")
+	}
+}
+
+func TestDecodeManifestRejectsPlanDigestPresenceOutsideV6(t *testing.T) {
+	raw := strings.TrimSuffix(string(canonicalManifestJSON()), "}") + `,"implementation_plan_sha256":null}`
+	if _, err := DecodeManifest([]byte(raw)); err == nil || !strings.Contains(err.Error(), "only valid for format v6") {
+		t.Fatalf("manifest with a null v6-only digest error=%v", err)
+	}
+}
+
+func TestDecodeManifestRejectsCaseInsensitiveAliases(t *testing.T) {
+	raw := strings.Replace(string(canonicalManifestJSON()), `"format_version"`, `"FormatVersion"`, 1)
+	if _, err := DecodeManifest([]byte(raw)); err == nil || !strings.Contains(err.Error(), "unknown manifest property") {
+		t.Fatalf("case-insensitive manifest alias error=%v", err)
 	}
 }
 
