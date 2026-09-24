@@ -43,8 +43,36 @@ func TestPackageMembersAreVersionSpecificAndExact(t *testing.T) {
 			t.Fatalf("format v%d members=%v want=%v", version, got, current)
 		}
 	}
-	if _, err := PackageMembers(FormatVersion + 1); err == nil {
+	if _, err := PackageMembers(ImplementationPlanFormatVersion + 1); err == nil {
 		t.Fatal("unsupported package format accepted")
+	}
+}
+
+func TestImplementationPlanFormatV6AddsExactNinthMember(t *testing.T) {
+	want := []string{
+		MemberBaseline,
+		MemberChange,
+		MemberChecksums,
+		MemberEvidence,
+		MemberImplementationPlan,
+		MemberManifest,
+		MemberPayload,
+		MemberPolicy,
+		MemberRegression,
+	}
+	got, err := PackageMembers(ImplementationPlanFormatVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("planned package members=%v want=%v", got, want)
+	}
+	version, err := EvidenceVersionForFormat(ImplementationPlanFormatVersion)
+	if err != nil || version != EvidenceVersionV3 || !FormatHasEmbeddedBaseline(ImplementationPlanFormatVersion) {
+		t.Fatalf("planned package format mapping: evidence=%d baseline=%t err=%v", version, FormatHasEmbeddedBaseline(ImplementationPlanFormatVersion), err)
+	}
+	if limit, ok := PackageMemberLimit(MemberImplementationPlan); !ok || limit != MaxImplementationPlanBytes {
+		t.Fatalf("implementation plan member limit=(%d,%v) want=(%d,true)", limit, ok, MaxImplementationPlanBytes)
 	}
 }
 

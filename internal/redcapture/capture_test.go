@@ -11,6 +11,7 @@ import (
 
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
+	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -102,6 +103,53 @@ func TestCaptureProducesValidatedPatchWithoutMutatingSource(t *testing.T) {
 	}
 	if git(t, repo, "rev-parse", "HEAD") != head || git(t, repo, "write-tree") != idx || git(t, repo, "status", "--porcelain=v1", "--untracked-files=all") != status {
 		t.Fatal("source mutated")
+	}
+}
+
+func TestCaptureValidatesOptionalImplementationPlanBeforeAcceptingRedProof(t *testing.T) {
+	repo, contractPath := fixture(t)
+	contractRaw, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract, err := spec.DecodeChangeContract(contractRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := implementationplan.Generate(contract, contractRaw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planRaw, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	planRaw = append(planRaw, '\n')
+	planPath := filepath.Join(t.TempDir(), "implementation-plan.json")
+	if err := os.WriteFile(planPath, planRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "red.patch")
+	if _, err := Capture(context.Background(), Options{Repo: repo, Contract: contractPath, ImplementationPlan: planPath, Out: out}); err != nil {
+		t.Fatalf("valid plan rejected: %v", err)
+	}
+
+	repo, contractPath = fixture(t)
+	plan.ChangeContractSHA256 = strings.Repeat("b", 64)
+	invalidRaw, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidPath := filepath.Join(t.TempDir(), "invalid-plan.json")
+	if err := os.WriteFile(invalidPath, invalidRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	invalidOut := filepath.Join(t.TempDir(), "invalid-red.patch")
+	if _, err := Capture(context.Background(), Options{Repo: repo, Contract: contractPath, ImplementationPlan: invalidPath, Out: invalidOut}); err == nil || !strings.Contains(err.Error(), "different Change Contract") {
+		t.Fatalf("contract-mismatched plan accepted: %v", err)
+	}
+	if _, err := os.Lstat(invalidOut); !os.IsNotExist(err) {
+		t.Fatalf("invalid plan created Red proof output: stat error=%v", err)
 	}
 }
 func TestCaptureRejectsStagedAndExistingOutput(t *testing.T) {

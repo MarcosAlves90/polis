@@ -8,16 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Add optional contract-bound Implementation Plan schema v1 and `polis implementation-plan`, with deterministic steps, scope and baseline binding, dependency ordering, and project-gate validation.
+- Validate an explicitly supplied Implementation Plan during `capture-red` and `build`; planned builds use package format v6 with the exact plan bytes as a ninth checksummed member, manifest digest, and inspect traceability.
 - Add optional artifact-bound commit messages and consumer-authorized `none`, `prompt`, and `auto` apply modes that commit exactly the validated consumer tree.
 - Add repeatable `--defer-gate` support to plan/build, with canonical gate selection, dependency-closure checks, and explicit producer/consumer responsibility reports.
-- Add Evidence v3 deferred-gate inventory and `DEFERRED` status for new format-v5 packages while preserving Evidence v2 behavior for formats v2-v4.
+- Add Evidence v3 deferred-gate inventory and `DEFERRED` status for new format-v5 and v6 packages while preserving Evidence v2 behavior for formats v2-v4.
 - Report authenticated deferred obligations in verify/inspect and consumer gate outcomes in preflight/apply text and JSON.
 
 ### Changed
 
-- Advance new packages to format v5 using the existing eight-member embedded-baseline layout; retain exact v2/v3/v4 reader compatibility.
-- Update current offline schemas, V6 specification, usage guide, and delivery-guide metadata for package v5 and Evidence v3.
+- Keep unplanned new packages on format v5 and use format v6 only when a plan is supplied; retain exact reader compatibility for formats v2-v5.
+- Update current offline schemas, V6 specification, usage guide, and delivery-guide metadata for package v6 and Implementation Plan v1.
 - Remove unowned schema `$id` values while retaining the standard JSON Schema `$schema` declarations.
+- Require planned artifacts to cover every enabled Project Policy gate exactly once, report test, implementation, and proof traceability separately, and use the same canonical step-ID rule in the schema and decoder.
 
 ## [6.7.0] - 2026-09-17
 

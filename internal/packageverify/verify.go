@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/MarcosAlves90/polis/v6/internal/baselineproof"
+	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
+	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -27,14 +29,15 @@ const (
 	MaxBaselineMemberBytes    = spec.MaxBaselineMemberBytes
 	MaxChecksumsMemberBytes   = spec.MaxChecksumsMemberBytes
 
-	memberBaseline   = spec.MemberBaseline
-	memberChange     = spec.MemberChange
-	memberChecksums  = spec.MemberChecksums
-	memberEvidence   = spec.MemberEvidence
-	memberManifest   = spec.MemberManifest
-	memberPayload    = spec.MemberPayload
-	memberPolicy     = spec.MemberPolicy
-	memberRegression = spec.MemberRegression
+	memberBaseline           = spec.MemberBaseline
+	memberChange             = spec.MemberChange
+	memberChecksums          = spec.MemberChecksums
+	memberEvidence           = spec.MemberEvidence
+	memberImplementationPlan = spec.MemberImplementationPlan
+	memberManifest           = spec.MemberManifest
+	memberPayload            = spec.MemberPayload
+	memberPolicy             = spec.MemberPolicy
+	memberRegression         = spec.MemberRegression
 )
 
 var lowerSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -52,35 +55,56 @@ type Result struct {
 }
 
 type Inspection struct {
-	Project                     string                  `json:"project"`
-	Change                      string                  `json:"change"`
-	FormatVersion               int                     `json:"format_version"`
-	PolicySchemaVersion         int                     `json:"policy_schema_version"`
-	ValidationLevel             string                  `json:"validation_level"`
-	EnabledGates                []string                `json:"enabled_gates"`
-	DisabledGates               []string                `json:"disabled_gates"`
-	DeferredGates               []string                `json:"deferred_gates"`
-	ConsumerValidationRequired  bool                    `json:"consumer_validation_required"`
-	ChangeContractSchemaVersion int                     `json:"change_contract_schema_version"`
-	Commit                      *spec.CommitMetadata    `json:"commit,omitempty"`
-	Kind                        string                  `json:"kind"`
-	BaseCommit                  string                  `json:"base_commit"`
-	TargetTree                  string                  `json:"target_tree"`
-	AllowedPaths                []string                `json:"allowed_paths"`
-	Gates                       []string                `json:"gates"`
-	EvidenceEvents              int                     `json:"evidence_events"`
-	Traceability                []spec.TraceabilityLink `json:"traceability,omitempty"`
+	Project                         string                           `json:"project"`
+	Change                          string                           `json:"change"`
+	FormatVersion                   int                              `json:"format_version"`
+	PolicySchemaVersion             int                              `json:"policy_schema_version"`
+	ValidationLevel                 string                           `json:"validation_level"`
+	EnabledGates                    []string                         `json:"enabled_gates"`
+	DisabledGates                   []string                         `json:"disabled_gates"`
+	DeferredGates                   []string                         `json:"deferred_gates"`
+	ConsumerValidationRequired      bool                             `json:"consumer_validation_required"`
+	ChangeContractSchemaVersion     int                              `json:"change_contract_schema_version"`
+	Commit                          *spec.CommitMetadata             `json:"commit,omitempty"`
+	Kind                            string                           `json:"kind"`
+	BaseCommit                      string                           `json:"base_commit"`
+	TargetTree                      string                           `json:"target_tree"`
+	AllowedPaths                    []string                         `json:"allowed_paths"`
+	Gates                           []string                         `json:"gates"`
+	EvidenceEvents                  int                              `json:"evidence_events"`
+	Traceability                    []spec.TraceabilityLink          `json:"traceability,omitempty"`
+	ImplementationPlanPresent       bool                             `json:"implementation_plan_present"`
+	ImplementationPlanSchemaVersion int                              `json:"implementation_plan_schema_version,omitempty"`
+	ImplementationPlanStrategy      string                           `json:"implementation_plan_strategy,omitempty"`
+	ImplementationPlanStepCount     int                              `json:"implementation_plan_step_count,omitempty"`
+	ImplementationPlanTraceability  []ImplementationPlanTraceability `json:"implementation_plan_traceability,omitempty"`
+}
+
+type ImplementationPlanTraceability struct {
+	RequirementID             string                            `json:"requirement_id"`
+	AcceptanceCriterionID     string                            `json:"acceptance_criterion_id"`
+	Proof                     string                            `json:"proof"`
+	TestPlanStepIDs           []string                          `json:"test_plan_step_ids"`
+	ImplementationPlanStepIDs []string                          `json:"implementation_plan_step_ids"`
+	ProofPlanSteps            []ImplementationPlanStepReference `json:"proof_plan_steps"`
+}
+
+type ImplementationPlanStepReference struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
 }
 
 type Package struct {
-	Result          Result
-	Manifest        spec.Manifest
-	Policy          spec.Policy
-	Change          spec.ChangeContract
-	Patch           []byte
-	RegressionPatch []byte
-	Evidence        []byte
-	Baseline        []byte
+	Result                Result
+	Manifest              spec.Manifest
+	Policy                spec.Policy
+	Change                spec.ChangeContract
+	Patch                 []byte
+	RegressionPatch       []byte
+	Evidence              []byte
+	Baseline              []byte
+	ImplementationPlan    *spec.ImplementationPlan
+	ImplementationPlanRaw []byte
 }
 
 type decodedContracts struct {
@@ -131,6 +155,13 @@ func Inspect(filename string) (Inspection, error) {
 		inspection.AllowedPaths = []string{"."}
 	}
 	inspection.Traceability = traceabilityForChange(pkg.Change)
+	if pkg.ImplementationPlan != nil {
+		inspection.ImplementationPlanPresent = true
+		inspection.ImplementationPlanSchemaVersion = pkg.ImplementationPlan.SchemaVersion
+		inspection.ImplementationPlanStrategy = pkg.ImplementationPlan.Strategy
+		inspection.ImplementationPlanStepCount = len(pkg.ImplementationPlan.Steps)
+		inspection.ImplementationPlanTraceability = traceabilityForImplementationPlan(pkg.Change, *pkg.ImplementationPlan)
+	}
 	inspection.Gates = make([]string, 0, len(pkg.Policy.Gates))
 	for _, gate := range pkg.Policy.Gates {
 		inspection.Gates = append(inspection.Gates, gate.ID)
@@ -143,6 +174,46 @@ func traceabilityForChange(change spec.ChangeContract) []spec.TraceabilityLink {
 		return nil
 	}
 	return change.Specification.TraceabilityLinks()
+}
+
+func traceabilityForImplementationPlan(change spec.ChangeContract, plan spec.ImplementationPlan) []ImplementationPlanTraceability {
+	links := traceabilityForChange(change)
+	traceability := make([]ImplementationPlanTraceability, 0, len(links))
+	for _, link := range links {
+		entry := ImplementationPlanTraceability{
+			RequirementID:             link.RequirementID,
+			AcceptanceCriterionID:     link.AcceptanceCriterionID,
+			Proof:                     link.Proof,
+			TestPlanStepIDs:           make([]string, 0),
+			ImplementationPlanStepIDs: make([]string, 0),
+			ProofPlanSteps:            make([]ImplementationPlanStepReference, 0),
+		}
+		for _, step := range plan.Steps {
+			matchesRequirementAndCriterion := containsString(step.Requirements, link.RequirementID) && containsString(step.AcceptanceCriteria, link.AcceptanceCriterionID)
+			if matchesRequirementAndCriterion {
+				switch step.Kind {
+				case spec.ImplementationPlanStepTest:
+					entry.TestPlanStepIDs = append(entry.TestPlanStepIDs, step.ID)
+				case spec.ImplementationPlanStepImplementation:
+					entry.ImplementationPlanStepIDs = append(entry.ImplementationPlanStepIDs, step.ID)
+				}
+			}
+			if containsString(step.ContractProofs, link.Proof) {
+				entry.ProofPlanSteps = append(entry.ProofPlanSteps, ImplementationPlanStepReference{ID: step.ID, Kind: step.Kind})
+			}
+		}
+		traceability = append(traceability, entry)
+	}
+	return traceability
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func Load(filename string) (Package, error) {
@@ -168,21 +239,25 @@ func Load(filename string) (Package, error) {
 	if err != nil {
 		return Package{}, err
 	}
+	implementationPlan, implementationPlanRaw, err := validateImplementationPlan(contents, contracts)
+	if err != nil {
+		return Package{}, err
+	}
 	if err := verifyLockedDevelopmentBaseline(contracts.manifest, contracts.change, contents); err != nil {
 		return Package{}, err
 	}
 	if err := verifyEmbeddedBaseline(contracts.manifest, contracts.change, contents); err != nil {
 		return Package{}, err
 	}
-	return packageFromContents(contents, contracts, regressionPatch, deferredGates), nil
+	return packageFromContents(contents, contracts, regressionPatch, deferredGates, implementationPlan, implementationPlanRaw), nil
 }
 
 func validateChangeContractFormatCompatibility(formatVersion, changeSchemaVersion int) error {
 	if changeSchemaVersion == spec.CommitIntentDraftChangeContractSchemaVersion {
 		return errors.New("package cannot contain draft Change Contract schema v5")
 	}
-	if changeSchemaVersion == spec.CommitIntentLockedChangeContractSchemaVersion && formatVersion != spec.FormatVersion {
-		return fmt.Errorf("locked Change Contract schema v6 requires package format v%d", spec.FormatVersion)
+	if changeSchemaVersion == spec.CommitIntentLockedChangeContractSchemaVersion && formatVersion != spec.FormatVersion && formatVersion != spec.ImplementationPlanFormatVersion {
+		return fmt.Errorf("locked Change Contract schema v6 requires package format v%d or v%d", spec.FormatVersion, spec.ImplementationPlanFormatVersion)
 	}
 	return nil
 }
@@ -365,7 +440,7 @@ func validateEvidenceAndIntegrity(contents map[string][]byte, contracts decodedC
 	return []string{}, nil
 }
 
-func packageFromContents(contents map[string][]byte, contracts decodedContracts, regressionPatch []byte, deferredGates []string) Package {
+func packageFromContents(contents map[string][]byte, contracts decodedContracts, regressionPatch []byte, deferredGates []string, implementationPlan *spec.ImplementationPlan, implementationPlanRaw []byte) Package {
 	manifest := contracts.manifest
 	summary := contracts.policy.ValidationSummary()
 	result := Result{
@@ -375,11 +450,39 @@ func packageFromContents(contents map[string][]byte, contracts decodedContracts,
 	}
 	return Package{
 		Result: result, Manifest: manifest, Policy: contracts.policy, Change: contracts.change,
-		Patch:           append([]byte(nil), contents[memberPayload]...),
-		RegressionPatch: append([]byte(nil), regressionPatch...),
-		Evidence:        append([]byte(nil), contents[memberEvidence]...),
-		Baseline:        append([]byte(nil), contents[memberBaseline]...),
+		Patch:                 append([]byte(nil), contents[memberPayload]...),
+		RegressionPatch:       append([]byte(nil), regressionPatch...),
+		Evidence:              append([]byte(nil), contents[memberEvidence]...),
+		Baseline:              append([]byte(nil), contents[memberBaseline]...),
+		ImplementationPlan:    implementationPlan,
+		ImplementationPlanRaw: append([]byte(nil), implementationPlanRaw...),
 	}
+}
+
+func validateImplementationPlan(contents map[string][]byte, contracts decodedContracts) (*spec.ImplementationPlan, []byte, error) {
+	if contracts.manifest.FormatVersion != spec.ImplementationPlanFormatVersion {
+		return nil, nil, nil
+	}
+	raw := contents[memberImplementationPlan]
+	plan, err := spec.DecodeImplementationPlan(raw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid packaged implementation plan: %w", err)
+	}
+	if err := plan.ValidateAgainst(contracts.change, contents[memberChange]); err != nil {
+		return nil, nil, fmt.Errorf("invalid packaged implementation plan: %w", err)
+	}
+	execution, err := policyplan.Compile(contracts.policy)
+	if err != nil {
+		return nil, nil, fmt.Errorf("compile packaged Project Policy for implementation plan: %w", err)
+	}
+	gateOrder, err := implementationplan.EffectiveExecutionOrder(execution)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := plan.ValidateProjectGates(gateOrder); err != nil {
+		return nil, nil, fmt.Errorf("invalid packaged implementation plan: %w", err)
+	}
+	return &plan, append([]byte(nil), raw...), nil
 }
 
 func validateMemberPath(name string) error {
@@ -468,6 +571,9 @@ func verifyManifestDigests(m spec.Manifest, contents map[string][]byte) error {
 	}
 	if spec.FormatHasEmbeddedBaseline(m.FormatVersion) {
 		checks = append(checks, struct{ name, want string }{memberBaseline, m.BaselineSHA256})
+	}
+	if m.FormatVersion == spec.ImplementationPlanFormatVersion {
+		checks = append(checks, struct{ name, want string }{memberImplementationPlan, m.ImplementationPlanSHA256})
 	}
 	for _, check := range checks {
 		if err := verifyDigest(contents[check.name], check.want, check.name); err != nil {

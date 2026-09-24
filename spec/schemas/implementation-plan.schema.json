@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "POLIS Implementation Plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "change_contract_sha256",
+    "git_object_format",
+    "base_commit",
+    "base_tree",
+    "strategy",
+    "steps"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "change_contract_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "git_object_format": { "enum": ["sha1", "sha256"] },
+    "base_commit": { "type": "string", "minLength": 40, "maxLength": 64, "pattern": "^[0-9a-f]+$" },
+    "base_tree": { "type": "string", "minLength": 40, "maxLength": 64, "pattern": "^[0-9a-f]+$" },
+    "strategy": { "enum": ["red_green", "green_green"] },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": { "$ref": "#/$defs/step" }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "git_object_format": { "const": "sha1" } }, "required": ["git_object_format"] },
+      "then": {
+        "properties": {
+          "base_commit": { "pattern": "^[0-9a-f]{40}$" },
+          "base_tree": { "pattern": "^[0-9a-f]{40}$" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "git_object_format": { "const": "sha256" } }, "required": ["git_object_format"] },
+      "then": {
+        "properties": {
+          "base_commit": { "pattern": "^[0-9a-f]{64}$" },
+          "base_tree": { "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "objective"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^PLAN-(00[1-9]|0[1-9][0-9]|[1-9][0-9]{2,})$" },
+        "kind": { "enum": ["test", "proof", "implementation", "validation"] },
+        "objective": { "type": "string", "minLength": 1 },
+        "requirements": { "$ref": "#/$defs/references" },
+        "acceptance_criteria": { "$ref": "#/$defs/references" },
+        "allowed_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "depends_on": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^PLAN-(00[1-9]|0[1-9][0-9]|[1-9][0-9]{2,})$" }
+        },
+        "contract_proofs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["regression", "behavior", "affected"] }
+        },
+        "project_gates": { "$ref": "#/$defs/references" }
+      }
+    },
+    "references": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

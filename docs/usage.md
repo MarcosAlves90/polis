@@ -17,8 +17,9 @@ polis doctor [--format text|json]
 polis init --repo /path/to/repo [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]
 polis plan --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
 polis start --repo /path/to/repo --policy /outside/policy-v3.json --contract /outside/draft-v5.json --out /outside/locked-v6.json
-polis capture-red --repo /path/to/repo --contract /outside/locked-v6.json --out /outside/regression.patch
-polis build --repo /path/to/repo --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/locked-v6.json --regression-patch /outside/regression.patch --out /outside/output
+polis implementation-plan --repo /path/to/repo [--policy /outside/policy-v3.json] --contract /outside/locked-v6.json --out /outside/implementation-plan.json
+polis capture-red --repo /path/to/repo --contract /outside/locked-v6.json [--implementation-plan /outside/implementation-plan.json] --out /outside/regression.patch
+polis build --repo /path/to/repo --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/locked-v6.json --regression-patch /outside/regression.patch [--implementation-plan /outside/implementation-plan.json] --out /outside/output
 polis verify [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
 polis inspect [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
 polis preflight --repo /path/to/repo [--baseline-mode strict|compatible|permissive] [--allow-missing-baseline-proof] [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
@@ -38,6 +39,14 @@ Both default to the current POLIS executable and runtime.
 `preflight` validates without applying; `apply` validates again before mutation.
 `--commit-mode` applies only to `apply` and defaults to `none`.
 
+`polis implementation-plan` creates a deterministic optional plan from a locked
+schema-v4 or schema-v6 Change Contract while the baseline repository is clean.
+The contract, policy, plan, and output stay outside the target worktree. Pass the
+same plan explicitly to `capture-red` and `build`; omitting it preserves the
+unplanned format-v5 workflow. A planned build uses format v6, whose ninth member
+contains the exact supplied plan bytes and is bound by the manifest digest,
+checksums, package verification, and any detached signature.
+
 Consumer baseline handling is independent from Project Policy validation level. The
 baseline mode defaults to `strict`:
 
@@ -47,14 +56,14 @@ baseline mode defaults to `strict`:
   pass;
 - `permissive` also permits non-descendant history. Required locked development
   proof uses the local baseline when available, otherwise the authenticated
-  format-v4/v5 embedded baseline. It emits an explicit warning when ancestry is not
+  format-v4/v5/v6 embedded baseline. It emits an explicit warning when ancestry is not
   proven.
 
-New format-v5 artifacts carry `polis/polis-baseline.tar`, so permissive consumption
+New format-v5 and v6 artifacts carry `polis/polis-baseline.tar`, so permissive consumption
 can replay locked development proof even when the consumer object database does
 not contain the producer base commit. Valid embedded proof is not an override and
 does not reduce guarantees.
-The embedded baseline carries the locked commit and complete tree/blob closure, not refs or parent history. `polis build` replays the locked baseline proof from that exact embedded state, so a baseline command that requires unavailable history is rejected during build rather than producing a non-portable v5 artifact.
+The embedded baseline carries the locked commit and complete tree/blob closure, not refs or parent history. `polis build` replays the locked baseline proof from that exact embedded state, so a baseline command that requires unavailable history is rejected during build rather than producing a non-portable artifact.
 
 For historical artifacts without embedded baseline proof,
 `--allow-missing-baseline-proof` may be supplied only with `permissive`. It must be
@@ -144,10 +153,11 @@ deferred gate.
 
 ## V6 contract summary
 
-- New builds use package format v5 with eight regular members under `polis/`, including the authenticated `polis/polis-baseline.tar`; valid historical v2/v3 seven-member and v4 eight-member artifacts remain readable.
+- Unplanned builds use package format v5 with eight regular members under `polis/`. Explicitly planned builds use format v6 with the exact plan as a ninth member; both include the authenticated `polis/polis-baseline.tar`. Valid historical v2-v5 formats remain readable.
 - Project Policy uses schema v3 with command environments and gate configuration.
 - New builds accept locked Change Contract schema v4 for compatibility and schema v6 for the new producer flow. Schema v5 is a draft accepted by `polis start`, which locks it as v6. Schemas v1-v4 retain their existing meaning.
-- Format v5 uses Evidence v3 to record deferred gates as `DEFERRED`; formats v2-v4 retain Evidence v2 semantics. Both use bounded-output counts and digests, not raw streams.
+- Formats v5 and v6 use Evidence v3 to record deferred gates as `DEFERRED`; formats v2-v4 retain Evidence v2 semantics. Both use bounded-output counts and digests, not raw streams.
+- `polis inspect` reports plan presence, schema, strategy, step count, and requirement-to-plan-to-proof traceability after successful package verification. JSON separates test and implementation step IDs; `proof_plan_steps` lists each step declaring the linked contract proof with its ID and kind. Historical and unplanned artifacts report plan absence.
 - `polis build --defer-gate <id>` may repeat the option. Deferred gates are skipped by the producer and run with the packaged policy during consumer `preflight` and `apply`.
 - Detached Ed25519 signatures authenticate exact package bytes.
 - Coverage adapters are Go coverprofile, LCOV, and Cobertura.

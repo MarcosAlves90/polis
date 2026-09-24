@@ -17,14 +17,16 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
 	"github.com/MarcosAlves90/polis/v6/internal/fileutil"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
 	"github.com/MarcosAlves90/polis/v6/internal/pathguard"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 type Options struct {
-	Repo     string
-	Contract string
-	Out      string
+	Repo               string
+	Contract           string
+	ImplementationPlan string
+	Out                string
 }
 
 type Result struct {
@@ -48,9 +50,14 @@ func Capture(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	contract, err := loadRedGreenContract(repo, opts.Contract)
+	contract, contractRaw, err := loadRedGreenContract(repo, opts.Contract)
 	if err != nil {
 		return Result{}, err
+	}
+	if opts.ImplementationPlan != "" {
+		if _, _, err := implementationplan.Load(repo, opts.ImplementationPlan, contract, contractRaw); err != nil {
+			return Result{}, fmt.Errorf("invalid implementation plan: %w", err)
+		}
 	}
 	if err := devlock.ValidateRepository(ctx, repo, contract); err != nil {
 		return Result{}, fmt.Errorf("locked development baseline: %w", err)
@@ -91,22 +98,22 @@ func validateOptions(opts Options) error {
 	return nil
 }
 
-func loadRedGreenContract(repo, filename string) (spec.ChangeContract, error) {
+func loadRedGreenContract(repo, filename string) (spec.ChangeContract, []byte, error) {
 	contractRaw, err := readExternal(repo, filename, 1<<20)
 	if err != nil {
-		return spec.ChangeContract{}, fmt.Errorf("load change contract: %w", err)
+		return spec.ChangeContract{}, nil, fmt.Errorf("load change contract: %w", err)
 	}
 	contract, err := spec.DecodeChangeContract(contractRaw)
 	if err != nil {
-		return spec.ChangeContract{}, fmt.Errorf("invalid change contract: %w", err)
+		return spec.ChangeContract{}, nil, fmt.Errorf("invalid change contract: %w", err)
 	}
 	if !contract.IsLockedStrictDevelopment() || contract.DevelopmentMethod != spec.DevelopmentMethodStrictSDDTDDV2 || contract.BaselineLock == nil {
-		return spec.ChangeContract{}, errors.New("POLIS V6 capture-red requires locked Change Contract schema v4 or v6 produced by polis start")
+		return spec.ChangeContract{}, nil, errors.New("POLIS V6 capture-red requires locked Change Contract schema v4 or v6 produced by polis start")
 	}
 	if !contract.RequiresRedGreen() {
-		return spec.ChangeContract{}, errors.New("capture-red requires a red_green change contract")
+		return spec.ChangeContract{}, nil, errors.New("capture-red requires a red_green change contract")
 	}
-	return contract, nil
+	return contract, contractRaw, nil
 }
 
 func resolveOutputPath(repo, output string) (string, error) {

@@ -29,8 +29,9 @@ Run the executable directly from this bundle:
 ./bin/polis init --repo /path/to/repository --profile auto
 ./bin/polis plan --repo /path/to/repository
 ./bin/polis start --repo /path/to/repository --policy /outside/policy-v3.json --contract /outside/draft-v5.json --out /outside/locked-v6.json
-./bin/polis capture-red --repo /path/to/repository --contract /outside/locked-v6.json --out /outside/regression.patch
-./bin/polis build --repo /path/to/repository --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/locked-v6.json --regression-patch /outside/regression.patch [--defer-gate gate-id ...] --out /outside/output
+./bin/polis implementation-plan --repo /path/to/repository [--policy /outside/policy-v3.json] --contract /outside/locked-v6.json --out /outside/implementation-plan.json
+./bin/polis capture-red --repo /path/to/repository --contract /outside/locked-v6.json [--implementation-plan /outside/implementation-plan.json] --out /outside/regression.patch
+./bin/polis build --repo /path/to/repository --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/locked-v6.json --regression-patch /outside/regression.patch [--implementation-plan /outside/implementation-plan.json] [--defer-gate gate-id ...] --out /outside/output
 ./bin/polis verify /outside/output/artifact.polis
 ./bin/polis preflight --repo /path/to/repository [--baseline-mode strict|compatible|permissive] /outside/output/artifact.polis
 ./bin/polis apply --repo /path/to/repository [--baseline-mode strict|compatible|permissive] [--commit-mode none|prompt|auto] /outside/output/artifact.polis
@@ -39,6 +40,10 @@ Run the executable directly from this bundle:
 Use `polis sign` separately when a detached Ed25519 signature is required.
 The external policy, locked contract, regression patch, package, and signature
 should remain outside the target worktree in the canonical zero-residue flow.
+The optional Implementation Plan is generated only from a locked contract and a
+clean baseline. It remains external, and both producer commands validate it when
+explicitly supplied. Unplanned builds continue to use format v5; planned builds
+use format v6 and authenticate the exact plan as the ninth package member.
 
 The legacy strict schema-v3 draft to locked schema-v4 flow remains supported.
 To include commit intent, put an optional `commit.message` in the schema-v5
@@ -69,14 +74,16 @@ compatibility validation, and `permissive` can attempt a non-descendant base onl
 when the locked artifact base remains available and all patch, proof, scope, and
 policy checks still pass. Relaxed modes never suppress real conflicts.
 
-New builds use package format v5 and Evidence v3. Repeat `--defer-gate <id>` on
+Unplanned builds use package format v5; planned builds use format v6. Both use
+Evidence v3. Repeat `--defer-gate <id>` on
 `plan` to preview or on `build` to skip an enabled producer gate. The packaged
 consumer policy still requires every enabled gate during `preflight` and
 `apply`. Formats v2-v4 retain their Evidence v2 semantics.
 
 The offline kit includes Change Contract schema v5/v6 resources for commit
-metadata; historical contract schemas v1-v4 remain supported under their
-existing rules.
+metadata, Implementation Plan schema v1, and the format-v6 manifest schema.
+Historical contract schemas v1-v4 remain supported under their existing rules;
+package formats v2-v5 retain their exact inventory and behavior.
 
 The bundle does not contain a target repository or project-specific policy.
 It can therefore be copied between projects without carrying project data.

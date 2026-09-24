@@ -20,6 +20,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
 	"github.com/MarcosAlves90/polis/v6/internal/fileutil"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
 	"github.com/MarcosAlves90/polis/v6/internal/isolation"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
 	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
@@ -29,14 +30,15 @@ import (
 )
 
 type Options struct {
-	Repo            string
-	Policy          string
-	Project         string
-	Change          string
-	Out             string
-	Contract        string
-	RegressionPatch string
-	DeferredGates   []string
+	Repo               string
+	Policy             string
+	Project            string
+	Change             string
+	Out                string
+	Contract           string
+	RegressionPatch    string
+	ImplementationPlan string
+	DeferredGates      []string
 }
 
 type Result struct {
@@ -58,19 +60,20 @@ const (
 )
 
 type buildArtifact struct {
-	opts                 Options
-	objectFormat         string
-	baseCommit           string
-	targetTree           string
-	policyRaw            []byte
-	policy               spec.Policy
-	plan                 policyplan.Plan
-	producerGateStatuses map[string]spec.Status
-	changeRaw            []byte
-	regressionPatch      []byte
-	patch                []byte
-	evidence             []byte
-	baseline             []byte
+	opts                  Options
+	objectFormat          string
+	baseCommit            string
+	targetTree            string
+	policyRaw             []byte
+	policy                spec.Policy
+	plan                  policyplan.Plan
+	producerGateStatuses  map[string]spec.Status
+	changeRaw             []byte
+	regressionPatch       []byte
+	patch                 []byte
+	evidence              []byte
+	baseline              []byte
+	implementationPlanRaw []byte
 }
 
 func Build(ctx context.Context, opts Options) (Result, error) {
@@ -84,6 +87,10 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	changeRaw, changeContract, regressionPatch, err := loadBuildInputs(repo, opts)
 	if err != nil {
 		return Result{}, err
+	}
+	implementationPlanRaw, implementationPlan, err := implementationplan.Load(repo, opts.ImplementationPlan, changeContract, changeRaw)
+	if err != nil {
+		return Result{}, fmt.Errorf("invalid implementation plan: %w", err)
 	}
 	objectFormat, _, err := resolveSourceIdentity(ctx, repo)
 	if err != nil {
@@ -117,6 +124,15 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	plan, err := policyplan.CompileWithOptions(policy, policyplan.CompileOptions{DeferredGates: opts.DeferredGates})
 	if err != nil {
 		return Result{}, err
+	}
+	if implementationPlan != nil {
+		gateOrder, err := implementationplan.EffectiveExecutionOrder(plan)
+		if err != nil {
+			return Result{}, err
+		}
+		if err := implementationPlan.ValidateProjectGates(gateOrder); err != nil {
+			return Result{}, fmt.Errorf("implementation plan Project Policy gates: %w", err)
+		}
 	}
 	baseCommit := changeContract.BaselineLock.BaseCommit
 	targetTree, patch, changedPaths, err := buildTargetWithTemporaryIndex(ctx, repo, baseCommit)
@@ -167,7 +183,7 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	artifact := buildArtifact{
 		opts: opts, objectFormat: objectFormat, baseCommit: baseCommit, targetTree: targetTree,
 		policyRaw: policyRaw, policy: policy, plan: plan, producerGateStatuses: producerResult.Gates,
-		changeRaw: changeRaw, regressionPatch: regressionPatch, patch: patch, evidence: evidence.Bytes(), baseline: baseline,
+		changeRaw: changeRaw, regressionPatch: regressionPatch, patch: patch, evidence: evidence.Bytes(), baseline: baseline, implementationPlanRaw: implementationPlanRaw,
 	}
 	manifestRaw, err := encodeManifest(artifact)
 	if err != nil {
@@ -249,11 +265,18 @@ func requireBuildSourceState(ctx context.Context, repo string) error {
 }
 
 func encodeManifest(artifact buildArtifact) ([]byte, error) {
+	formatVersion := spec.FormatVersion
+	planSHA256 := ""
+	if len(artifact.implementationPlanRaw) > 0 {
+		formatVersion = spec.ImplementationPlanFormatVersion
+		planSHA256 = sha256Hex(artifact.implementationPlanRaw)
+	}
 	manifest := spec.Manifest{
-		FormatVersion: spec.FormatVersion, Project: artifact.opts.Project, Change: artifact.opts.Change,
+		FormatVersion: formatVersion, Project: artifact.opts.Project, Change: artifact.opts.Change,
 		GitObjectFormat: artifact.objectFormat, BaseCommit: artifact.baseCommit, TargetTree: artifact.targetTree,
 		PolicySHA256: sha256Hex(artifact.policyRaw), ChangeContractSHA256: sha256Hex(artifact.changeRaw),
 		RegressionPatchSHA256: sha256Hex(artifact.regressionPatch), PayloadSHA256: sha256Hex(artifact.patch), BaselineSHA256: sha256Hex(artifact.baseline),
+		ImplementationPlanSHA256: planSHA256,
 	}
 	if err := manifest.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid build identity: %w", err)
@@ -276,7 +299,7 @@ func finalizeArtifact(artifact buildArtifact, manifestRaw []byte) (Result, error
 	}
 	candidate, err := writeCandidateArchive(artifact.opts.Out, candidateArchiveContents{
 		Manifest: manifestRaw, Policy: artifact.policyRaw, Change: artifact.changeRaw,
-		Regression: artifact.regressionPatch, Payload: artifact.patch, Evidence: artifact.evidence, Baseline: artifact.baseline,
+		Regression: artifact.regressionPatch, Payload: artifact.patch, Evidence: artifact.evidence, Baseline: artifact.baseline, ImplementationPlan: artifact.implementationPlanRaw,
 	})
 	if err != nil {
 		return Result{}, err
@@ -373,13 +396,14 @@ func buildTargetWithTemporaryIndex(ctx context.Context, repo, baseCommit string)
 }
 
 type candidateArchiveContents struct {
-	Manifest   []byte
-	Policy     []byte
-	Change     []byte
-	Regression []byte
-	Payload    []byte
-	Evidence   []byte
-	Baseline   []byte
+	Manifest           []byte
+	Policy             []byte
+	Change             []byte
+	Regression         []byte
+	Payload            []byte
+	Evidence           []byte
+	Baseline           []byte
+	ImplementationPlan []byte
 }
 
 func writeCandidateArchive(out string, contents candidateArchiveContents) (string, error) {
@@ -391,6 +415,9 @@ func writeCandidateArchive(out string, contents candidateArchiveContents) (strin
 		spec.MemberPayload:    contents.Payload,
 		spec.MemberEvidence:   contents.Evidence,
 		spec.MemberBaseline:   contents.Baseline,
+	}
+	if len(contents.ImplementationPlan) > 0 {
+		members[spec.MemberImplementationPlan] = contents.ImplementationPlan
 	}
 	names := make([]string, 0, len(members))
 	for name := range members {
