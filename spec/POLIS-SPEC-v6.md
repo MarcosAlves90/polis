@@ -16,7 +16,7 @@ Compatibility MUST NOT weaken the canonical zero-residue producer path or author
 
 ## 2. Runtime identity
 
-The V6 CLI version is `6.8.0`.
+The V6 CLI version is `6.8.1`.
 
 The Go module path is:
 

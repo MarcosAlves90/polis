@@ -28,7 +28,7 @@ import (
 	"golang.org/x/term"
 )
 
-const version = "6.7.0"
+const version = "6.8.1"
 
 const captureRedCommand = "capture-red"
 
