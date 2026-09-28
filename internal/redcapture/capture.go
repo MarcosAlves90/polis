@@ -83,7 +83,7 @@ func Capture(ctx context.Context, opts Options) (Result, error) {
 	if len(patch) == 0 {
 		return Result{}, errors.New("captured regression patch is empty")
 	}
-	if err := ValidateProof(ctx, repo, patch, contract); err != nil {
+	if err := validateProbe(ctx, repo, snapshot.head, patch, contract); err != nil {
 		return Result{}, err
 	}
 	if err := writeCapturedPatch(outAbs, patch); err != nil {
