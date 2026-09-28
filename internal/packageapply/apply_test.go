@@ -785,8 +785,24 @@ func TestMissingBaselineOverrideDoesNotBypassDirtyConsumer(t *testing.T) {
 	}
 }
 
+func stageRetainedArtifactForApplyTest(t *testing.T, repo string) (string, []byte) {
+	t.Helper()
+	retainedBytes := []byte("manually staged retained artifact\n")
+	digest := sha256.Sum256(retainedBytes)
+	retainedPath := filepath.Join(repo, ".polis", "artifacts", "contracts", "sha256-"+hex.EncodeToString(digest[:])+".json")
+	if err := os.MkdirAll(filepath.Dir(retainedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(retainedPath, retainedBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".polis/artifacts/contracts")
+	return retainedPath, retainedBytes
+}
+
 func TestApplyExactBaselinePreservesIndexAndUsesEphemeralEvidence(t *testing.T) {
 	repo, artifact, target := repoWithArtifact(t)
+	retainedPath, retainedBytes := stageRetainedArtifactForApplyTest(t, repo)
 	beforeHead := git(t, repo, "rev-parse", "HEAD")
 	beforeIndex := git(t, repo, "write-tree")
 	result, err := Apply(context.Background(), artifact, repo)
@@ -808,6 +824,9 @@ func TestApplyExactBaselinePreservesIndexAndUsesEphemeralEvidence(t *testing.T) 
 	if b, _ := os.ReadFile(filepath.Join(repo, "new.txt")); string(b) != "new\n" {
 		t.Fatalf("new.txt=%q", b)
 	}
+	if b, err := os.ReadFile(retainedPath); err != nil || string(b) != string(retainedBytes) {
+		t.Fatalf("retained artifact bytes=%q err=%v", b, err)
+	}
 	if result.EvidencePath != "" {
 		t.Fatalf("persistent evidence path=%q", result.EvidencePath)
 	}
@@ -815,7 +834,7 @@ func TestApplyExactBaselinePreservesIndexAndUsesEphemeralEvidence(t *testing.T) 
 		t.Fatalf("git evidence residue: %v", err)
 	}
 	status := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
-	if !strings.Contains(status, "M app.txt") || !strings.Contains(status, "?? new.txt") {
+	if !strings.Contains(status, "M app.txt") || !strings.Contains(status, "?? new.txt") || !strings.Contains(status, ".polis/artifacts/contracts/") {
 		t.Fatalf("unexpected post-apply status: %q", status)
 	}
 	if strings.Contains(status, "polis-results") {
@@ -835,42 +854,6 @@ func TestApplyRejectsDirtyWorktreeBeforeMutation(t *testing.T) {
 	after := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
 	if after != before {
 		t.Fatalf("dirty state changed: before=%q after=%q", before, after)
-	}
-}
-
-func TestApplyIgnoresStagedManagedArtifactsInConsumerSourceDelta(t *testing.T) {
-	repo, artifact, target := repoWithArtifact(t)
-	retainedBytes := []byte("manually staged retained artifact\n")
-	digest := sha256.Sum256(retainedBytes)
-	retainedPath := filepath.Join(repo, ".polis", "artifacts", "contracts", "sha256-"+hex.EncodeToString(digest[:])+".json")
-	if err := os.MkdirAll(filepath.Dir(retainedPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(retainedPath, retainedBytes, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	git(t, repo, "add", ".polis/artifacts/contracts")
-	beforeHead := git(t, repo, "rev-parse", "HEAD")
-	beforeIndex := git(t, repo, "write-tree")
-	if _, err := Preflight(context.Background(), artifact, repo); err != nil {
-		t.Fatalf("Preflight() rejected staged retained artifact: %v", err)
-	}
-	result, err := Apply(context.Background(), artifact, repo)
-	if err != nil {
-		t.Fatalf("Apply() rejected staged retained artifact: %v", err)
-	}
-	if result.TargetTree != target {
-		t.Fatalf("target tree=%s want=%s", result.TargetTree, target)
-	}
-	if git(t, repo, "rev-parse", "HEAD") != beforeHead || git(t, repo, "write-tree") != beforeIndex {
-		t.Fatal("Apply() changed HEAD or the staged retained artifact index")
-	}
-	gotRetained, err := os.ReadFile(retainedPath)
-	if err != nil || string(gotRetained) != string(retainedBytes) {
-		t.Fatalf("retained artifact bytes=%q err=%v", gotRetained, err)
-	}
-	if status := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); !strings.Contains(status, ".polis/artifacts/contracts/") {
-		t.Fatalf("retained artifact is no longer manually visible in Git status: %q", status)
 	}
 }
 
@@ -939,9 +922,13 @@ func TestApplyUsesCurrentDirectoryWhenRepoEmpty(t *testing.T) {
 
 func TestPreflightValidatesWithoutMutatingConsumerFiles(t *testing.T) {
 	repo, artifact, target := repoWithArtifact(t)
+	retainedPath, retainedBytes := stageRetainedArtifactForApplyTest(t, repo)
 	beforeHead := git(t, repo, "rev-parse", "HEAD")
 	beforeIndex := git(t, repo, "write-tree")
 	beforeStatus := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
+	if !strings.Contains(beforeStatus, ".polis/artifacts/contracts/") {
+		t.Fatalf("retained artifact was not manually staged: %q", beforeStatus)
+	}
 	result, err := Preflight(context.Background(), artifact, repo)
 	if err != nil {
 		t.Fatalf("Preflight() error = %v", err)
@@ -960,6 +947,9 @@ func TestPreflightValidatesWithoutMutatingConsumerFiles(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(repo, "app.txt")); string(b) != "base\n" {
 		t.Fatalf("preflight mutated app.txt: %q", b)
+	}
+	if b, err := os.ReadFile(retainedPath); err != nil || string(b) != string(retainedBytes) {
+		t.Fatalf("preflight changed retained artifact bytes: %q err=%v", b, err)
 	}
 	if _, err := os.Stat(filepath.Join(repo, "new.txt")); !os.IsNotExist(err) {
 		t.Fatalf("preflight created new.txt: %v", err)
