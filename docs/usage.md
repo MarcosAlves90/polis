@@ -16,6 +16,7 @@ polis help [command]
 polis doctor [--format text|json]
 polis init --repo /path/to/repo [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]
 polis plan --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
+polis gates --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
 polis start --repo /path/to/repo --policy /outside/policy-v3.json --contract /outside/draft-v5.json --out /outside/locked-v6.json
 polis implementation-plan --repo /path/to/repo [--policy /outside/policy-v3.json] --contract /outside/locked-v6.json --out /outside/implementation-plan.json
 polis capture-red --repo /path/to/repo --contract /outside/locked-v6.json [--implementation-plan /outside/implementation-plan.json] --out /outside/regression.patch [--format text|json]
@@ -188,6 +189,14 @@ the guarantees provided or absent by the effective policy. Repeat
 `--defer-gate <id>` to preview transferring enabled gate validation to the
 consumer. A producer-executed gate cannot depend directly or transitively on a
 deferred gate.
+
+Use `polis gates [--repo <path>] [--policy <policy-v3.json>] [--format text|json]`
+to execute the configured enabled project gates locally. The command reports
+each gate result and whether it was executed, along with the effective enabled
+and disabled gate lists. Its output explicitly sets
+`delivery_artifact_built` and `delivery_artifact_verified` to `false`: passing
+Project Policy gates does not build or verify a delivery artifact. Use
+`polis build` and `polis verify` for the delivery workflow.
 
 ## V6 contract summary
 

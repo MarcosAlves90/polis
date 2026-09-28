@@ -11,6 +11,7 @@ signing, and safely applying code changes.
 
 - Makes requirements, tests, evidence, and change scope explicit.
 - Applies configurable validation with strict, safe defaults.
+- Runs configured project gates locally without producing a delivery package.
 - Produces verifiable `.polis` delivery packages and detached signatures.
 - Preserves repository integrity through isolated validation and transactional apply.
 - Includes a portable offline runtime for coding agents without the source tree.
