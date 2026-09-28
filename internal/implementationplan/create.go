@@ -10,8 +10,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/MarcosAlves90/polis/v6/internal/artifactretention"
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
-	"github.com/MarcosAlves90/polis/v6/internal/fileutil"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/pathguard"
 	"github.com/MarcosAlves90/polis/v6/internal/policyload"
@@ -27,9 +27,10 @@ type Options struct {
 }
 
 type Result struct {
-	Path   string                  `json:"path"`
-	SHA256 string                  `json:"sha256"`
-	Plan   spec.ImplementationPlan `json:"plan"`
+	Path          string                  `json:"path"`
+	SHA256        string                  `json:"sha256"`
+	Plan          spec.ImplementationPlan `json:"plan"`
+	RetainedPaths []string                `json:"retained_paths,omitempty"`
 }
 
 // Create writes a generated plan only to an absent external output path. It
@@ -42,10 +43,14 @@ func Create(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	retention, err := artifactretention.Load(ctx, root)
+	if err != nil {
+		return Result{}, err
+	}
 	if err := requireCleanRepository(ctx, root); err != nil {
 		return Result{}, err
 	}
-	contractRaw, err := fileutil.ReadOutside(root, opts.Contract, fileutil.OutsideReadOptions{Max: int64(spec.MaxContractMemberBytes), OversizeMessage: "Change Contract exceeds maximum size"})
+	contractRaw, err := retention.ReadInput(root, opts.Contract, "contracts", int64(spec.MaxContractMemberBytes), "Change Contract exceeds maximum size")
 	if err != nil {
 		return Result{}, fmt.Errorf("load Change Contract: %w", err)
 	}
@@ -104,17 +109,25 @@ func Create(ctx context.Context, opts Options) (Result, error) {
 	if err := writePlan(outAbs, raw); err != nil {
 		return Result{}, err
 	}
+	retainedPath, err := retention.Publish(root, "plans", raw)
+	if err != nil {
+		return Result{}, fmt.Errorf("retain Implementation Plan: %w", err)
+	}
 	sum := sha256.Sum256(raw)
-	return Result{Path: outAbs, SHA256: hex.EncodeToString(sum[:]), Plan: plan}, nil
+	return Result{Path: outAbs, SHA256: hex.EncodeToString(sum[:]), Plan: plan, RetainedPaths: retainedResult(retainedPath)}, nil
 }
 
 // Load reads and validates an optional plan supplied by its caller. An empty
 // filename means the caller selected the unplanned workflow.
 func Load(repo, filename string, contract spec.ChangeContract, contractRaw []byte) ([]byte, *spec.ImplementationPlan, error) {
+	return LoadWithRetention(repo, filename, contract, contractRaw, artifactretention.State{})
+}
+
+func LoadWithRetention(repo, filename string, contract spec.ChangeContract, contractRaw []byte, retention artifactretention.State) ([]byte, *spec.ImplementationPlan, error) {
 	if filename == "" {
 		return nil, nil, nil
 	}
-	raw, err := fileutil.ReadOutside(repo, filename, fileutil.OutsideReadOptions{Max: int64(spec.MaxImplementationPlanBytes), OversizeMessage: "implementation plan exceeds maximum size"})
+	raw, err := retention.ReadInput(repo, filename, "plans", int64(spec.MaxImplementationPlanBytes), "implementation plan exceeds maximum size")
 	if err != nil {
 		return nil, nil, fmt.Errorf("load implementation plan: %w", err)
 	}
@@ -160,14 +173,21 @@ func EffectiveExecutionOrder(plan policyplan.Plan) ([]string, error) {
 }
 
 func requireCleanRepository(ctx context.Context, root string) error {
-	status, err := gitutil.Output(ctx, root, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := artifactretention.WorktreeStatus(ctx, root)
 	if err != nil {
-		return fmt.Errorf("inspect source state: %w", err)
+		return err
 	}
-	if status != "" {
-		return errors.New("polis implementation-plan requires a clean HEAD, index, worktree, and no untracked files")
+	if len(status) != 0 {
+		return errors.New("polis implementation-plan requires a clean HEAD, index, worktree, and no untracked files outside .polis/artifacts/")
 	}
 	return nil
+}
+
+func retainedResult(path string) []string {
+	if path == "" {
+		return nil
+	}
+	return []string{path}
 }
 
 func validateOutputPath(root, filename string) (string, error) {

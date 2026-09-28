@@ -2,10 +2,11 @@ package spec
 
 import "testing"
 
-func TestOfflineResourcesIncludeCommitIntentSchemas(t *testing.T) {
+func TestOfflineResourcesIncludeCurrentSchemas(t *testing.T) {
 	want := map[string]bool{
-		"schemas/change-contract-v5.schema.json": false,
-		"schemas/change-contract-v6.schema.json": false,
+		"schemas/change-contract-v5.schema.json":    false,
+		"schemas/change-contract-v6.schema.json":    false,
+		"schemas/artifact-retention-v1.schema.json": false,
 	}
 	for _, resource := range OfflineResources() {
 		if _, ok := want[resource.Path]; ok {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MarcosAlves90/polis/v6/internal/artifactretention"
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
 	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
@@ -24,13 +25,19 @@ func git(t *testing.T, repo string, args ...string) string {
 	}
 	return strings.TrimSpace(string(b))
 }
-func fixture(t *testing.T) (string, string) {
+func fixture(t *testing.T, repositoryRetention ...bool) (string, string) {
 	t.Helper()
 	repo := filepath.Join(t.TempDir(), "repo")
 	if err := os.MkdirAll(filepath.Join(repo, ".polis"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	git(t, repo, "init", "-q")
+	if len(repositoryRetention) > 0 && repositoryRetention[0] {
+		manifest := []byte("{\"schema_version\":1,\"mode\":\"repository\"}\n")
+		if err := os.WriteFile(filepath.Join(repo, ".polis", "artifact-retention.json"), manifest, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), capturePolicyV3(t), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -76,8 +83,12 @@ func fixture(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 	lockedPath := filepath.Join(t.TempDir(), "defect-locked-v4.json")
-	if _, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Contract: draftPath, Out: lockedPath}); err != nil {
+	startResult, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Contract: draftPath, Out: lockedPath})
+	if err != nil {
 		t.Fatalf("polis start defect fixture: %v", err)
+	}
+	if len(startResult.RetainedPaths) > 0 {
+		lockedPath = filepath.Join(repo, filepath.FromSlash(startResult.RetainedPaths[0]))
 	}
 	if err := os.WriteFile(filepath.Join(repo, "regression.txt"), []byte("BUG-RED\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -103,6 +114,45 @@ func TestCaptureProducesValidatedPatchWithoutMutatingSource(t *testing.T) {
 	}
 	if git(t, repo, "rev-parse", "HEAD") != head || git(t, repo, "write-tree") != idx || git(t, repo, "status", "--porcelain=v1", "--untracked-files=all") != status {
 		t.Fatal("source mutated")
+	}
+}
+
+func TestCaptureConsumesRetainedContractAndRetainsReusableProof(t *testing.T) {
+	repo, contractPath := fixture(t, true)
+	head := git(t, repo, "rev-parse", "HEAD")
+	index := git(t, repo, "write-tree")
+	beforeStatus, err := artifactretention.WorktreeStatus(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "retained-red.patch")
+	result, err := Capture(context.Background(), Options{Repo: repo, Contract: contractPath, Out: out})
+	if err != nil {
+		t.Fatalf("Capture() rejected retained contract: %v", err)
+	}
+	if len(result.RetainedPaths) != 1 || !strings.HasPrefix(result.RetainedPaths[0], ".polis/artifacts/proofs/") {
+		t.Fatalf("retained paths = %v", result.RetainedPaths)
+	}
+	patch, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(patch) == 0 || strings.Contains(string(patch), ".polis/artifacts/") {
+		t.Fatalf("captured source patch is empty or includes retained artifacts: %q", patch)
+	}
+	retainedProof, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(result.RetainedPaths[0])))
+	if err != nil || string(retainedProof) != string(patch) {
+		t.Fatalf("retained proof differs from external output: read error=%v", err)
+	}
+	if git(t, repo, "rev-parse", "HEAD") != head || git(t, repo, "write-tree") != index {
+		t.Fatal("retaining captured proof changed HEAD or the real index")
+	}
+	afterStatus, err := artifactretention.WorktreeStatus(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterStatus) != string(beforeStatus) {
+		t.Fatalf("source status outside managed artifacts changed: before=%q after=%q", beforeStatus, afterStatus)
 	}
 }
 

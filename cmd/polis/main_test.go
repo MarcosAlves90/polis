@@ -66,6 +66,23 @@ func lockedCLIContract(t *testing.T, repo string, externalPolicy ...string) stri
 	return locked
 }
 
+func enableCLIRetention(t *testing.T, repo string) {
+	t.Helper()
+	manifest := []byte("{\"schema_version\":1,\"mode\":\"repository\"}\n")
+	if err := os.WriteFile(filepath.Join(repo, ".polis", "artifact-retention.json"), manifest, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", repo, "add", ".polis/artifact-retention.json"},
+		{"-C", repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-m", "configure artifact retention"},
+	} {
+		cmd := exec.Command("git", args...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+}
+
 func cliDraftContract(t *testing.T, repo string, schemaVersion int, commitMessage *string) string {
 	t.Helper()
 	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
@@ -221,7 +238,39 @@ func TestRunImplementationPlanProducesTextAndJSON(t *testing.T) {
 			if payload.Status != "PASS" || payload.Path != planPath || payload.SHA256 == "" || payload.Plan.Strategy != plan.Strategy || len(payload.Plan.Steps) != len(plan.Steps) {
 				t.Fatalf("unexpected JSON result: %+v", payload)
 			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(out.Bytes(), &fields); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := fields["retained_paths"]; exists {
+				t.Fatalf("legacy external mode added retained_paths: %s", out.String())
+			}
 		})
+	}
+}
+
+func TestRunImplementationPlanReportsRetainedPath(t *testing.T) {
+	repo := makeBuildRepo(t)
+	enableCLIRetention(t, repo)
+	contract := lockedCLIContract(t, repo)
+	planPath := filepath.Join(t.TempDir(), "implementation-plan.json")
+	var out, errOut bytes.Buffer
+	args := []string{"implementation-plan", "--repo", repo, "--contract", contract, "--out", planPath, "--format", "json"}
+	if code := run(args, &out, &errOut); code != exitPass {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	var payload struct {
+		Status        string   `json:"status"`
+		RetainedPaths []string `json:"retained_paths"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("decode JSON output: %v: %s", err, out.String())
+	}
+	if payload.Status != "PASS" || len(payload.RetainedPaths) != 1 || !strings.HasPrefix(payload.RetainedPaths[0], ".polis/artifacts/plans/") {
+		t.Fatalf("unexpected retained plan result: %+v; output=%s", payload, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(repo, filepath.FromSlash(payload.RetainedPaths[0]))); err != nil {
+		t.Fatalf("CLI reported missing retained plan: %v", err)
 	}
 }
 
@@ -372,11 +421,12 @@ func TestRunExportCreatesSelfContainedOfflineBundle(t *testing.T) {
 		executableMember += ".exe"
 	}
 	want := map[string]bool{
-		executableMember:                                false,
-		"polis-offline/manifest.json":                   false,
-		"polis-offline/POLIS-OFFLINE.md":                false,
-		"polis-offline/spec/POLIS-SPEC-v6.md":           false,
-		"polis-offline/spec/schemas/policy.schema.json": false,
+		executableMember:                                               false,
+		"polis-offline/manifest.json":                                  false,
+		"polis-offline/POLIS-OFFLINE.md":                               false,
+		"polis-offline/spec/POLIS-SPEC-v6.md":                          false,
+		"polis-offline/spec/schemas/policy.schema.json":                false,
+		"polis-offline/spec/schemas/artifact-retention-v1.schema.json": false,
 	}
 	for _, member := range archive.File {
 		if _, ok := want[member.Name]; ok {
@@ -659,6 +709,7 @@ func makeBuildRepo(t *testing.T) string {
 
 func TestRunBuildCreatesPackage(t *testing.T) {
 	repo := makeBuildRepo(t)
+	enableCLIRetention(t, repo)
 	policyPath := filepath.Join(t.TempDir(), "policy.json")
 	policyRaw, err := os.ReadFile(filepath.Join(repo, ".polis", "policy.json"))
 	if err != nil {
@@ -686,7 +737,7 @@ func TestRunBuildCreatesPackage(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
-	if !strings.Contains(out.String(), "POLIS BUILD: PASS") || !strings.Contains(out.String(), "Deferred gates: coverage") || !strings.Contains(out.String(), "Consumer validation required: true") || !strings.Contains(out.String(), "DEFERRED") {
+	if !strings.Contains(out.String(), "POLIS BUILD: PASS") || !strings.Contains(out.String(), "Deferred gates: coverage") || !strings.Contains(out.String(), "Consumer validation required: true") || !strings.Contains(out.String(), "DEFERRED") || !strings.Contains(out.String(), "Retained artifacts: .polis/artifacts/") {
 		t.Fatalf("stdout=%q", out.String())
 	}
 	entries, err := os.ReadDir(outDir)
@@ -697,6 +748,7 @@ func TestRunBuildCreatesPackage(t *testing.T) {
 
 func TestRunBuildDeferralTextAndJSONReporting(t *testing.T) {
 	repo := makeBuildRepo(t)
+	enableCLIRetention(t, repo)
 	contract := lockedCLIContract(t, repo)
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -711,12 +763,18 @@ func TestRunBuildDeferralTextAndJSONReporting(t *testing.T) {
 		DeferredGates              []string          `json:"deferred_gates"`
 		ConsumerValidationRequired bool              `json:"consumer_validation_required"`
 		ProducerGateStatuses       map[string]string `json:"producer_gate_statuses"`
+		RetainedPaths              []string          `json:"retained_paths"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatalf("invalid build JSON: %v\n%s", err, out.String())
 	}
-	if !result.ConsumerValidationRequired || len(result.DeferredGates) != 1 || result.DeferredGates[0] != "coverage" || result.ProducerGateStatuses["coverage"] != string(spec.StatusDeferred) {
+	if !result.ConsumerValidationRequired || len(result.DeferredGates) != 1 || result.DeferredGates[0] != "coverage" || result.ProducerGateStatuses["coverage"] != string(spec.StatusDeferred) || len(result.RetainedPaths) != 3 {
 		t.Fatalf("build output=%+v", result)
+	}
+	for _, path := range result.RetainedPaths {
+		if !strings.HasPrefix(path, ".polis/artifacts/") {
+			t.Errorf("unexpected retained path %q", path)
+		}
 	}
 }
 
@@ -961,6 +1019,9 @@ func TestRunCaptureRedCreatesPatch(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("baseline\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(repo, ".polis", "artifact-retention.json"), []byte("{\"schema_version\":1,\"mode\":\"repository\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"-c", "user.name=POLIS", "-c", "user.email=x@y", "commit", "-qm", "base"}} {
 		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
 		if b, err := cmd.CombinedOutput(); err != nil {
@@ -1000,6 +1061,9 @@ func TestRunCaptureRedCreatesPatch(t *testing.T) {
 	if code := run([]string{"start", "--repo", repo, "--contract", draftPath, "--out", locked}, &startOut, &startErr); code != 0 {
 		t.Fatalf("start code=%d stderr=%s", code, startErr.String())
 	}
+	if !strings.Contains(startOut.String(), "Retained artifacts: .polis/artifacts/contracts/") {
+		t.Fatalf("start did not report retained contract: %s", startOut.String())
+	}
 	if err := os.WriteFile(filepath.Join(repo, "regression.txt"), []byte("CLI-RED\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1011,6 +1075,23 @@ func TestRunCaptureRedCreatesPatch(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "POLIS CAPTURE-RED: PASS") {
 		t.Fatalf("out=%s", out.String())
+	}
+	if !strings.Contains(out.String(), "Retained artifacts: .polis/artifacts/proofs/") {
+		t.Fatalf("capture-red did not report retained proof: %s", out.String())
+	}
+	jsonPath := filepath.Join(t.TempDir(), "red-json.patch")
+	var jsonOut, jsonErr bytes.Buffer
+	if code := run([]string{"capture-red", "--repo", repo, "--contract", locked, "--out", jsonPath, "--format", "json"}, &jsonOut, &jsonErr); code != exitPass {
+		t.Fatalf("capture-red JSON code=%d stderr=%s", code, jsonErr.String())
+	}
+	var jsonResult struct {
+		RetainedPaths []string `json:"retained_paths"`
+	}
+	if err := json.Unmarshal(jsonOut.Bytes(), &jsonResult); err != nil {
+		t.Fatalf("invalid capture-red JSON: %v\n%s", err, jsonOut.String())
+	}
+	if len(jsonResult.RetainedPaths) != 1 || !strings.HasPrefix(jsonResult.RetainedPaths[0], ".polis/artifacts/proofs/") {
+		t.Fatalf("capture-red JSON omitted retained proof: %+v", jsonResult)
 	}
 }
 

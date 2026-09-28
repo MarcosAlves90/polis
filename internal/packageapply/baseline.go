@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/MarcosAlves90/polis/v6/internal/artifactretention"
 	"github.com/MarcosAlves90/polis/v6/internal/baselineproof"
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
@@ -268,11 +269,11 @@ func verifyConsumerState(ctx context.Context, repo, objectFormat string) (string
 	if err != nil {
 		return "", fmt.Errorf("resolve HEAD: %w", err)
 	}
-	status, err := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := artifactretention.WorktreeStatus(ctx, repo)
 	if err != nil {
 		return "", fmt.Errorf("inspect consumer status: %w", err)
 	}
-	if status != "" {
+	if len(status) != 0 {
 		return "", fmt.Errorf("%w: consumer working tree/index is not clean", ErrBaselineMismatch)
 	}
 	return head, nil

@@ -838,6 +838,42 @@ func TestApplyRejectsDirtyWorktreeBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestApplyIgnoresStagedManagedArtifactsInConsumerSourceDelta(t *testing.T) {
+	repo, artifact, target := repoWithArtifact(t)
+	retainedBytes := []byte("manually staged retained artifact\n")
+	digest := sha256.Sum256(retainedBytes)
+	retainedPath := filepath.Join(repo, ".polis", "artifacts", "contracts", "sha256-"+hex.EncodeToString(digest[:])+".json")
+	if err := os.MkdirAll(filepath.Dir(retainedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(retainedPath, retainedBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "add", ".polis/artifacts/contracts")
+	beforeHead := git(t, repo, "rev-parse", "HEAD")
+	beforeIndex := git(t, repo, "write-tree")
+	if _, err := Preflight(context.Background(), artifact, repo); err != nil {
+		t.Fatalf("Preflight() rejected staged retained artifact: %v", err)
+	}
+	result, err := Apply(context.Background(), artifact, repo)
+	if err != nil {
+		t.Fatalf("Apply() rejected staged retained artifact: %v", err)
+	}
+	if result.TargetTree != target {
+		t.Fatalf("target tree=%s want=%s", result.TargetTree, target)
+	}
+	if git(t, repo, "rev-parse", "HEAD") != beforeHead || git(t, repo, "write-tree") != beforeIndex {
+		t.Fatal("Apply() changed HEAD or the staged retained artifact index")
+	}
+	gotRetained, err := os.ReadFile(retainedPath)
+	if err != nil || string(gotRetained) != string(retainedBytes) {
+		t.Fatalf("retained artifact bytes=%q err=%v", gotRetained, err)
+	}
+	if status := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); !strings.Contains(status, ".polis/artifacts/contracts/") {
+		t.Fatalf("retained artifact is no longer manually visible in Git status: %q", status)
+	}
+}
+
 func TestApplyRejectsWrongHead(t *testing.T) {
 	repo, artifact, _ := repoWithArtifact(t)
 	if err := os.WriteFile(filepath.Join(repo, "other.txt"), []byte("other\n"), 0o644); err != nil {
