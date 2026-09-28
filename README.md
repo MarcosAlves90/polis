@@ -10,6 +10,7 @@ signing, and safely applying code changes.
 ## Why POLIS
 
 - Makes requirements, tests, evidence, and change scope explicit.
+- Checks proposed Red probe paths against the locked test scope before capture.
 - Applies configurable validation with strict, safe defaults.
 - Runs configured project gates locally without producing a delivery package.
 - Produces verifiable `.polis` delivery packages and detached signatures.
