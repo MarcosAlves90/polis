@@ -212,18 +212,38 @@ func writeStatusText(out io.Writer, result changestatus.Result) {
 		fmt.Fprintf(out, "Baseline commit: %s\nBaseline tree: %s\nBaseline object format: %s\nBaseline resolvable: %t\nRepository relation: %s\nLocked policy: %s\n",
 			result.Baseline.BaseCommit, result.Baseline.BaseTree, result.Baseline.GitObjectFormat, result.Baseline.Resolvable, result.Baseline.RepositoryRelation, result.Baseline.PolicyStatus)
 	}
-	fmt.Fprintf(out, "Implementation plan: %s\nRed proof: %s\nPackage: %s\nEvidence: %s\n",
-		result.ImplementationPlan.Status, result.RedProof.Status, result.Package.Status, result.Evidence.Status)
+	writeStatusStage(out, "Implementation plan", result.ImplementationPlan)
+	writeStatusStage(out, "Red proof", result.RedProof)
+	writeStatusStage(out, "Package", changestatus.StageSummary{Status: result.Package.Status, Paths: result.Package.Paths})
+	writeStatusStage(out, "Evidence", result.Evidence)
 	for _, gate := range result.Gates {
 		fmt.Fprintf(out, "Gate %s: %s\n", gate.ID, gate.Status)
 	}
 	if result.NextAction != nil {
-		fmt.Fprintf(out, "Next action: %s — %s\n", result.NextAction.Command, result.NextAction.Reason)
+		fmt.Fprintf(out, "Next action: %s", result.NextAction.Action)
+		if result.NextAction.Command != "" {
+			fmt.Fprintf(out, " (%s)", result.NextAction.Command)
+		}
+		fmt.Fprintf(out, " — %s\n", result.NextAction.Reason)
 	} else {
 		fmt.Fprintln(out, "Next action: none")
 	}
 	for _, problem := range result.Problems {
 		fmt.Fprintf(out, "Problem: %s\n", problem)
+	}
+}
+
+func writeStatusStage(out io.Writer, name string, stage changestatus.StageSummary) {
+	fmt.Fprintf(out, "%s: %s", name, stage.Status)
+	if stage.Detail != "" {
+		fmt.Fprintf(out, " — %s", stage.Detail)
+	}
+	fmt.Fprintln(out)
+	for _, path := range stage.Paths {
+		fmt.Fprintf(out, "  Evidence: %s\n", path)
+	}
+	for _, path := range stage.IncompletePaths {
+		fmt.Fprintf(out, "  Incomplete evidence: %s\n", path)
 	}
 }
 

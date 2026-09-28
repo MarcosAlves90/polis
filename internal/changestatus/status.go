@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -25,6 +26,7 @@ const (
 	StateAmbiguous                  = "ambiguous"
 	StateBlocked                    = "blocked"
 	StateRedProofMissing            = "red_proof_missing"
+	StateImplementationPending      = "implementation_pending"
 	StateReadyToBuild               = "ready_to_build"
 	StateConsumerValidationRequired = "consumer_validation_required"
 	StateComplete                   = "complete"
@@ -79,8 +81,10 @@ type BaselineSummary struct {
 }
 
 type StageSummary struct {
-	Status string   `json:"status"`
-	Paths  []string `json:"paths,omitempty"`
+	Status          string   `json:"status"`
+	Paths           []string `json:"paths,omitempty"`
+	IncompletePaths []string `json:"incomplete_paths,omitempty"`
+	Detail          string   `json:"detail,omitempty"`
 }
 
 type PackageSummary struct {
@@ -98,7 +102,8 @@ type GateSummary struct {
 }
 
 type NextAction struct {
-	Command string `json:"command"`
+	Action  string `json:"action"`
+	Command string `json:"command,omitempty"`
 	Reason  string `json:"reason"`
 }
 
@@ -162,7 +167,7 @@ func Derive(ctx context.Context, opts Options) (Result, error) {
 			return inconsistent(result), nil
 		}
 		result.State = StateEmpty
-		result.NextAction = &NextAction{Command: "polis start", Reason: "no locked Change Contract is persisted"}
+		result.NextAction = &NextAction{Action: "start", Command: "polis start", Reason: "no locked Change Contract is persisted"}
 		return result, nil
 	}
 	result.Contract = &ContractSummary{
@@ -173,12 +178,20 @@ func Derive(ctx context.Context, opts Options) (Result, error) {
 
 	plans, planProblems := loadArtifacts(retention, root, "plans", int64(spec.MaxImplementationPlanBytes), "implementation plan exceeds maximum size")
 	result.Problems = append(result.Problems, planProblems...)
-	linkedPlans := linkedPlanPaths(plans, *selected)
+	linkedPlans, incompletePlans := linkedPlanPaths(plans, *selected)
 	if len(linkedPlans) == 1 {
-		result.ImplementationPlan = StageSummary{Status: StageComplete, Paths: linkedPlans}
+		result.ImplementationPlan = StageSummary{Status: StageComplete, Paths: linkedPlans, IncompletePaths: incompletePlans}
+		if len(incompletePlans) > 0 {
+			result.ImplementationPlan.Detail = "some retained plans bound to this contract do not validate"
+		}
 	} else if len(linkedPlans) > 1 {
-		result.ImplementationPlan = StageSummary{Status: StageAmbiguous, Paths: linkedPlans}
+		result.ImplementationPlan = StageSummary{Status: StageAmbiguous, Paths: linkedPlans, IncompletePaths: incompletePlans}
 		result.Problems = append(result.Problems, "multiple retained implementation plans validate against the selected contract")
+	} else if len(incompletePlans) > 0 {
+		result.ImplementationPlan = StageSummary{
+			Status: StageIncomplete, IncompletePaths: incompletePlans,
+			Detail: "retained plan candidates bound to this contract do not validate",
+		}
 	}
 
 	packages, packageProblems := loadPackages(retention, root)
@@ -200,10 +213,18 @@ func Derive(ctx context.Context, opts Options) (Result, error) {
 
 	proofs, proofProblems := loadArtifacts(retention, root, "proofs", int64(spec.MaxPatchMemberBytes), "input exceeds maximum size")
 	result.Problems = append(result.Problems, proofProblems...)
-	validProofs := validProofPaths(ctx, root, proofs, selected.contract)
+	validProofs, incompleteProofs := validProofPaths(ctx, root, proofs, selected.contract)
 	if selected.contract.RequiresRedGreen() {
 		if len(validProofs) > 0 {
-			result.RedProof = StageSummary{Status: StageComplete, Paths: validProofs}
+			result.RedProof = StageSummary{Status: StageComplete, Paths: validProofs, IncompletePaths: incompleteProofs}
+			if len(incompleteProofs) > 0 {
+				result.RedProof.Detail = "some retained proofs apply within the locked test scope but fail the Red oracle"
+			}
+		} else if len(incompleteProofs) > 0 {
+			result.RedProof = StageSummary{
+				Status: StageIncomplete, IncompletePaths: incompleteProofs,
+				Detail: "retained proofs apply within the locked test scope but fail the Red oracle",
+			}
 		}
 	} else {
 		result.RedProof = StageSummary{Status: StageNotRequired}
@@ -218,7 +239,7 @@ func Derive(ctx context.Context, opts Options) (Result, error) {
 	if result.Package.Status == StageComplete {
 		if result.Package.ConsumerValidationRequired {
 			result.State = StateConsumerValidationRequired
-			result.NextAction = &NextAction{Command: "polis preflight", Reason: "the verified package contains deferred producer gates that require consumer validation"}
+			result.NextAction = &NextAction{Action: "consumer_validation", Command: "polis preflight", Reason: "the verified package contains deferred producer gates that require consumer validation"}
 		} else {
 			result.State = StateComplete
 		}
@@ -250,7 +271,7 @@ func Derive(ctx context.Context, opts Options) (Result, error) {
 	if selected.contract.RequiresRedGreen() && result.RedProof.Status != StageComplete {
 		result.State = StateRedProofMissing
 		if result.Baseline.RepositoryRelation == "at_baseline" {
-			result.NextAction = &NextAction{Command: "polis capture-red", Reason: "a validated persisted Red proof is required before implementation can be packaged"}
+			result.NextAction = &NextAction{Action: "capture_red", Command: "polis capture-red", Reason: "a validated persisted Red proof is required before implementation can be packaged"}
 		} else {
 			result.State = StateBlocked
 			result.Problems = append(result.Problems, "capture-red requires HEAD at the locked baseline before a persisted Red proof exists")
@@ -262,8 +283,8 @@ func Derive(ctx context.Context, opts Options) (Result, error) {
 		result.Problems = append(result.Problems, "the locked baseline is not an ancestor of current HEAD")
 		return result, nil
 	}
-	result.State = StateReadyToBuild
-	result.NextAction = &NextAction{Command: "polis build", Reason: "required persisted prerequisites are complete; build after the implementation changes are present"}
+	result.State = StateImplementationPending
+	result.NextAction = &NextAction{Action: "implement", Reason: "no verified package records completion; continue the locked implementation, then run polis build"}
 	return result, nil
 }
 
@@ -347,33 +368,48 @@ func loadPackages(retention artifactretention.State, repo string) ([]packageCand
 	return packages, problems
 }
 
-func linkedPlanPaths(plans []retainedArtifact, selected contractCandidate) []string {
+func linkedPlanPaths(plans []retainedArtifact, selected contractCandidate) ([]string, []string) {
 	paths := make([]string, 0)
+	incomplete := make([]string, 0)
 	for _, artifact := range plans {
-		plan, err := spec.DecodeImplementationPlan(artifact.raw)
-		if err != nil {
+		var binding struct {
+			ChangeContractSHA256 string `json:"change_contract_sha256"`
+		}
+		if err := json.Unmarshal(artifact.raw, &binding); err != nil || binding.ChangeContractSHA256 != selected.digest {
 			continue
 		}
-		if err := plan.ValidateAgainst(selected.contract, selected.raw); err == nil {
-			paths = append(paths, artifact.path)
+		plan, err := spec.DecodeImplementationPlan(artifact.raw)
+		if err == nil {
+			err = plan.ValidateAgainst(selected.contract, selected.raw)
 		}
+		if err != nil {
+			incomplete = append(incomplete, artifact.path)
+			continue
+		}
+		paths = append(paths, artifact.path)
 	}
 	sort.Strings(paths)
-	return paths
+	sort.Strings(incomplete)
+	return paths, incomplete
 }
 
-func validProofPaths(ctx context.Context, repo string, proofs []retainedArtifact, contract spec.ChangeContract) []string {
+func validProofPaths(ctx context.Context, repo string, proofs []retainedArtifact, contract spec.ChangeContract) ([]string, []string) {
 	if !contract.RequiresRedGreen() {
-		return nil
+		return nil, nil
 	}
 	paths := make([]string, 0)
+	incomplete := make([]string, 0)
 	for _, artifact := range proofs {
-		if err := redcapture.ValidateProof(ctx, repo, artifact.raw, contract); err == nil {
+		associated, err := redcapture.ValidateProofCandidate(ctx, repo, artifact.raw, contract)
+		if err == nil {
 			paths = append(paths, artifact.path)
+		} else if associated {
+			incomplete = append(incomplete, artifact.path)
 		}
 	}
 	sort.Strings(paths)
-	return paths
+	sort.Strings(incomplete)
+	return paths, incomplete
 }
 
 func deriveBaseline(ctx context.Context, repo string, contract spec.ChangeContract) *BaselineSummary {

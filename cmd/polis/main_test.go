@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MarcosAlves90/polis/v6/internal/artifactretention"
 	"github.com/MarcosAlves90/polis/v6/internal/changestatus"
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
 	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
@@ -177,15 +178,17 @@ func TestRunStatusReportsPersistedPartialAndCompleteWorkflow(t *testing.T) {
 		t.Fatalf("empty status=%v", empty)
 	}
 	next, ok := empty["next_action"].(map[string]any)
-	if !ok || next["command"] != "polis start" {
+	if !ok || next["action"] != "start" || next["command"] != "polis start" {
 		t.Fatalf("empty next action=%v", empty["next_action"])
 	}
 
 	contract := lockedCLIContract(t, repo)
 	locked := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
-	if locked["state"] != changestatus.StateReadyToBuild || locked["consistent"] != true {
+	if locked["state"] != changestatus.StateImplementationPending || locked["consistent"] != true {
 		t.Fatalf("locked status=%v", locked)
 	}
+	assertStatusNextAction(t, locked, "implement", "")
+	assertCLITextContains(t, []string{"status", "--repo", repo}, "POLIS STATUS: implementation_pending", "Next action: implement")
 	contractSummary, ok := locked["contract"].(map[string]any)
 	if !ok || contractSummary["schema_version"] != float64(spec.LockedChangeContractSchemaVersion) || contractSummary["path"] == "" {
 		t.Fatalf("locked contract summary=%v", locked["contract"])
@@ -205,10 +208,19 @@ func TestRunStatusReportsPersistedPartialAndCompleteWorkflow(t *testing.T) {
 	if !ok || plan["status"] != changestatus.StageComplete {
 		t.Fatalf("planned status=%v", planned)
 	}
+	if planned["state"] != changestatus.StateImplementationPending {
+		t.Fatalf("implementation plan must not imply implementation completion: %v", planned)
+	}
+	assertStatusNextAction(t, planned, "implement", "")
 
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	changedButUnpackaged := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	if changedButUnpackaged["state"] != changestatus.StateImplementationPending {
+		t.Fatalf("source changes must not prove implementation completion: %v", changedButUnpackaged)
+	}
+	assertStatusNextAction(t, changedButUnpackaged, "implement", "")
 	built, err := packagebuild.Build(context.Background(), packagebuild.Options{Repo: repo, Project: "polis", Change: "status-complete", Out: t.TempDir(), Contract: contract})
 	if err != nil {
 		t.Fatal(err)
@@ -232,6 +244,82 @@ func TestRunStatusReportsPersistedPartialAndCompleteWorkflow(t *testing.T) {
 	assertCLITextContains(t, []string{"status", "--repo", repo}, "POLIS STATUS: complete", "Contract:", "Baseline commit:", "Evidence: complete", "Next action: none")
 }
 
+func TestRunStatusMarksInvalidContractBoundPlanIncompleteAndIgnoresUnrelatedPlan(t *testing.T) {
+	repo := makeBuildRepo(t)
+	enableCLIRetention(t, repo)
+	contractPath := lockedCLIContract(t, repo)
+	planPath := filepath.Join(t.TempDir(), "status-plan.json")
+	planResult := runCLIJSON(t, "implementation-plan", "--repo", repo, "--contract", contractPath, "--out", planPath, "--format", "json")
+	if planResult["status"] != "PASS" {
+		t.Fatalf("implementation-plan result=%v", planResult)
+	}
+	retainedPlans, ok := planResult["retained_paths"].([]any)
+	if !ok || len(retainedPlans) != 1 {
+		t.Fatalf("implementation-plan retained paths=%v", planResult["retained_paths"])
+	}
+	raw, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan spec.ImplementationPlan
+	if err := json.Unmarshal(raw, &plan); err != nil {
+		t.Fatal(err)
+	}
+	plan.Steps[0].Objective = ""
+	invalidBound, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignPlan := plan
+	foreignPlan.ChangeContractSHA256 = strings.Repeat("0", 64)
+	foreignPlanRaw, err := json.Marshal(foreignPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retention, err := artifactretention.Load(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidPath, err := retention.Publish(repo, "plans", invalidBound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignPath, err := retention.Publish(repo, "plans", foreignPlanRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	stage, ok := status["implementation_plan"].(map[string]any)
+	if !ok || stage["status"] != changestatus.StageComplete {
+		t.Fatalf("valid linked plan should remain complete beside an incomplete candidate: %v", status["implementation_plan"])
+	}
+	incomplete, ok := stage["incomplete_paths"].([]any)
+	if !ok || len(incomplete) != 1 || incomplete[0] != invalidPath || incomplete[0] == foreignPath {
+		t.Fatalf("incomplete plan paths=%v, expected only linked invalid plan %q", stage["incomplete_paths"], invalidPath)
+	}
+	if err := os.Remove(filepath.Join(repo, filepath.FromSlash(retainedPlans[0].(string)))); err != nil {
+		t.Fatal(err)
+	}
+	status = runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	stage = status["implementation_plan"].(map[string]any)
+	if stage["status"] != changestatus.StageIncomplete {
+		t.Fatalf("invalid linked plan should be incomplete when no valid plan remains: %v", stage)
+	}
+	if status["state"] != changestatus.StateImplementationPending {
+		t.Fatalf("an optional incomplete plan must not imply completion or block implementation: %v", status)
+	}
+}
+
+func assertStatusNextAction(t *testing.T, status map[string]any, action, command string) {
+	t.Helper()
+	next, ok := status["next_action"].(map[string]any)
+	commandValue, _ := next["command"].(string)
+	if !ok || next["action"] != action || commandValue != command {
+		t.Fatalf("next action=%v, want action %q command %q", status["next_action"], action, command)
+	}
+}
+
 func TestRunStatusReportsDeferredGatesAsConsumerValidationRequired(t *testing.T) {
 	repo := makeBuildRepo(t)
 	enableCLIRetention(t, repo)
@@ -250,7 +338,7 @@ func TestRunStatusReportsDeferredGatesAsConsumerValidationRequired(t *testing.T)
 	}
 	assertStatusGate(t, status, "coverage", "deferred")
 	next, ok := status["next_action"].(map[string]any)
-	if !ok || next["command"] != "polis preflight" {
+	if !ok || next["action"] != "consumer_validation" || next["command"] != "polis preflight" {
 		t.Fatalf("deferred next action=%v", status["next_action"])
 	}
 }
@@ -312,9 +400,10 @@ func TestRunStatusRequiresExplicitContractForAmbiguousPersistedState(t *testing.
 	}
 
 	selected := runCLIJSON(t, "status", "--repo", repo, "--contract", retained[0], "--format", "json")
-	if selected["state"] != changestatus.StateReadyToBuild || selected["consistent"] != true {
+	if selected["state"] != changestatus.StateImplementationPending || selected["consistent"] != true {
 		t.Fatalf("selected status=%v", selected)
 	}
+	assertStatusNextAction(t, selected, "implement", "")
 }
 
 func TestRunStatusFailsClosedOnTamperedOrSymlinkedRetainedContract(t *testing.T) {
@@ -1550,7 +1639,7 @@ func TestRunCaptureRedCreatesPatch(t *testing.T) {
 		t.Fatalf("Red stage before capture=%v", beforeRed["red_proof"])
 	}
 	next, ok := beforeRed["next_action"].(map[string]any)
-	if !ok || next["command"] != "polis capture-red" {
+	if !ok || next["action"] != "capture_red" || next["command"] != "polis capture-red" {
 		t.Fatalf("next action before Red=%v", beforeRed["next_action"])
 	}
 	if err := os.WriteFile(filepath.Join(repo, "regression.txt"), []byte("CLI-RED\n"), 0o644); err != nil {
@@ -1569,9 +1658,10 @@ func TestRunCaptureRedCreatesPatch(t *testing.T) {
 		t.Fatalf("capture-red did not report retained proof: %s", out.String())
 	}
 	afterRed := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
-	if afterRed["state"] != changestatus.StateReadyToBuild {
+	if afterRed["state"] != changestatus.StateImplementationPending {
 		t.Fatalf("status after Red=%v", afterRed)
 	}
+	assertStatusNextAction(t, afterRed, "implement", "")
 	redStage, ok = afterRed["red_proof"].(map[string]any)
 	if !ok || redStage["status"] != changestatus.StageComplete {
 		t.Fatalf("Red stage after capture=%v", afterRed["red_proof"])
@@ -1590,6 +1680,46 @@ func TestRunCaptureRedCreatesPatch(t *testing.T) {
 	if len(jsonResult.RetainedPaths) != 1 || !strings.HasPrefix(jsonResult.RetainedPaths[0], ".polis/artifacts/proofs/") {
 		t.Fatalf("capture-red JSON omitted retained proof: %+v", jsonResult)
 	}
+	retention, err := artifactretention.Load(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validProofPath := filepath.Join(repo, filepath.FromSlash(jsonResult.RetainedPaths[0]))
+	validProof, err := os.ReadFile(validProofPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	incompleteProof := bytes.ReplaceAll(validProof, []byte("CLI-RED"), []byte("CLI-GREEN"))
+	if bytes.Equal(incompleteProof, validProof) {
+		t.Fatal("test fixture did not alter the Red oracle output")
+	}
+	incompleteProofPath, err := retention.Publish(repo, "proofs", incompleteProof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelatedProof := bytes.ReplaceAll(incompleteProof, []byte("regression.txt"), []byte("unrelated.txt"))
+	unrelatedProofPath, err := retention.Publish(repo, "proofs", unrelatedProof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withIncompleteCandidate := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	proofStage, ok := withIncompleteCandidate["red_proof"].(map[string]any)
+	if !ok || proofStage["status"] != changestatus.StageComplete {
+		t.Fatalf("valid proof should remain complete: %v", withIncompleteCandidate["red_proof"])
+	}
+	incompletePaths, ok := proofStage["incomplete_paths"].([]any)
+	if !ok || len(incompletePaths) != 1 || incompletePaths[0] != incompleteProofPath || incompletePaths[0] == unrelatedProofPath {
+		t.Fatalf("incomplete proof paths=%v, expected only the related failing proof %q", proofStage["incomplete_paths"], incompleteProofPath)
+	}
+	if err := os.Remove(validProofPath); err != nil {
+		t.Fatal(err)
+	}
+	withoutValidProof := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	proofStage, ok = withoutValidProof["red_proof"].(map[string]any)
+	if !ok || proofStage["status"] != changestatus.StageIncomplete || withoutValidProof["state"] != changestatus.StateRedProofMissing {
+		t.Fatalf("related invalid proof should be incomplete and require recapture: %v", withoutValidProof)
+	}
+	assertStatusNextAction(t, withoutValidProof, "capture_red", "polis capture-red")
 }
 
 func TestRunDoctorJSON(t *testing.T) {
