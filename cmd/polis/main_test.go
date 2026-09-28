@@ -1082,12 +1082,14 @@ func TestRunStatusResumesLockedPartialState(t *testing.T) {
 		t.Fatalf("status code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
 	}
 	var report struct {
-		Status string `json:"status"`
-		State string `json:"state"`
-		Baseline *spec.BaselineLock `json:"baseline"`
-		Evidence []struct { ID, State string } `json:"evidence"`
-		Gates []struct { ID, State, Status string } `json:"gates"`
-		NextAction struct { Command string `json:"command"` } `json:"next_action"`
+		Status     string                               `json:"status"`
+		State      string                               `json:"state"`
+		Baseline   *spec.BaselineLock                   `json:"baseline"`
+		Evidence   []struct{ ID, State string }         `json:"evidence"`
+		Gates      []struct{ ID, State, Status string } `json:"gates"`
+		NextAction struct {
+			Command string `json:"command"`
+		} `json:"next_action"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatalf("decode status JSON: %v\n%s", err, out.String())
@@ -1120,9 +1122,11 @@ func TestRunStatusReportsBuiltEvidenceAndDeferredGate(t *testing.T) {
 		t.Fatalf("status code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
 	}
 	var report struct {
-		State string `json:"state"`
-		Gates []struct { ID, State, Status string } `json:"gates"`
-		NextAction struct { Command string `json:"command"` } `json:"next_action"`
+		State      string                               `json:"state"`
+		Gates      []struct{ ID, State, Status string } `json:"gates"`
+		NextAction struct {
+			Command string `json:"command"`
+		} `json:"next_action"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatalf("decode status JSON: %v\n%s", err, out.String())
@@ -1171,10 +1175,10 @@ func TestRunStatusReportsInconsistentPersistedState(t *testing.T) {
 		t.Fatalf("status code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
 	}
 	var report struct {
-		Status string `json:"status"`
-		State string `json:"state"`
-		Consistent bool `json:"consistent"`
-		Problems []string `json:"problems"`
+		Status     string   `json:"status"`
+		State      string   `json:"state"`
+		Consistent bool     `json:"consistent"`
+		Problems   []string `json:"problems"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatalf("decode inconsistent status JSON: %v\n%s", err, out.String())
@@ -1191,8 +1195,10 @@ func TestRunStatusWithoutPersistedContractPointsToStart(t *testing.T) {
 		t.Fatalf("status code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
 	}
 	var report struct {
-		State string `json:"state"`
-		NextAction struct { Command string `json:"command"` } `json:"next_action"`
+		State      string `json:"state"`
+		NextAction struct {
+			Command string `json:"command"`
+		} `json:"next_action"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatal(err)
@@ -1224,7 +1230,6 @@ func gateStateAndStatus(items []struct{ ID, State, Status string }, id string) (
 	}
 	return "", ""
 }
-
 
 func TestRunApplyAppliesBuiltPackage(t *testing.T) {
 	repo := makeBuildRepo(t)

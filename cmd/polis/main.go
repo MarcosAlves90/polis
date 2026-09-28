@@ -481,7 +481,6 @@ func writeChangeStatusText(out io.Writer, report changestatus.Report) {
 	fmt.Fprintf(out, "Reason: %s\n", report.NextAction.Reason)
 }
 
-
 func runGates(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("gates", flag.ContinueOnError)
 	fs.SetOutput(errOut)
