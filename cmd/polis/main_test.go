@@ -1147,7 +1147,7 @@ func TestRunStatusRedGreenWithoutProofPointsToCaptureRed(t *testing.T) {
 		t.Fatalf("status code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
 	}
 	var report struct {
-		State      string `json:"state"`
+		State      string                       `json:"state"`
 		Evidence   []struct{ ID, State string } `json:"evidence"`
 		NextAction struct {
 			Command string `json:"command"`
