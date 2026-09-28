@@ -1934,3 +1934,147 @@ func TestGateCommandDiagnosticHelper(t *testing.T) {
 	_, _ = io.WriteString(os.Stderr, "ISSUE12-GATE-STDERR\n")
 	os.Exit(23)
 }
+
+func lockedIssue13ScopeContract(t *testing.T, repo string) string {
+	t.Helper()
+	draftPath := cliDraftContract(t, repo, spec.CommitIntentDraftChangeContractSchemaVersion, nil)
+	raw, err := os.ReadFile(draftPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var draft spec.ChangeContract
+	if err := json.Unmarshal(raw, &draft); err != nil {
+		t.Fatal(err)
+	}
+	draft.Kind = spec.ChangeKindFeature
+	draft.TestScope = &spec.ChangeScope{AllowedPaths: []string{"calc_test.go", "tests/"}}
+	exit := 1
+	draft.Regression = spec.RegressionContract{
+		Mode: spec.RegressionModeRedGreen,
+		Command: &spec.CommandSpec{
+			Argv: []string{"polis-issue13-must-not-run"}, Cwd: ".", TimeoutSeconds: 30,
+			Environment: &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit},
+		},
+		BaselineExitCode: &exit, BaselineOutputContains: []string{"ISSUE13-NEVER-EXECUTED"},
+	}
+	raw, err = json.Marshal(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draftPath = filepath.Join(t.TempDir(), "issue13-draft-v5.json")
+	if err := os.WriteFile(draftPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(t.TempDir(), "issue13-locked-v6.json")
+	if _, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Contract: draftPath, Out: locked}); err != nil {
+		t.Fatalf("lock issue-13 scope fixture: %v", err)
+	}
+	return locked
+}
+
+func TestIssue13ScopePreflightReportsValidAndRejectedPaths(t *testing.T) {
+	repo := makeBuildRepo(t)
+	contract := lockedIssue13ScopeContract(t, repo)
+	beforeHead := cliGit(t, repo, "rev-parse", "HEAD")
+	beforeStatus := cliGit(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
+
+	runScope := func(format string, paths ...string) (int, string, string) {
+		t.Helper()
+		args := []string{"check-red-scope", "--repo", repo, "--contract", contract, "--format", format}
+		for _, path := range paths {
+			args = append(args, "--path", path)
+		}
+		var out, errOut bytes.Buffer
+		code := run(args, &out, &errOut)
+		return code, out.String(), errOut.String()
+	}
+
+	passCode, passJSON, passErr := runScope("json", "tests/unit/new_test.go", "calc_test.go")
+	if passCode != exitPass {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: valid proposed paths code=%d stdout=%s stderr=%s", passCode, passJSON, passErr)
+	}
+	var pass struct {
+		Status           string   `json:"status"`
+		AllowedTestPaths []string `json:"allowed_test_paths"`
+		ProbeExecuted    bool     `json:"probe_executed"`
+		ProofCaptured    bool     `json:"proof_captured"`
+		Paths            []struct {
+			Path   string `json:"path"`
+			Status string `json:"status"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(passJSON), &pass); err != nil {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: valid JSON: %v: %s", err, passJSON)
+	}
+	if pass.Status != "PASS" || !slices.Equal(pass.AllowedTestPaths, []string{"calc_test.go", "tests/"}) || pass.ProbeExecuted || pass.ProofCaptured || len(pass.Paths) != 2 || pass.Paths[0].Path != "calc_test.go" || pass.Paths[0].Status != "PASS" || pass.Paths[1].Path != "tests/unit/new_test.go" || pass.Paths[1].Status != "PASS" {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: valid report=%+v", pass)
+	}
+
+	failCode, failJSON, failErr := runScope("json", "docs/readme.md", "calc_test.go", "app.txt")
+	if failCode != exitValidationFailed {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: rejected paths code=%d stdout=%s stderr=%s", failCode, failJSON, failErr)
+	}
+	var failed struct {
+		Status           string   `json:"status"`
+		AllowedTestPaths []string `json:"allowed_test_paths"`
+		ProbeExecuted    bool     `json:"probe_executed"`
+		ProofCaptured    bool     `json:"proof_captured"`
+		RejectedPaths    []struct {
+			Path string `json:"path"`
+			Rule string `json:"rule"`
+		} `json:"rejected_paths"`
+	}
+	if err := json.Unmarshal([]byte(failJSON), &failed); err != nil {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: rejected JSON: %v: %s", err, failJSON)
+	}
+	if failed.Status != "FAIL" || !slices.Equal(failed.AllowedTestPaths, []string{"calc_test.go", "tests/"}) || failed.ProbeExecuted || failed.ProofCaptured || len(failed.RejectedPaths) != 2 || failed.RejectedPaths[0].Path != "app.txt" || failed.RejectedPaths[0].Rule != "test_scope.allowed_paths" || failed.RejectedPaths[1].Path != "docs/readme.md" || failed.RejectedPaths[1].Rule != "test_scope.allowed_paths" {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: rejected report=%+v", failed)
+	}
+	textCode, textOutput, textErr := runScope("text", "docs/readme.md", "calc_test.go", "app.txt")
+	if textCode != exitValidationFailed || textErr != "" {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: text code=%d stdout=%s stderr=%s", textCode, textOutput, textErr)
+	}
+	for _, fragment := range []string{"POLIS CHECK-RED-SCOPE: FAIL", "app.txt", "docs/readme.md", "test_scope.allowed_paths", "calc_test.go", "tests/"} {
+		if !strings.Contains(textOutput, fragment) {
+			t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: text report missing %q: %s", fragment, textOutput)
+		}
+	}
+	if cliGit(t, repo, "rev-parse", "HEAD") != beforeHead || cliGit(t, repo, "status", "--porcelain=v1", "--untracked-files=all") != beforeStatus {
+		t.Fatal("ISSUE13-SCOPE-PREFLIGHT: scope preflight mutated the source repository")
+	}
+}
+
+func TestIssue13ScopePreflightRejectsInvalidInputs(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"help", "check-red-scope"}, &out, &errOut); code != exitPass || !strings.Contains(out.String(), "--path <file>") {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: help code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"check-red-scope", "--contract", "locked.json"}, &out, &errOut); code != exitUsage {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: missing --path code=%d stderr=%s", code, errOut.String())
+	}
+	repo := makeBuildRepo(t)
+	contract := lockedIssue13ScopeContract(t, repo)
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"check-red-scope", "--repo", repo, "--contract", contract, "--path", "../escape.go", "--format", "json"}, &out, &errOut); code != exitValidationFailed || !strings.Contains(out.String(), `"rule":"repository_relative_path"`) {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: invalid path code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	draft := cliDraftContract(t, repo, spec.CommitIntentDraftChangeContractSchemaVersion, nil)
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"check-red-scope", "--repo", repo, "--contract", draft, "--path", "calc_test.go"}, &out, &errOut); code == exitPass || !strings.Contains(errOut.String(), "locked") {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: unlocked contract code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	if err := os.WriteFile(filepath.Join(repo, "drift.txt"), []byte("new baseline\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, repo, "add", "drift.txt")
+	cliGit(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "drift")
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"check-red-scope", "--repo", repo, "--contract", contract, "--path", "calc_test.go"}, &out, &errOut); code == exitPass || !strings.Contains(errOut.String(), "baseline") {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: stale baseline code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+}

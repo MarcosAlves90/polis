@@ -12,6 +12,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/artifactretention"
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
+	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
 	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
@@ -401,6 +402,45 @@ func TestIssue12CaptureRedScopeDiagnosticIncludesAllowedPaths(t *testing.T) {
 		if !strings.Contains(err.Error(), fragment) {
 			t.Fatalf("ISSUE12-RED: scope diagnostic missing %q: %v", fragment, err)
 		}
+	}
+}
+
+func TestIssue13CaptureRedReportsEveryRejectedScopeRule(t *testing.T) {
+	repo, contract := strictFeatureFixture(t, true)
+	if err := os.WriteFile(filepath.Join(repo, "extra.txt"), []byte("second rejected path\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	beforeHead := git(t, repo, "rev-parse", "HEAD")
+	beforeIndex := git(t, repo, "write-tree")
+	beforeStatus := git(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
+	out := filepath.Join(t.TempDir(), "red.patch")
+	_, err := Capture(context.Background(), Options{Repo: repo, Contract: contract, Out: out})
+	if err == nil {
+		t.Fatal("ISSUE13-SCOPE-PREFLIGHT: out-of-scope probe was captured")
+	}
+	structured, ok := diagnostic.As(err)
+	if !ok {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: missing structured scope diagnostic: %v", err)
+	}
+	raw, err := json.Marshal(structured.Report.Actual["rejected_paths"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rejected []struct {
+		Path string `json:"path"`
+		Rule string `json:"rule"`
+	}
+	if err := json.Unmarshal(raw, &rejected); err != nil {
+		t.Fatal(err)
+	}
+	if len(rejected) != 2 || rejected[0].Path != "app.txt" || rejected[0].Rule != "test_scope.allowed_paths" || rejected[1].Path != "extra.txt" || rejected[1].Rule != "test_scope.allowed_paths" {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: rejected paths=%v diagnostic=%v", rejected, structured.Report)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: rejected probe wrote output: %v", err)
+	}
+	if git(t, repo, "rev-parse", "HEAD") != beforeHead || git(t, repo, "write-tree") != beforeIndex || git(t, repo, "status", "--porcelain=v1", "--untracked-files=all") != beforeStatus {
+		t.Fatal("ISSUE13-SCOPE-PREFLIGHT: rejected capture mutated the source")
 	}
 }
 

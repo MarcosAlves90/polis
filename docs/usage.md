@@ -19,6 +19,7 @@ polis plan --repo /path/to/repo [--policy /outside/policy-v3.json] [--format tex
 polis gates --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
 polis start --repo /path/to/repo --policy /outside/policy-v3.json --contract /outside/draft-v5.json --out /outside/locked-v6.json
 polis implementation-plan --repo /path/to/repo [--policy /outside/policy-v3.json] --contract /outside/locked-v6.json --out /outside/implementation-plan.json
+polis check-red-scope --repo /path/to/repo --contract /outside/locked-v6.json --path tests/new_test.go [--path tests/another_test.go ...] [--format text|json]
 polis capture-red --repo /path/to/repo --contract /outside/locked-v6.json [--implementation-plan /outside/implementation-plan.json] --out /outside/regression.patch [--format text|json]
 polis build --repo /path/to/repo --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/locked-v6.json --regression-patch /outside/regression.patch [--implementation-plan /outside/implementation-plan.json] --out /outside/output
 polis verify [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
@@ -84,6 +85,17 @@ target repo.
 
 Run `polis start` on a clean baseline. It locks the policy, Specification,
 Change Contract, test scope, and proof requirements for later producer steps.
+
+Before preparing a Red probe, run `polis check-red-scope` with each proposed
+repository-relative file path and the locked Red-to-Green contract. The files
+do not need to exist yet. The command reports every path as accepted or
+rejected, lists the effective `test_scope.allowed_paths` and
+`scope.allowed_paths`, and names the rejecting rule for each failure. Text and
+JSON contain the same decisions. Exit code 0 means all proposed paths fit;
+exit code 6 means a scope or contract validation failed. This check runs no
+regression command, writes no patch, and does not modify the source repository.
+It checks the proposed list only; `capture-red` still validates every path in
+the actual captured patch before executing the Red command.
 
 Use `polis capture-red` for Red-to-Green work. Use the locked contract with
 `polis build`; the resulting package can be inspected, verified, and applied by

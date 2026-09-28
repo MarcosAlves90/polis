@@ -9,11 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Add committed repository artifact-retention preferences and content-addressed copies for generated contracts, plans, proofs, validation evidence, and delivery packages.
 - Add `polis gates` to run configured Project Policy gates without building or verifying a delivery artifact.
+- Add `polis check-red-scope` to preflight proposed Red probe paths against a locked Change Contract without executing the probe or capturing proof.
 
 ### Changed
 
 ### Fixed
 - Add actionable, structured diagnostics to baseline-size, capture-red scope, and project-gate failures, with equivalent text and JSON output.
+- Identify the `test_scope.allowed_paths` rule for every path rejected during `capture-red`.
 
 ## [6.8.1] - 2026-09-24
 

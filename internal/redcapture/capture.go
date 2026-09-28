@@ -300,30 +300,26 @@ func validateProbe(ctx context.Context, repo, head string, patch []byte, contrac
 		return err
 	}
 	paths := sortedPathKeys(changed)
-	if err := contract.ValidateTestPaths(paths); err != nil {
-		offending := make([]string, 0)
-		for _, repoPath := range paths {
-			if spec.ValidateRepoRelativePath(repoPath) == nil && !contract.TestScopeAllowsPath(repoPath) {
-				offending = append(offending, repoPath)
-			}
+	scope := assessScopePaths(contract, paths)
+	if scope.Status == spec.StatusFail {
+		offending := make([]string, 0, len(scope.RejectedPaths))
+		for _, rejected := range scope.RejectedPaths {
+			offending = append(offending, rejected.Path)
 		}
-		if len(offending) == 0 {
-			return fmt.Errorf("Red probe scope validation: %w", err)
-		}
-		allowed := []string(nil)
-		if contract.TestScope != nil {
-			allowed = append(allowed, contract.TestScope.AllowedPaths...)
+		cause := contract.ValidateTestPaths(paths)
+		if cause == nil {
+			cause = errors.New(scope.RejectedPaths[0].Reason)
 		}
 		return &diagnostic.Error{
-			Summary: fmt.Sprintf("Red probe scope validation: %v", err),
+			Summary: fmt.Sprintf("Red probe scope validation: %v", cause),
 			Report: diagnostic.Report{
 				Stage:     "Red probe scope validation",
 				Condition: "captured Red probe paths must match the declared Change Contract test_scope",
-				Expected:  map[string]any{"allowed_test_paths": allowed},
-				Actual:    map[string]any{"offending_paths": offending},
+				Expected:  map[string]any{"allowed_test_paths": scope.AllowedTestPaths},
+				Actual:    map[string]any{"offending_paths": offending, "rejected_paths": scope.RejectedPaths},
 				Paths:     offending,
 			},
-			Cause: err,
+			Cause: cause,
 		}
 	}
 	if err := changeexec.ExecuteBaseline(contract, worktree, io.Discard); err != nil {

@@ -11,6 +11,12 @@ without building or verifying a delivery artifact. A passing gate report is
 not package verification; delivery still uses `polis build` followed by
 `polis verify`.
 
+Red probe scope preflight tests cover exact and directory-prefix matches,
+multiple rejected paths with their `test_scope.allowed_paths` rule, invalid
+path and stale-baseline rejection, text/JSON output, and preservation of the
+source repository. `capture-red` tests still validate actual patch paths and
+verify that rejected probes produce no proof.
+
 For repository artifact retention, unit tests cover strict manifest parsing,
 HEAD/working-copy agreement, content-addressed atomic writes, path containment,
 and Git status filtering. Integration tests use temporary committed Git

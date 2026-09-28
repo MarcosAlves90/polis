@@ -34,6 +34,7 @@ import (
 const version = "6.8.1"
 
 const captureRedCommand = "capture-red"
+const checkRedScopeCommand = "check-red-scope"
 
 const (
 	outputFormatHelp       = "output format: text or json"
@@ -72,6 +73,7 @@ var commandHelpEntries = []commandHelpEntry{
 	{name: "gates", usage: "polis gates [--repo <path>] [--policy <policy-v3.json>] [--format text|json]", summary: "run configured project gates without building a delivery artifact"},
 	{name: "start", usage: "polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3-or-v5.json> --out <locked-v4-or-v6.json>", summary: "lock a strict Change Contract baseline"},
 	{name: "implementation-plan", usage: "polis implementation-plan --repo <path> [--policy <policy-v3.json>] --contract <locked-v4-or-v6.json> --out <external-plan.json> [--format text|json]", summary: "generate an optional contract-bound implementation plan"},
+	{name: checkRedScopeCommand, usage: "polis check-red-scope [--repo <path>] --contract <locked-v4-or-v6.json> --path <file> [--path <file> ...] [--format text|json]", summary: "check proposed Red probe paths against the locked test scope"},
 	{name: captureRedCommand, usage: "polis capture-red --repo <path> --contract <change.json> [--implementation-plan <plan.json>] [--format text|json] --out <regression.patch>", summary: "capture the required Red proof"},
 	{name: "build", usage: "polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--defer-gate <id> ...] [--format text|json] --out <directory>", summary: "build a .polis delivery package"},
 	{name: "verify", usage: "polis verify [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate a .polis artifact"},
@@ -141,6 +143,8 @@ func run(args []string, out, errOut io.Writer) int {
 		return runStart(args[1:], out, errOut)
 	case "implementation-plan":
 		return runImplementationPlan(args[1:], out, errOut)
+	case checkRedScopeCommand:
+		return runCheckRedScope(args[1:], out, errOut)
 	case captureRedCommand:
 		return runCaptureRed(args[1:], out, errOut)
 	case "verify":
@@ -657,6 +661,51 @@ func runImplementationPlan(args []string, out, errOut io.Writer) int {
 		}
 	}
 	return exitPass
+}
+
+func runCheckRedScope(args []string, out, errOut io.Writer) int {
+	fs := flag.NewFlagSet(checkRedScopeCommand, flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	repo := fs.String("repo", ".", repoHelp)
+	contract := fs.String("contract", "", "locked Red-to-Green Change Contract outside the worktree or retained by repository mode")
+	format := fs.String("format", "text", outputFormatHelp)
+	var paths argvFlag
+	fs.Var(&paths, "path", "proposed repository-relative Red probe file path; repeat for each file")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 0 || *contract == "" || len(paths) == 0 || !validFormat(*format) {
+		fmt.Fprintln(errOut, "usage: polis check-red-scope [--repo <path>] --contract <locked-v4-or-v6.json> --path <file> [--path <file> ...] [--format text|json]")
+		return exitUsage
+	}
+	result, err := redcapture.CheckScope(context.Background(), redcapture.ScopeOptions{Repo: *repo, Contract: *contract, Paths: paths})
+	if err != nil {
+		return writeFailure(errOut, *format, "POLIS CHECK-RED-SCOPE", exitValidationFailed, err)
+	}
+	if *format == "json" {
+		writeJSON(out, result)
+	} else {
+		writeScopeCheckText(out, result)
+	}
+	if result.Status == spec.StatusPass {
+		return exitPass
+	}
+	return exitValidationFailed
+}
+
+func writeScopeCheckText(out io.Writer, result redcapture.ScopeResult) {
+	fmt.Fprintf(out, "POLIS CHECK-RED-SCOPE: %s\n", result.Status)
+	fmt.Fprintln(out, "Proposed path check only; capture-red validates the actual patch.")
+	fmt.Fprintf(out, "Allowed test paths (test_scope.allowed_paths): %s\n", strings.Join(result.AllowedTestPaths, ", "))
+	fmt.Fprintf(out, "Allowed change paths (scope.allowed_paths): %s\n", strings.Join(result.AllowedChangePaths, ", "))
+	fmt.Fprintf(out, "Red probe executed: %t\nProof captured: %t\n", result.ProbeExecuted, result.ProofCaptured)
+	for _, path := range result.Paths {
+		fmt.Fprintf(out, "Path: %s | Status: %s", path.Path, path.Status)
+		if path.Status == spec.StatusFail {
+			fmt.Fprintf(out, " | Rule: %s | Reason: %s", path.Rule, path.Reason)
+		}
+		fmt.Fprintln(out)
+	}
 }
 
 func runCaptureRed(args []string, out, errOut io.Writer) int {
