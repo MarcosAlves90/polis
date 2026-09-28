@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/MarcosAlves90/polis/v6/internal/changestatus"
 	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
 	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
@@ -74,6 +75,7 @@ var commandHelpEntries = []commandHelpEntry{
 	{name: "gates", usage: "polis gates [--repo <path>] [--policy <policy-v3.json>] [--format text|json]", summary: "run configured project gates without building a delivery artifact"},
 	{name: "start", usage: "polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3-or-v5.json> --out <locked-v4-or-v6.json>", summary: "lock a strict Change Contract baseline"},
 	{name: "implementation-plan", usage: "polis implementation-plan --repo <path> [--policy <policy-v3.json>] --contract <locked-v4-or-v6.json> --out <external-plan.json> [--format text|json]", summary: "generate an optional contract-bound implementation plan"},
+	{name: "status", usage: "polis status [--repo <path>] [--contract <retained-locked-contract.json>] [--format text|json]", summary: "summarize persisted strict-development state and the next valid action"},
 	{name: checkRedScopeCommand, usage: "polis check-red-scope [--repo <path>] --contract <locked-v4-or-v6.json> --path <file> [--path <file> ...] [--format text|json]", summary: "check proposed Red probe paths against the locked test scope"},
 	{name: captureRedCommand, usage: "polis capture-red --repo <path> --contract <change.json> [--implementation-plan <plan.json>] [--format text|json] --out <regression.patch>", summary: "capture the required Red proof"},
 	{name: "build", usage: "polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--defer-gate <id> ...] [--format text|json] --out <directory>", summary: "build a .polis delivery package"},
@@ -144,6 +146,8 @@ func run(args []string, out, errOut io.Writer) int {
 		return runStart(args[1:], out, errOut)
 	case "implementation-plan":
 		return runImplementationPlan(args[1:], out, errOut)
+	case "status":
+		return runStatus(args[1:], out, errOut)
 	case checkRedScopeCommand:
 		return runCheckRedScope(args[1:], out, errOut)
 	case captureRedCommand:
@@ -165,6 +169,61 @@ func run(args []string, out, errOut io.Writer) int {
 	default:
 		fmt.Fprintf(errOut, "unknown command %q\n", args[0])
 		return exitUsage
+	}
+}
+
+func runStatus(args []string, out, errOut io.Writer) int {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	repo := fs.String("repo", ".", repoHelp)
+	contract := fs.String("contract", "", "retained locked Change Contract to select when more than one is persisted")
+	format := fs.String("format", "text", outputFormatHelp)
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 0 || !validFormat(*format) {
+		fmt.Fprintln(errOut, "usage: polis status [--repo <path>] [--contract <retained-locked-contract.json>] [--format text|json]")
+		return exitUsage
+	}
+	result, err := changestatus.Derive(context.Background(), changestatus.Options{Repo: *repo, Contract: *contract})
+	if err != nil {
+		return writeFailure(errOut, *format, "POLIS STATUS", exitValidationFailed, err)
+	}
+	if *format == "json" {
+		writeJSON(out, result)
+	} else {
+		writeStatusText(out, result)
+	}
+	if !result.Consistent {
+		return exitValidationFailed
+	}
+	return exitPass
+}
+
+func writeStatusText(out io.Writer, result changestatus.Result) {
+	fmt.Fprintf(out, "POLIS STATUS: %s\nRetention: %s\nConsistent: %t\n", result.State, result.RetentionMode, result.Consistent)
+	if result.Contract == nil {
+		fmt.Fprintln(out, "Contract: none")
+	} else {
+		fmt.Fprintf(out, "Contract: %s\nContract SHA256: %s\nContract schema: %d\nChange kind: %s\nRegression mode: %s\n",
+			result.Contract.Path, result.Contract.SHA256, result.Contract.SchemaVersion, result.Contract.Kind, result.Contract.RegressionMode)
+	}
+	if result.Baseline != nil {
+		fmt.Fprintf(out, "Baseline commit: %s\nBaseline tree: %s\nBaseline object format: %s\nBaseline resolvable: %t\nRepository relation: %s\nLocked policy: %s\n",
+			result.Baseline.BaseCommit, result.Baseline.BaseTree, result.Baseline.GitObjectFormat, result.Baseline.Resolvable, result.Baseline.RepositoryRelation, result.Baseline.PolicyStatus)
+	}
+	fmt.Fprintf(out, "Implementation plan: %s\nRed proof: %s\nPackage: %s\nEvidence: %s\n",
+		result.ImplementationPlan.Status, result.RedProof.Status, result.Package.Status, result.Evidence.Status)
+	for _, gate := range result.Gates {
+		fmt.Fprintf(out, "Gate %s: %s\n", gate.ID, gate.Status)
+	}
+	if result.NextAction != nil {
+		fmt.Fprintf(out, "Next action: %s — %s\n", result.NextAction.Command, result.NextAction.Reason)
+	} else {
+		fmt.Fprintln(out, "Next action: none")
+	}
+	for _, problem := range result.Problems {
+		fmt.Fprintf(out, "Problem: %s\n", problem)
 	}
 }
 

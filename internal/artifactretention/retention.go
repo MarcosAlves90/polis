@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -390,6 +391,65 @@ func extensionForClass(class string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported retained artifact class %q", class)
 	}
+}
+
+// ListPaths returns repository-relative paths for every entry currently
+// present in one managed artifact class. Callers must pass each returned path
+// through ReadInput before trusting its bytes; this method only establishes a
+// safe, non-symlinked class directory boundary and deterministic enumeration.
+func (s State) ListPaths(repo, class string) ([]string, error) {
+	if !s.RepositoryEnabled() {
+		return nil, nil
+	}
+	if _, err := extensionForClass(class); err != nil {
+		return nil, err
+	}
+	root, err := filepath.Abs(repo)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository path: %w", err)
+	}
+	relativeDir := filepath.ToSlash(filepath.Join(ManagedRoot, class))
+	classDir := filepath.Join(root, filepath.FromSlash(relativeDir))
+	if _, err := os.Lstat(classDir); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("inspect retained artifact class %q: %w", class, err)
+	}
+	if err := checkDirectoryPath(root, relativeDir); err != nil {
+		return nil, fmt.Errorf("validate retained artifact class %q: %w", class, err)
+	}
+	entries, err := os.ReadDir(classDir)
+	if err != nil {
+		return nil, fmt.Errorf("list retained artifact class %q: %w", class, err)
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		paths = append(paths, relativeDir+"/"+entry.Name())
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func checkDirectoryPath(root, relative string) error {
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative))), "/")
+	current := root
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return errors.New("path is not repository-relative")
+		}
+		current = filepath.Join(current, filepath.FromSlash(part))
+		info, err := os.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path component %q is a symlink", part)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("path component %q is not a directory", part)
+		}
+	}
+	return nil
 }
 
 func ensureArtifactDirectory(root, relative string) error {

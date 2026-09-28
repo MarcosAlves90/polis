@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MarcosAlves90/polis/v6/internal/changestatus"
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
 	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
 	"github.com/MarcosAlves90/polis/v6/internal/packageapply"
@@ -164,6 +165,193 @@ func TestRunHelp(t *testing.T) {
 		if errOut.Len() != 0 {
 			t.Errorf("args=%v unexpected stderr=%q", args, errOut.String())
 		}
+	}
+}
+
+func TestRunStatusReportsPersistedPartialAndCompleteWorkflow(t *testing.T) {
+	repo := makeBuildRepo(t)
+	enableCLIRetention(t, repo)
+
+	empty := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	if empty["state"] != changestatus.StateEmpty || empty["retention_mode"] != "repository" {
+		t.Fatalf("empty status=%v", empty)
+	}
+	next, ok := empty["next_action"].(map[string]any)
+	if !ok || next["command"] != "polis start" {
+		t.Fatalf("empty next action=%v", empty["next_action"])
+	}
+
+	contract := lockedCLIContract(t, repo)
+	locked := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	if locked["state"] != changestatus.StateReadyToBuild || locked["consistent"] != true {
+		t.Fatalf("locked status=%v", locked)
+	}
+	contractSummary, ok := locked["contract"].(map[string]any)
+	if !ok || contractSummary["schema_version"] != float64(spec.LockedChangeContractSchemaVersion) || contractSummary["path"] == "" {
+		t.Fatalf("locked contract summary=%v", locked["contract"])
+	}
+	baseline, ok := locked["baseline"].(map[string]any)
+	if !ok || baseline["repository_relation"] != "at_baseline" || baseline["policy_status"] != "match" {
+		t.Fatalf("locked baseline=%v", locked["baseline"])
+	}
+	assertStatusGate(t, locked, "test.complete", changestatus.StageMissing)
+
+	planPath := filepath.Join(t.TempDir(), "status-plan.json")
+	if result := runCLIJSON(t, "implementation-plan", "--repo", repo, "--contract", contract, "--out", planPath, "--format", "json"); result["status"] != "PASS" {
+		t.Fatalf("implementation-plan result=%v", result)
+	}
+	planned := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	plan, ok := planned["implementation_plan"].(map[string]any)
+	if !ok || plan["status"] != changestatus.StageComplete {
+		t.Fatalf("planned status=%v", planned)
+	}
+
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	built, err := packagebuild.Build(context.Background(), packagebuild.Options{Repo: repo, Project: "polis", Change: "status-complete", Out: t.TempDir(), Contract: contract})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(built.RetainedPaths) == 0 {
+		t.Fatal("build did not retain package state")
+	}
+	complete := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	if complete["state"] != changestatus.StateComplete {
+		t.Fatalf("complete status=%v", complete)
+	}
+	pkg, ok := complete["package"].(map[string]any)
+	if !ok || pkg["status"] != changestatus.StageComplete || pkg["target_tree"] != built.TargetTree {
+		t.Fatalf("package status=%v", complete["package"])
+	}
+	evidence, ok := complete["evidence"].(map[string]any)
+	if !ok || evidence["status"] != changestatus.StageComplete {
+		t.Fatalf("evidence status=%v", complete["evidence"])
+	}
+	assertStatusGate(t, complete, "test.complete", changestatus.StageComplete)
+	assertCLITextContains(t, []string{"status", "--repo", repo}, "POLIS STATUS: complete", "Contract:", "Baseline commit:", "Evidence: complete", "Next action: none")
+}
+
+func TestRunStatusReportsDeferredGatesAsConsumerValidationRequired(t *testing.T) {
+	repo := makeBuildRepo(t)
+	enableCLIRetention(t, repo)
+	contract := lockedCLIContract(t, repo)
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := packagebuild.Build(context.Background(), packagebuild.Options{
+		Repo: repo, Project: "polis", Change: "status-deferred", Out: t.TempDir(), Contract: contract, DeferredGates: []string{"coverage"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	if status["state"] != changestatus.StateConsumerValidationRequired {
+		t.Fatalf("deferred status=%v", status)
+	}
+	assertStatusGate(t, status, "coverage", "deferred")
+	next, ok := status["next_action"].(map[string]any)
+	if !ok || next["command"] != "polis preflight" {
+		t.Fatalf("deferred next action=%v", status["next_action"])
+	}
+}
+
+func TestRunStatusBlocksWhenLockedBaselineIsNoLongerAnAncestor(t *testing.T) {
+	repo := makeBuildRepo(t)
+	enableCLIRetention(t, repo)
+	_ = lockedCLIContract(t, repo)
+	tree := cliGit(t, repo, "rev-parse", "HEAD^{tree}")
+	commit := cliGit(t, repo, "commit-tree", tree, "-m", "diverged root")
+	if output, err := exec.Command("git", "-C", repo, "reset", "--hard", commit).CombinedOutput(); err != nil {
+		t.Fatalf("reset to divergent root: %v\n%s", err, output)
+	}
+	status := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	if status["state"] != changestatus.StateBlocked || status["consistent"] != true {
+		t.Fatalf("diverged status=%v", status)
+	}
+	baseline, ok := status["baseline"].(map[string]any)
+	if !ok || baseline["repository_relation"] != "diverged" || baseline["resolvable"] != true {
+		t.Fatalf("diverged baseline=%v", status["baseline"])
+	}
+	if status["next_action"] != nil {
+		t.Fatalf("diverged next action=%v", status["next_action"])
+	}
+}
+
+func TestRunStatusDoesNotInferExternalOutputsAsPersistedState(t *testing.T) {
+	repo := makeBuildRepo(t)
+	_ = lockedCLIContract(t, repo)
+	status := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	if status["state"] != changestatus.StateUnavailable || status["retention_mode"] != "external" || status["contract"] != nil {
+		t.Fatalf("external status=%v", status)
+	}
+}
+
+func TestRunStatusRequiresExplicitContractForAmbiguousPersistedState(t *testing.T) {
+	repo := makeBuildRepo(t)
+	enableCLIRetention(t, repo)
+	retained := make([]string, 0, 2)
+	for _, message := range []string{"feat(status): first candidate", "feat(status): second candidate"} {
+		draft := cliDraftContract(t, repo, spec.CommitIntentDraftChangeContractSchemaVersion, &message)
+		result, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Contract: draft, Out: filepath.Join(t.TempDir(), "locked.json")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.RetainedPaths) != 1 {
+			t.Fatalf("retained paths=%v", result.RetainedPaths)
+		}
+		retained = append(retained, result.RetainedPaths[0])
+	}
+
+	ambiguous, code := runCLIJSONCode(t, []string{"status", "--repo", repo, "--format", "json"})
+	if code != exitValidationFailed || ambiguous["state"] != changestatus.StateAmbiguous || ambiguous["consistent"] != false {
+		t.Fatalf("ambiguous code=%d status=%v", code, ambiguous)
+	}
+	candidates, ok := ambiguous["candidate_contracts"].([]any)
+	if !ok || len(candidates) != 2 {
+		t.Fatalf("candidate contracts=%v", ambiguous["candidate_contracts"])
+	}
+
+	selected := runCLIJSON(t, "status", "--repo", repo, "--contract", retained[0], "--format", "json")
+	if selected["state"] != changestatus.StateReadyToBuild || selected["consistent"] != true {
+		t.Fatalf("selected status=%v", selected)
+	}
+}
+
+func TestRunStatusFailsClosedOnTamperedOrSymlinkedRetainedContract(t *testing.T) {
+	for _, mode := range []string{"tampered", "symlink"} {
+		t.Run(mode, func(t *testing.T) {
+			repo := makeBuildRepo(t)
+			enableCLIRetention(t, repo)
+			_ = lockedCLIContract(t, repo)
+			initial := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+			contract := initial["contract"].(map[string]any)
+			retainedPath := filepath.Join(repo, filepath.FromSlash(contract["path"].(string)))
+			switch mode {
+			case "tampered":
+				if err := os.WriteFile(retainedPath, []byte("tampered\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				outside := filepath.Join(t.TempDir(), "contract.json")
+				raw, err := os.ReadFile(retainedPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(outside, raw, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(retainedPath); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, retainedPath); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			}
+			status, code := runCLIJSONCode(t, []string{"status", "--repo", repo, "--format", "json"})
+			if code != exitValidationFailed || status["state"] != changestatus.StateInconsistent || status["consistent"] != false {
+				t.Fatalf("mode=%s code=%d status=%v", mode, code, status)
+			}
+		})
 	}
 }
 
@@ -1353,6 +1541,18 @@ func TestRunCaptureRedCreatesPatch(t *testing.T) {
 	if !strings.Contains(startOut.String(), "Retained artifacts: .polis/artifacts/contracts/") {
 		t.Fatalf("start did not report retained contract: %s", startOut.String())
 	}
+	beforeRed := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	if beforeRed["state"] != changestatus.StateRedProofMissing {
+		t.Fatalf("status before Red=%v", beforeRed)
+	}
+	redStage, ok := beforeRed["red_proof"].(map[string]any)
+	if !ok || redStage["status"] != changestatus.StageMissing {
+		t.Fatalf("Red stage before capture=%v", beforeRed["red_proof"])
+	}
+	next, ok := beforeRed["next_action"].(map[string]any)
+	if !ok || next["command"] != "polis capture-red" {
+		t.Fatalf("next action before Red=%v", beforeRed["next_action"])
+	}
 	if err := os.WriteFile(filepath.Join(repo, "regression.txt"), []byte("CLI-RED\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1367,6 +1567,14 @@ func TestRunCaptureRedCreatesPatch(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Retained artifacts: .polis/artifacts/proofs/") {
 		t.Fatalf("capture-red did not report retained proof: %s", out.String())
+	}
+	afterRed := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	if afterRed["state"] != changestatus.StateReadyToBuild {
+		t.Fatalf("status after Red=%v", afterRed)
+	}
+	redStage, ok = afterRed["red_proof"].(map[string]any)
+	if !ok || redStage["status"] != changestatus.StageComplete {
+		t.Fatalf("Red stage after capture=%v", afterRed["red_proof"])
 	}
 	jsonPath := filepath.Join(t.TempDir(), "red-json.patch")
 	var jsonOut, jsonErr bytes.Buffer
@@ -1490,15 +1698,43 @@ func buildV6CLIArtifact(t *testing.T) (string, packagebuild.Result) {
 
 func runCLIJSON(t *testing.T, args ...string) map[string]any {
 	t.Helper()
-	var out, errOut bytes.Buffer
-	if code := run(args, &out, &errOut); code != exitPass {
-		t.Fatalf("args=%v code=%d stderr=%s", args, code, errOut.String())
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
-		t.Fatalf("args=%v invalid JSON: %v raw=%s", args, err, out.String())
+	payload, code := runCLIJSONCode(t, args)
+	if code != exitPass {
+		t.Fatalf("args=%v code=%d", args, code)
 	}
 	return payload
+}
+
+func runCLIJSONCode(t *testing.T, args []string) (map[string]any, int) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	code := run(args, &out, &errOut)
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("args=%v code=%d invalid JSON: %v raw=%s stderr=%s", args, code, err, out.String(), errOut.String())
+	}
+	if code != exitPass && errOut.Len() != 0 {
+		t.Logf("args=%v code=%d stderr=%s", args, code, errOut.String())
+	}
+	return payload, code
+}
+
+func assertStatusGate(t *testing.T, payload map[string]any, id, want string) {
+	t.Helper()
+	gates, ok := payload["gates"].([]any)
+	if !ok {
+		t.Fatalf("status gates=%T %v", payload["gates"], payload["gates"])
+	}
+	for _, raw := range gates {
+		gate, ok := raw.(map[string]any)
+		if ok && gate["id"] == id {
+			if gate["status"] != want {
+				t.Fatalf("gate %s status=%v want=%s", id, gate["status"], want)
+			}
+			return
+		}
+	}
+	t.Fatalf("gate %s missing from status: %v", id, gates)
 }
 
 func assertJSONFields(t *testing.T, payload map[string]any, expected map[string]string) {

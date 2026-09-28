@@ -83,7 +83,7 @@ func Capture(ctx context.Context, opts Options) (Result, error) {
 	if len(patch) == 0 {
 		return Result{}, errors.New("captured regression patch is empty")
 	}
-	if err := validateProbe(ctx, repo, snapshot.head, patch, contract); err != nil {
+	if err := ValidateProof(ctx, repo, patch, contract); err != nil {
 		return Result{}, err
 	}
 	if err := writeCapturedPatch(outAbs, patch); err != nil {
@@ -281,6 +281,25 @@ func retainedResult(path string) []string {
 
 func readExternal(repo, filename string, max int64) ([]byte, error) {
 	return fileutil.ReadOutside(repo, filename, fileutil.OutsideReadOptions{Max: max, OversizeMessage: "input exceeds maximum size"})
+}
+
+// ValidateProof verifies retained Red-proof bytes against one exact locked
+// contract and its baseline. It performs the same isolated apply, test-scope,
+// and baseline-oracle checks used by Capture without mutating workflow state.
+func ValidateProof(ctx context.Context, repo string, patch []byte, contract spec.ChangeContract) error {
+	if len(patch) == 0 {
+		return errors.New("captured regression patch is empty")
+	}
+	if !contract.IsLockedStrictDevelopment() || contract.DevelopmentMethod != spec.DevelopmentMethodStrictSDDTDDV2 || contract.BaselineLock == nil {
+		return errors.New("Red proof requires locked Change Contract schema v4 or v6 produced by polis start")
+	}
+	if !contract.RequiresRedGreen() {
+		return errors.New("Red proof requires a red_green change contract")
+	}
+	if err := devlock.ValidateRepositoryBase(ctx, repo, contract); err != nil {
+		return fmt.Errorf("locked development baseline: %w", err)
+	}
+	return validateProbe(ctx, repo, contract.BaselineLock.BaseCommit, patch, contract)
 }
 
 func validateProbe(ctx context.Context, repo, head string, patch []byte, contract spec.ChangeContract) error {
