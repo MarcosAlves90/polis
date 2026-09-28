@@ -260,7 +260,7 @@ func TestRunStatusBlocksWhenLockedBaselineIsNoLongerAnAncestor(t *testing.T) {
 	enableCLIRetention(t, repo)
 	_ = lockedCLIContract(t, repo)
 	tree := cliGit(t, repo, "rev-parse", "HEAD^{tree}")
-	commit := cliGit(t, repo, "commit-tree", tree, "-m", "diverged root")
+	commit := cliGit(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit-tree", tree, "-m", "diverged root")
 	if output, err := exec.Command("git", "-C", repo, "reset", "--hard", commit).CombinedOutput(); err != nil {
 		t.Fatalf("reset to divergent root: %v\n%s", err, output)
 	}
