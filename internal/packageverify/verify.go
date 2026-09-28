@@ -3,6 +3,7 @@ package packageverify
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -99,6 +100,7 @@ type Package struct {
 	Manifest              spec.Manifest
 	Policy                spec.Policy
 	Change                spec.ChangeContract
+	ChangeRaw             []byte
 	Patch                 []byte
 	RegressionPatch       []byte
 	Evidence              []byte
@@ -221,6 +223,31 @@ func Load(filename string) (Package, error) {
 	if err != nil {
 		return Package{}, err
 	}
+	return loadPackage(contents)
+}
+
+// LoadBytes verifies a POLIS archive already obtained through a trusted input
+// boundary, avoiding a second path-based read and its associated TOCTOU gap.
+func LoadBytes(raw []byte) (Package, error) {
+	if int64(len(raw)) > MaxArchiveBytes {
+		return Package{}, fmt.Errorf("POLIS archive exceeds maximum size %d", MaxArchiveBytes)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		return Package{}, fmt.Errorf("open POLIS archive: %w", err)
+	}
+	files, err := indexArchiveFiles(zr.File)
+	if err != nil {
+		return Package{}, err
+	}
+	contents, err := readArchiveContents(files)
+	if err != nil {
+		return Package{}, err
+	}
+	return loadPackage(contents)
+}
+
+func loadPackage(contents map[string][]byte) (Package, error) {
 	contracts, err := decodeContracts(contents)
 	if err != nil {
 		return Package{}, err
@@ -450,6 +477,7 @@ func packageFromContents(contents map[string][]byte, contracts decodedContracts,
 	}
 	return Package{
 		Result: result, Manifest: manifest, Policy: contracts.policy, Change: contracts.change,
+		ChangeRaw:             append([]byte(nil), contents[memberChange]...),
 		Patch:                 append([]byte(nil), contents[memberPayload]...),
 		RegressionPatch:       append([]byte(nil), regressionPatch...),
 		Evidence:              append([]byte(nil), contents[memberEvidence]...),

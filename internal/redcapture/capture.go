@@ -283,21 +283,53 @@ func readExternal(repo, filename string, max int64) ([]byte, error) {
 	return fileutil.ReadOutside(repo, filename, fileutil.OutsideReadOptions{Max: max, OversizeMessage: "input exceeds maximum size"})
 }
 
+// ValidateProof verifies retained Red-proof bytes against one exact locked
+// contract and its baseline. It performs the same isolated apply, test-scope,
+// and baseline-oracle checks used by Capture without mutating workflow state.
+func ValidateProof(ctx context.Context, repo string, patch []byte, contract spec.ChangeContract) error {
+	_, err := ValidateProofCandidate(ctx, repo, patch, contract)
+	return err
+}
+
+// ValidateProofCandidate also reports whether the patch applies within the
+// locked test scope. That lets status distinguish a failed Red oracle from an
+// unrelated retained patch without treating unrelated artifacts as evidence.
+func ValidateProofCandidate(ctx context.Context, repo string, patch []byte, contract spec.ChangeContract) (bool, error) {
+	if len(patch) == 0 {
+		return false, errors.New("captured regression patch is empty")
+	}
+	if !contract.IsLockedStrictDevelopment() || contract.DevelopmentMethod != spec.DevelopmentMethodStrictSDDTDDV2 || contract.BaselineLock == nil {
+		return false, errors.New("Red proof requires locked Change Contract schema v4 or v6 produced by polis start")
+	}
+	if !contract.RequiresRedGreen() {
+		return false, errors.New("Red proof requires a red_green change contract")
+	}
+	if err := devlock.ValidateRepositoryBase(ctx, repo, contract); err != nil {
+		return false, fmt.Errorf("locked development baseline: %w", err)
+	}
+	return validateProbeCandidate(ctx, repo, contract.BaselineLock.BaseCommit, patch, contract)
+}
+
 func validateProbe(ctx context.Context, repo, head string, patch []byte, contract spec.ChangeContract) error {
+	_, err := validateProbeCandidate(ctx, repo, head, patch, contract)
+	return err
+}
+
+func validateProbeCandidate(ctx context.Context, repo, head string, patch []byte, contract spec.ChangeContract) (bool, error) {
 	worktree, cleanup, err := gitutil.DetachedWorktree(ctx, repo, head, "polis-capture-red-*", "", "")
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer cleanup()
 	if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(patch), "apply", "--check", "-"); err != nil {
-		return fmt.Errorf("regression probe apply check failed: %w", err)
+		return false, fmt.Errorf("regression probe apply check failed: %w", err)
 	}
 	if _, err := gitutil.Bytes(ctx, worktree, nil, bytes.NewReader(patch), "apply", "--index", "-"); err != nil {
-		return fmt.Errorf("regression probe apply failed: %w", err)
+		return false, fmt.Errorf("regression probe apply failed: %w", err)
 	}
 	changed, err := gitutil.ChangedIndexPaths(ctx, worktree, "--cached")
 	if err != nil {
-		return err
+		return false, err
 	}
 	paths := sortedPathKeys(changed)
 	scope := assessScopePaths(contract, paths)
@@ -310,7 +342,7 @@ func validateProbe(ctx context.Context, repo, head string, patch []byte, contrac
 		if cause == nil {
 			cause = errors.New(scope.RejectedPaths[0].Reason)
 		}
-		return &diagnostic.Error{
+		return false, &diagnostic.Error{
 			Summary: fmt.Sprintf("Red probe scope validation: %v", cause),
 			Report: diagnostic.Report{
 				Stage:     "Red probe scope validation",
@@ -323,7 +355,7 @@ func validateProbe(ctx context.Context, repo, head string, patch []byte, contrac
 		}
 	}
 	if err := changeexec.ExecuteBaseline(contract, worktree, io.Discard); err != nil {
-		return fmt.Errorf("regression Red oracle not satisfied: %w", err)
+		return true, fmt.Errorf("regression Red oracle not satisfied: %w", err)
 	}
-	return nil
+	return true, nil
 }

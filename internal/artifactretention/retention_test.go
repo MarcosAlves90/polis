@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -331,6 +333,40 @@ func TestReadInputRequiresCorrectManagedClassAndDigest(t *testing.T) {
 	}
 	if _, err := state.ReadInput(repo, readPath, "contracts", 100, "too large"); err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("tampered input error=%v", err)
+	}
+}
+
+func TestListPathsEnumeratesManagedClassWithoutTrustingArtifactBytes(t *testing.T) {
+	repo := newRetentionRepo(t, manifestBytes(ModeRepository))
+	state, err := Load(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := state.Publish(repo, "contracts", []byte("first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := state.Publish(repo, "contracts", []byte("second"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := state.ListPaths(repo, "contracts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{first, second}
+	sort.Strings(want)
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("ListPaths()=%v want=%v", paths, want)
+	}
+
+	classDir := filepath.Join(repo, filepath.FromSlash(ManagedRoot), "plans")
+	outside := t.TempDir()
+	if err := os.Symlink(outside, classDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := state.ListPaths(repo, "plans"); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("ListPaths symlink error=%v", err)
 	}
 }
 

@@ -18,6 +18,7 @@ polis init --repo /path/to/repo [--profile auto|go|custom] [--validation-level s
 polis plan --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
 polis gates --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
 polis start --repo /path/to/repo --policy /outside/policy-v3.json --contract /outside/draft-v5.json --out /outside/locked-v6.json
+polis status [--repo /path/to/repo] [--contract /outside/retained-locked-contract.json] [--format text|json]
 polis implementation-plan --repo /path/to/repo [--policy /outside/policy-v3.json] --contract /outside/locked-v6.json --out /outside/implementation-plan.json
 polis check-red-scope --repo /path/to/repo --contract /outside/locked-v6.json --path tests/new_test.go [--path tests/another_test.go ...] [--format text|json]
 polis capture-red --repo /path/to/repo --contract /outside/locked-v6.json [--implementation-plan /outside/implementation-plan.json] --out /outside/regression.patch [--format text|json]
@@ -109,6 +110,19 @@ the actual captured patch before executing the Red command.
 Use `polis capture-red` for Red-to-Green work. Use the locked contract with
 `polis build`; the resulting package can be inspected, verified, and applied by
 the consumer workflow.
+
+Run `polis status --repo <path>` when resuming a repository-retained workflow.
+It summarizes the selected locked contract, baseline, retained evidence, gates,
+and next action. If more than one contract is retained, select one with
+`--contract`. With external artifact retention, status reports that no persisted
+workflow state is available. Before a verified package exists, status directs
+the developer to continue implementation; source changes and a generated plan
+alone do not prove that implementation is complete. A linked retained plan or
+Red proof that fails validation is shown as incomplete, while artifacts bound
+to another contract are excluded from the selected change summary. In JSON,
+`next_action.action` names a workflow step and `next_action.command` is present
+only when that step has a POLIS command, such as `polis start` or
+`polis capture-red`.
 
 ## Repository artifact retention
 

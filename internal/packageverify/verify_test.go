@@ -2,6 +2,7 @@ package packageverify
 
 import (
 	"archive/zip"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -213,6 +214,24 @@ func TestVerifyAcceptsCanonicalPackage(t *testing.T) {
 	}
 	if r.ValidationLevel != spec.ValidationLevelStrict || len(r.EnabledGates) != 2 || len(r.DisabledGates) != len(spec.ProjectGateOrder)-2 {
 		t.Fatalf("validation configuration=%+v", r)
+	}
+}
+
+func TestLoadBytesVerifiesArchiveWithoutASecondPathRead(t *testing.T) {
+	path := writePackage(t, nil)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := LoadBytes(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Result.Project != "gitrex" || pkg.Result.Change != "test-change" || !bytes.Equal(pkg.ChangeRaw, canonicalChangeBytes(t)) {
+		t.Fatalf("LoadBytes package=%+v changeRaw=%q", pkg.Result, pkg.ChangeRaw)
+	}
+	if _, err := LoadBytes([]byte("not a zip")); err == nil {
+		t.Fatal("LoadBytes accepted invalid archive bytes")
 	}
 }
 func TestVerifyRejectsExtraMember(t *testing.T) {
