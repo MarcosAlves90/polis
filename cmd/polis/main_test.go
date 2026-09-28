@@ -125,6 +125,40 @@ func cliDraftContract(t *testing.T, repo string, schemaVersion int, commitMessag
 	return draftPath
 }
 
+func lockedCLIRedGreenContract(t *testing.T, repo string) string {
+	t.Helper()
+	draftPath := cliDraftContract(t, repo, spec.StrictChangeContractSchemaVersion, nil)
+	raw, err := os.ReadFile(draftPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := spec.DecodeChangeContract(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exitCode := 1
+	draft.Kind = spec.ChangeKindFeature
+	draft.Regression = spec.RegressionContract{
+		Mode:                   spec.RegressionModeRedGreen,
+		Command:                draft.Regression.Command,
+		BaselineExitCode:       &exitCode,
+		BaselineOutputContains: []string{"FAIL"},
+	}
+	updated, err := json.Marshal(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedPath := filepath.Join(t.TempDir(), "cli-red-green-draft-v3.json")
+	if err := os.WriteFile(updatedPath, updated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(t.TempDir(), "cli-red-green-locked-v4.json")
+	if _, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Contract: updatedPath, Out: locked}); err != nil {
+		t.Fatalf("lock Red-to-Green contract: %v", err)
+	}
+	return locked
+}
+
 func makeValidPackage(t *testing.T) string {
 	t.Helper()
 	repo := makeBuildRepo(t)
@@ -1102,6 +1136,31 @@ func TestRunStatusResumesLockedPartialState(t *testing.T) {
 	}
 	if got := gateState(report.Gates, "test.complete"); got != "missing" {
 		t.Fatalf("test.complete state=%q", got)
+	}
+}
+
+func TestRunStatusRedGreenWithoutProofPointsToCaptureRed(t *testing.T) {
+	repo := makeBuildRepo(t)
+	contract := lockedCLIRedGreenContract(t, repo)
+	var out, errOut bytes.Buffer
+	if code := run([]string{"status", "--repo", repo, "--contract", contract, "--format", "json"}, &out, &errOut); code != exitPass {
+		t.Fatalf("status code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	var report struct {
+		State      string `json:"state"`
+		Evidence   []struct{ ID, State string } `json:"evidence"`
+		NextAction struct {
+			Command string `json:"command"`
+		} `json:"next_action"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode status JSON: %v\n%s", err, out.String())
+	}
+	if report.State != "locked" || report.NextAction.Command != "polis capture-red" {
+		t.Fatalf("unexpected Red-to-Green status: %+v", report)
+	}
+	if got := evidenceState(report.Evidence, "regression_proof"); got != "missing" {
+		t.Fatalf("regression proof state=%q", got)
 	}
 }
 
