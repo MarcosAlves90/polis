@@ -6,6 +6,13 @@ verification; project-wide line coverage must remain above 80%. The CI workflow
 also runs the race detector and coverage checks. These existing gates remain
 the acceptance bar for changes.
 
+Large-baseline regression covers a complete locked TAR above the former 32 MiB
+ceiling, producer gate execution, package verification, consumer admission,
+and tamper rejection. A separate over-limit case checks that failure is
+reported as a baseline constraint with producer gates not run. Package tests
+keep archive and aggregate limits finite and preserve historical-format
+verification.
+
 Run `polis gates --repo .` to execute the committed configured gates locally
 without building or verifying a delivery artifact. A passing gate report is
 not package verification; delivery still uses `polis build` followed by

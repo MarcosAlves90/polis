@@ -12,8 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Add `polis check-red-scope` to preflight proposed Red probe paths against a locked Change Contract without executing the probe or capturing proof.
 
 ### Changed
+- Support complete, identity-checked locked baselines up to 128 MiB with coordinated 256 MiB package bounds, so supported large baselines reach configured gates.
 
 ### Fixed
+- Report unprocessable locked baselines as baseline constraints with producer gates explicitly not run.
 - Add actionable, structured diagnostics to baseline-size, capture-red scope, and project-gate failures, with equivalent text and JSON output.
 - Identify the `test_scope.allowed_paths` rule for every path rejected during `capture-red`.
 

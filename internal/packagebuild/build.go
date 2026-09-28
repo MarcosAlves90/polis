@@ -18,6 +18,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/artifactretention"
 	"github.com/MarcosAlves90/polis/v6/internal/baselineproof"
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
+	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
 	"github.com/MarcosAlves90/polis/v6/internal/fileutil"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
@@ -152,11 +153,11 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	}
 	baseline, err := baselineproof.Build(ctx, repo, baseCommit, spec.MaxBaselineMemberBytes)
 	if err != nil {
-		return Result{}, fmt.Errorf("build embedded baseline: %w", err)
+		return Result{}, baselineConstraintError(fmt.Errorf("build embedded baseline: %w", err), plan)
 	}
 	baselineRepo, cleanupBaseline, err := baselineproof.Materialize(ctx, baseline, objectFormat, baseCommit, changeContract.BaselineLock.BaseTree)
 	if err != nil {
-		return Result{}, fmt.Errorf("materialize embedded baseline for producer replay: %w", err)
+		return Result{}, baselineConstraintError(fmt.Errorf("materialize embedded baseline for producer replay: %w", err), plan)
 	}
 	defer cleanupBaseline()
 
@@ -221,6 +222,35 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	}
 	result.RetainedPaths = paths
 	return result, nil
+}
+
+func baselineConstraintError(err error, plan policyplan.Plan) error {
+	notRun := make([]string, 0, len(plan.EnabledGates)+1)
+	for _, gate := range plan.Gates {
+		if gate.ProducerAction == policyplan.ProducerActionExecute {
+			notRun = append(notRun, gate.ID)
+		}
+	}
+	notRun = append(notRun, "artifact packaging")
+	report := diagnostic.Report{
+		Stage:     "locked baseline constraint",
+		Condition: "complete identity-checked embedded baseline could not be processed",
+		NotRun:    notRun,
+	}
+	summary := err.Error()
+	if detail, ok := diagnostic.As(err); ok {
+		report = detail.Report
+		report.Stage = "locked baseline constraint"
+		report.NotRun = notRun
+		if detail.Summary != "" {
+			summary = detail.Summary
+		}
+	}
+	return &diagnostic.Error{
+		Summary: "locked baseline constraint: " + summary,
+		Report:  report,
+		Cause:   err,
+	}
 }
 
 func validateBuildOptions(opts Options) error {
