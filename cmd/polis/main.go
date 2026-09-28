@@ -33,7 +33,7 @@ import (
 	"golang.org/x/term"
 )
 
-const version = "6.8.1"
+const version = "6.9.0"
 
 const captureRedCommand = "capture-red"
 const checkRedScopeCommand = "check-red-scope"

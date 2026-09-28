@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [6.9.0] - 2026-09-28
+
 ### Added
 - Add committed repository artifact-retention preferences and content-addressed copies for generated contracts, plans, proofs, validation evidence, and delivery packages.
 - Add `polis gates` to run configured Project Policy gates without building or verifying a delivery artifact.
@@ -246,7 +248,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Aligned the Go module identity with the repository before the V4 semantic import-path migration.
 - Made Git-based CI fixtures deterministic across Windows line-ending behavior.
 
-[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.8.1...HEAD
+[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.9.0...HEAD
+[6.9.0]: https://github.com/MarcosAlves90/polis/compare/v6.8.1...v6.9.0
 [6.8.1]: https://github.com/MarcosAlves90/polis/compare/v6.8.0...v6.8.1
 [6.8.0]: https://github.com/MarcosAlves90/polis/compare/v6.7.0...v6.8.0
 [6.7.0]: https://github.com/MarcosAlves90/polis/compare/v6.6.0...v6.7.0
