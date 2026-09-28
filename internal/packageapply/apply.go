@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/MarcosAlves90/polis/v6/internal/artifactretention"
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/isolation"
@@ -350,7 +351,7 @@ func workingTreeID(ctx context.Context, repo, baseCommit string) (string, error)
 	if _, err := gitutil.Bytes(ctx, repo, env, nil, "read-tree", baseCommit); err != nil {
 		return "", err
 	}
-	if _, err := gitutil.Bytes(ctx, repo, env, nil, "add", "-A", "--", "."); err != nil {
+	if _, err := gitutil.Bytes(ctx, repo, env, nil, "add", "-A", "--", ".", ":(exclude).polis/artifacts/**"); err != nil {
 		return "", err
 	}
 	return gitutil.Output(ctx, repo, env, nil, "write-tree")
@@ -369,8 +370,8 @@ func rollbackAppliedPatchAndVerify(ctx context.Context, repo, originalHead, orig
 	indexTree, indexErr := gitutil.Output(ctx, repo, nil, nil, "write-tree")
 	baseTree, baseErr := gitutil.Output(ctx, repo, nil, nil, "rev-parse", originalHead+"^{tree}")
 	worktreeTree, worktreeErr := workingTreeID(ctx, repo, originalHead)
-	status, statusErr := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
-	if headErr != nil || indexErr != nil || baseErr != nil || worktreeErr != nil || statusErr != nil || head != originalHead || indexTree != originalIndexTree || worktreeTree != baseTree || status != "" {
+	status, statusErr := artifactretention.WorktreeStatus(ctx, repo)
+	if headErr != nil || indexErr != nil || baseErr != nil || worktreeErr != nil || statusErr != nil || head != originalHead || indexTree != originalIndexTree || worktreeTree != baseTree || len(status) != 0 {
 		return fmt.Errorf("repository rollback verification failed: HEAD=%q index=%q worktree=%q base=%q status=%q errors=%v", head, indexTree, worktreeTree, baseTree, status, errors.Join(headErr, indexErr, baseErr, worktreeErr, statusErr))
 	}
 	return nil

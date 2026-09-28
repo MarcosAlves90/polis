@@ -41,11 +41,14 @@ Both default to the current POLIS executable and runtime.
 
 `polis implementation-plan` creates a deterministic optional plan from a locked
 schema-v4 or schema-v6 Change Contract while the baseline repository is clean.
-The contract, policy, plan, and output stay outside the target worktree. Pass the
-same plan explicitly to `capture-red` and `build`; omitting it preserves the
-unplanned format-v5 workflow. A planned build uses format v6, whose ninth member
-contains the exact supplied plan bytes and is bound by the manifest digest,
-checksums, package verification, and any detached signature.
+By default, the contract, policy, plan, and output stay outside the target
+worktree. In repository-retention mode, a contract may also be read from
+`.polis/artifacts/contracts/`; the generated plan is still written to the
+explicit external `--out` path. Pass the same plan explicitly to `capture-red`
+and `build`; omitting it preserves the unplanned format-v5 workflow. A planned
+build uses format v6, whose ninth member contains the exact supplied plan bytes
+and is bound by the manifest digest, checksums, package verification, and any
+detached signature.
 
 Consumer baseline handling is independent from Project Policy validation level. The
 baseline mode defaults to `strict`:
@@ -74,8 +77,9 @@ post-apply verification.
 
 ## Canonical V6 delivery flow
 
-The canonical producer path keeps Project Policy, Change Contract, regression
-patch, package, signature, and caller-owned records outside the target repo.
+By default, the canonical producer path keeps Project Policy, Change Contract,
+regression patch, package, signature, and caller-owned records outside the
+target repo.
 
 Run `polis start` on a clean baseline. It locks the policy, Specification,
 Change Contract, test scope, and proof requirements for later producer steps.
@@ -83,6 +87,40 @@ Change Contract, test scope, and proof requirements for later producer steps.
 Use `polis capture-red` for Red-to-Green work. Use the locked contract with
 `polis build`; the resulting package can be inspected, verified, and applied by
 the consumer workflow.
+
+## Repository artifact retention
+
+A repository can commit `.polis/artifact-retention.json` to choose where POLIS
+keeps generated artifacts. The optional strict manifest follows
+[`artifact-retention-v1.schema.json`](../spec/schemas/artifact-retention-v1.schema.json):
+
+```json
+{
+  "schema_version": 1,
+  "mode": "repository"
+}
+```
+
+`mode` is `repository` or `external`. If the manifest is absent, POLIS uses
+`external` for compatibility. POLIS requires a present manifest to be committed
+and byte-for-byte unchanged from `HEAD`; invalid or uncommitted preferences
+fail closed. This setting is independent of Project Policy and works with
+either committed or external `--policy` input.
+
+In `repository` mode, `start`, `implementation-plan`, `capture-red`, and `build`
+keep writing their explicit `--out` working results as before and also publish
+exact, content-addressed copies under `.polis/artifacts/`. Contracts, plans,
+regression proofs, bounded validation evidence, and `.polis` packages use
+separate class directories. Later producer steps can read contracts, plans,
+and proofs from their matching managed class. CLI output lists retained paths.
+
+Retained files remain ordinary visible Git files. POLIS never stages, commits,
+or deletes them. Only `.polis/artifacts/` is omitted from producer cleanliness
+and application-change delta checks; the retention manifest and all other
+paths remain subject to the normal checks. Committed artifacts stay in the
+authenticated baseline and count toward the existing baseline size limit. If
+the repository later changes to `external`, existing retained files are left
+untouched.
 
 To carry producer-authored commit intent, put the optional field below in a
 strict Change Contract schema-v5 draft before `polis start`:

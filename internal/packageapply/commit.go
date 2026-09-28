@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/MarcosAlves90/polis/v6/internal/artifactretention"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 )
 
@@ -53,11 +54,11 @@ func captureArtifactCommitSnapshot(ctx context.Context, repo, expectedHead strin
 	if head != expectedHead {
 		return artifactCommitSnapshot{}, fmt.Errorf("HEAD changed before commit: got %s want %s", head, expectedHead)
 	}
-	status, err := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := artifactretention.WorktreeStatus(ctx, repo)
 	if err != nil {
 		return artifactCommitSnapshot{}, fmt.Errorf("inspect worktree before commit: %w", err)
 	}
-	if status != "" {
+	if len(status) != 0 {
 		return artifactCommitSnapshot{}, errors.New("worktree changed before commit")
 	}
 	ref, err := gitutil.Output(ctx, repo, nil, nil, "rev-parse", "--symbolic-full-name", "HEAD")
@@ -394,9 +395,9 @@ func rollbackArtifactCommit(ctx context.Context, repo string, snapshot artifactC
 	head, headErr := gitutil.Output(ctx, repo, nil, nil, "rev-parse", "HEAD")
 	ref, refErr := gitutil.Output(ctx, repo, nil, nil, "rev-parse", "--symbolic-full-name", "HEAD")
 	indexTree, indexErr := gitutil.Output(ctx, repo, nil, nil, "write-tree")
-	status, statusErr := gitutil.Output(ctx, repo, gitEnvironmentWithValue("GIT_OPTIONAL_LOCKS", "0"), nil, "status", "--porcelain=v1", "--untracked-files=all")
+	status, statusErr := artifactretention.WorktreeStatusWithEnv(ctx, repo, gitEnvironmentWithValue("GIT_OPTIONAL_LOCKS", "0"))
 	indexImageErr := verifyArtifactCommitIndexImage(snapshot, snapshot.indexImage, snapshot.indexMode)
-	if headErr != nil || refErr != nil || indexErr != nil || statusErr != nil || indexImageErr != nil || head != snapshot.head || ref != snapshot.ref || indexTree != snapshot.indexTree || status != "" {
+	if headErr != nil || refErr != nil || indexErr != nil || statusErr != nil || indexImageErr != nil || head != snapshot.head || ref != snapshot.ref || indexTree != snapshot.indexTree || len(status) != 0 {
 		return fmt.Errorf("%v; rollback state verification failed: HEAD=%q ref=%q index=%q status=%q errors=%v", cause, head, ref, indexTree, status, errors.Join(headErr, refErr, indexErr, statusErr, indexImageErr))
 	}
 	return cause
@@ -514,11 +515,11 @@ func verifyCommittedRepository(ctx context.Context, repo, commit, targetTree str
 	if indexTree != targetTree {
 		return fmt.Errorf("index tree=%s want %s", indexTree, targetTree)
 	}
-	status, err := gitutil.Output(ctx, repo, gitEnvironmentWithValue("GIT_OPTIONAL_LOCKS", "0"), nil, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := artifactretention.WorktreeStatusWithEnv(ctx, repo, gitEnvironmentWithValue("GIT_OPTIONAL_LOCKS", "0"))
 	if err != nil {
 		return fmt.Errorf("inspect committed worktree: %w", err)
 	}
-	if status != "" {
+	if len(status) != 0 {
 		return fmt.Errorf("committed worktree is not clean: %q", status)
 	}
 	return nil

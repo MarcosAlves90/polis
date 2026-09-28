@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MarcosAlves90/polis/v6/internal/artifactretention"
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
 	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
@@ -108,10 +109,17 @@ func withFeatureContract(t *testing.T, opts Options) Options {
 	return opts
 }
 
-func newV6Repo(t *testing.T, failingPolicy bool) string {
+func newV6Repo(t *testing.T, failingPolicy bool, repositoryRetention ...bool) string {
 	t.Helper()
 	repo := newRepo(t, failingPolicy)
 	upgradeFixturePolicyToV3(t, repo)
+	if len(repositoryRetention) > 0 && repositoryRetention[0] {
+		manifest := []byte("{\"schema_version\":1,\"mode\":\"repository\"}\n")
+		if err := os.WriteFile(filepath.Join(repo, ".polis", "artifact-retention.json"), manifest, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, repo, "add", ".polis/artifact-retention.json")
+	}
 	runGit(t, repo, "add", ".polis/policy.json")
 	runGit(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "upgrade policy to v3")
 	return repo
@@ -166,8 +174,12 @@ func lockedCharacterizationContractWithRegression(t *testing.T, repo string, reg
 		t.Fatal(err)
 	}
 	lockedPath := filepath.Join(t.TempDir(), "locked-v4.json")
-	if _, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Contract: draftPath, Out: lockedPath}); err != nil {
+	result, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Contract: draftPath, Out: lockedPath})
+	if err != nil {
 		t.Fatalf("polis start fixture: %v", err)
+	}
+	if len(result.RetainedPaths) > 0 {
+		return filepath.Join(repo, filepath.FromSlash(result.RetainedPaths[0]))
 	}
 	return lockedPath
 }
@@ -204,6 +216,86 @@ func TestBuildCreatesVerifiedPackageWithoutMutatingSourceState(t *testing.T) {
 	}
 	if got := runGit(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); got != beforeStatus {
 		t.Fatalf("source status changed:\nBEFORE %q\nAFTER  %q", beforeStatus, got)
+	}
+}
+
+func TestBuildRetainsReusableContractEvidenceAndVerifiedPackage(t *testing.T) {
+	repo := newV6Repo(t, false, true)
+	contract := lockedCharacterizationContract(t, repo, ".")
+	if !strings.Contains(filepath.ToSlash(contract), ".polis/artifacts/contracts/") {
+		t.Fatalf("fixture did not return retained contract path: %s", contract)
+	}
+	contractRaw, err := os.ReadFile(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base := runGit(t, repo, "rev-parse", "HEAD")
+	_, sourcePatch, changedPaths, err := buildTargetWithTemporaryIndex(context.Background(), repo, base)
+	if err != nil {
+		t.Fatalf("buildTargetWithTemporaryIndex() error = %v", err)
+	}
+	if strings.Contains(string(sourcePatch), ".polis/artifacts/") || !reflect.DeepEqual(changedPaths, []string{"app.txt"}) {
+		t.Fatalf("retained artifacts entered source target: paths=%v patch=%q", changedPaths, sourcePatch)
+	}
+	beforeHead := runGit(t, repo, "rev-parse", "HEAD")
+	beforeIndex := runGit(t, repo, "write-tree")
+	beforeStatus, err := artifactretention.WorktreeStatus(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Build(context.Background(), Options{Repo: repo, Project: "gitrex", Change: "retain-build-output", Out: t.TempDir(), Contract: contract})
+	if err != nil {
+		t.Fatalf("Build() with retained contract failed: %v", err)
+	}
+	if _, err := packageverify.Verify(result.Path); err != nil {
+		t.Fatalf("retained-mode package verification failed: %v", err)
+	}
+	classes := map[string]bool{}
+	for _, retainedPath := range result.RetainedPaths {
+		for _, class := range []string{"contracts", "evidence", "packages"} {
+			if strings.HasPrefix(retainedPath, ".polis/artifacts/"+class+"/") {
+				classes[class] = true
+			}
+		}
+		retainedRaw, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(retainedPath)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case strings.HasPrefix(retainedPath, ".polis/artifacts/contracts/"):
+			if string(retainedRaw) != string(contractRaw) {
+				t.Fatal("retained contract differs from its consumed input")
+			}
+		case strings.HasPrefix(retainedPath, ".polis/artifacts/evidence/"):
+			if len(retainedRaw) == 0 {
+				t.Fatal("retained validation evidence is empty")
+			}
+		case strings.HasPrefix(retainedPath, ".polis/artifacts/packages/"):
+			packageRaw, err := os.ReadFile(result.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(retainedRaw) != string(packageRaw) {
+				t.Fatal("retained package differs from verified package output")
+			}
+		}
+	}
+	if len(classes) != 3 {
+		t.Fatalf("retained classes = %v; want contracts, evidence, and packages", classes)
+	}
+	if runGit(t, repo, "rev-parse", "HEAD") != beforeHead || runGit(t, repo, "write-tree") != beforeIndex {
+		t.Fatal("retaining package artifacts changed HEAD or the real index")
+	}
+	afterStatus, err := artifactretention.WorktreeStatus(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterStatus) != string(beforeStatus) {
+		t.Fatalf("source status outside managed artifacts changed: before=%q after=%q", beforeStatus, afterStatus)
 	}
 }
 

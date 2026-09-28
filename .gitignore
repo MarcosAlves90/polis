@@ -15,6 +15,9 @@
 !/.polis/
 /.polis/*
 !/.polis/policy.json
+!/.polis/artifact-retention.json
+!/.polis/artifacts/
+!/.polis/artifacts/**
 
 # Coverage and test artifacts
 *.coverprofile

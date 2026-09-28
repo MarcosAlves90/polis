@@ -1,6 +1,7 @@
 package devstart
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -124,6 +125,56 @@ func TestStartProducesLockedV4WithoutMutatingRepo(t *testing.T) {
 	cmd := exec.Command("git", "-C", repo, "status", "--porcelain=v1", "--untracked-files=all")
 	if b, err := cmd.CombinedOutput(); err != nil || len(b) != 0 {
 		t.Fatalf("repo mutated: err=%v status=%q", err, b)
+	}
+}
+
+func TestIssue16StartRetainsContract(t *testing.T) {
+	repo := makeRepo(t)
+	manifest := filepath.Join(repo, ".polis", "artifact-retention.json")
+	if err := os.WriteFile(manifest, []byte("{\"schema_version\":1,\"mode\":\"repository\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(t, repo, "add", ".polis/artifact-retention.json")
+	runGitCommand(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "enable artifact retention")
+
+	ext := t.TempDir()
+	draft := filepath.Join(ext, "draft.json")
+	out := filepath.Join(ext, "locked.json")
+	if err := os.WriteFile(draft, draftContractBytes(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beforeHead := strings.TrimSpace(runGitCommand(t, repo, "rev-parse", "HEAD"))
+	beforeIndex := strings.TrimSpace(runGitCommand(t, repo, "write-tree"))
+	result, err := Start(context.Background(), Options{Repo: repo, Contract: draft, Out: out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Path != out {
+		t.Fatalf("external output path=%q want %q", result.Path, out)
+	}
+	entries, err := os.ReadDir(filepath.Join(repo, ".polis", "artifacts", "contracts"))
+	if err != nil {
+		t.Fatalf("expected retained Change Contract artifact in repository mode: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one retained Change Contract artifact, got %d", len(entries))
+	}
+	externalBytes, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retainedBytes, err := os.ReadFile(filepath.Join(repo, ".polis", "artifacts", "contracts", entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(externalBytes, retainedBytes) {
+		t.Fatal("retained Change Contract differs from external output")
+	}
+	if got := strings.TrimSpace(runGitCommand(t, repo, "rev-parse", "HEAD")); got != beforeHead {
+		t.Fatalf("HEAD changed: %s -> %s", beforeHead, got)
+	}
+	if got := strings.TrimSpace(runGitCommand(t, repo, "write-tree")); got != beforeIndex {
+		t.Fatalf("index changed: %s -> %s", beforeIndex, got)
 	}
 }
 

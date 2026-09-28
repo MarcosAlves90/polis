@@ -9,10 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 
+	"github.com/MarcosAlves90/polis/v6/internal/artifactretention"
 	"github.com/MarcosAlves90/polis/v6/internal/changeexec"
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
 	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
@@ -31,8 +31,9 @@ type Options struct {
 }
 
 type Result struct {
-	Path   string
-	SHA256 string
+	Path          string
+	SHA256        string
+	RetainedPaths []string `json:"retained_paths,omitempty"`
 }
 
 const gitRevParse = "rev-parse"
@@ -51,12 +52,16 @@ func Capture(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	contract, contractRaw, err := loadRedGreenContract(repo, opts.Contract)
+	retention, err := artifactretention.Load(ctx, repo)
+	if err != nil {
+		return Result{}, err
+	}
+	contract, contractRaw, err := loadRedGreenContract(repo, opts.Contract, retention)
 	if err != nil {
 		return Result{}, err
 	}
 	if opts.ImplementationPlan != "" {
-		if _, _, err := implementationplan.Load(repo, opts.ImplementationPlan, contract, contractRaw); err != nil {
+		if _, _, err := implementationplan.LoadWithRetention(repo, opts.ImplementationPlan, contract, contractRaw, retention); err != nil {
 			return Result{}, fmt.Errorf("invalid implementation plan: %w", err)
 		}
 	}
@@ -88,8 +93,13 @@ func Capture(ctx context.Context, opts Options) (Result, error) {
 		_ = os.Remove(outAbs)
 		return Result{}, err
 	}
+	retainedPath, err := retention.Publish(repo, "proofs", patch)
+	if err != nil {
+		_ = os.Remove(outAbs)
+		return Result{}, fmt.Errorf("retain regression proof: %w", err)
+	}
 	sum := sha256.Sum256(patch)
-	return Result{Path: outAbs, SHA256: hex.EncodeToString(sum[:])}, nil
+	return Result{Path: outAbs, SHA256: hex.EncodeToString(sum[:]), RetainedPaths: retainedResult(retainedPath)}, nil
 }
 
 func validateOptions(opts Options) error {
@@ -99,8 +109,8 @@ func validateOptions(opts Options) error {
 	return nil
 }
 
-func loadRedGreenContract(repo, filename string) (spec.ChangeContract, []byte, error) {
-	contractRaw, err := readExternal(repo, filename, 1<<20)
+func loadRedGreenContract(repo, filename string, retention artifactretention.State) (spec.ChangeContract, []byte, error) {
+	contractRaw, err := retention.ReadInput(repo, filename, "contracts", 1<<20, "input exceeds maximum size")
 	if err != nil {
 		return spec.ChangeContract{}, nil, fmt.Errorf("load change contract: %w", err)
 	}
@@ -158,14 +168,14 @@ func snapshotSource(ctx context.Context, repo string) (sourceSnapshot, error) {
 	if err != nil {
 		return sourceSnapshot{}, err
 	}
-	status, err := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := artifactretention.WorktreeStatus(ctx, repo)
 	if err != nil {
 		return sourceSnapshot{}, err
 	}
-	if status == "" {
+	if len(status) == 0 {
 		return sourceSnapshot{}, errors.New("working tree has no non-ignored changes")
 	}
-	return sourceSnapshot{head: head, indexTree: indexTree, status: status}, nil
+	return sourceSnapshot{head: head, indexTree: indexTree, status: string(status)}, nil
 }
 
 func writeCapturedPatch(filename string, patch []byte) error {
@@ -203,7 +213,11 @@ func verifySourceSnapshot(ctx context.Context, repo string, want sourceSnapshot)
 	if got, _ := gitutil.Output(ctx, repo, nil, nil, "write-tree"); got != want.indexTree {
 		return errors.New("source index changed during capture")
 	}
-	if got, _ := gitutil.Output(ctx, repo, nil, nil, "status", "--porcelain=v1", "--untracked-files=all"); got != want.status {
+	gotStatus, err := artifactretention.WorktreeStatus(ctx, repo)
+	if err != nil {
+		return err
+	}
+	if string(gotStatus) != want.status {
 		return errors.New("source working tree changed during capture")
 	}
 	return nil
@@ -213,21 +227,15 @@ func resolveRepo(ctx context.Context, repo string) (string, error) {
 	return gitutil.ResolveRoot(ctx, repo, gitutil.ResolveRootOptions{GitError: "not a Git worktree"})
 }
 
-func readExternal(repo, filename string, max int64) ([]byte, error) {
-	return fileutil.ReadOutside(repo, filename, fileutil.OutsideReadOptions{Max: max, OversizeMessage: "input exceeds maximum size"})
-}
-
 func requireCleanIndex(ctx context.Context, repo string) error {
-	cmd := exec.CommandContext(ctx, "git", "-C", repo, "diff", "--cached", "--quiet", "HEAD", "--")
-	err := cmd.Run()
-	if err == nil {
+	staged, err := artifactretention.StagedChanges(ctx, repo)
+	if err != nil {
+		return err
+	}
+	if !staged {
 		return nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-		return errors.New("source index contains staged changes; capture-red requires index == HEAD")
-	}
-	return fmt.Errorf("inspect source index: %w", err)
+	return errors.New("source index contains staged changes outside .polis/artifacts/; capture-red requires index == HEAD")
 }
 
 func capturePatch(ctx context.Context, repo, head string) ([]byte, error) {
@@ -245,7 +253,7 @@ func capturePatch(ctx context.Context, repo, head string) ([]byte, error) {
 	if _, err := gitutil.Bytes(ctx, repo, env, nil, "read-tree", head); err != nil {
 		return nil, fmt.Errorf("initialize temporary capture index: %w", err)
 	}
-	if _, err := gitutil.Bytes(ctx, repo, env, nil, "add", "-A", "--", "."); err != nil {
+	if _, err := gitutil.Bytes(ctx, repo, env, nil, "add", "-A", "--", ".", ":(exclude).polis/artifacts/**"); err != nil {
 		return nil, fmt.Errorf("capture working tree in temporary index: %w", err)
 	}
 	patch, err := gitutil.Bytes(ctx, repo, env, nil, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--find-renames", head, "--")
@@ -262,6 +270,17 @@ func sortedPathKeys(paths map[string]struct{}) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func retainedResult(path string) []string {
+	if path == "" {
+		return nil
+	}
+	return []string{path}
+}
+
+func readExternal(repo, filename string, max int64) ([]byte, error) {
+	return fileutil.ReadOutside(repo, filename, fileutil.OutsideReadOptions{Max: max, OversizeMessage: "input exceeds maximum size"})
 }
 
 func validateProbe(ctx context.Context, repo, head string, patch []byte, contract spec.ChangeContract) error {

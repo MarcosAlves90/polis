@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/MarcosAlves90/polis/v6/internal/artifactretention"
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
 	"github.com/MarcosAlves90/polis/v6/internal/fileutil"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
@@ -31,14 +32,22 @@ type Result struct {
 	ValidationLevel string
 	EnabledGates    []string
 	DisabledGates   []string
+	RetainedPaths   []string `json:"retained_paths,omitempty"`
 }
 
 func Start(ctx context.Context, opts Options) (Result, error) {
 	if err := validateOptions(opts); err != nil {
 		return Result{}, err
 	}
-	root, err := resolveCleanRepo(ctx, opts.Repo)
+	root, err := gitutil.ResolveRoot(ctx, opts.Repo, gitutil.ResolveRootOptions{EmptyAsDot: true, GitError: "not a Git worktree"})
 	if err != nil {
+		return Result{}, err
+	}
+	retention, err := artifactretention.Load(ctx, root)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := requireCleanRepo(ctx, root); err != nil {
 		return Result{}, err
 	}
 	policyRaw, policy, err := loadPolicy(ctx, root, opts.Policy)
@@ -64,6 +73,10 @@ func Start(ctx context.Context, opts Options) (Result, error) {
 	if err := writeLockedContract(outAbs, raw); err != nil {
 		return Result{}, err
 	}
+	retainedPaths, err := retention.Publish(root, "contracts", raw)
+	if err != nil {
+		return Result{}, fmt.Errorf("retain locked Change Contract: %w", err)
+	}
 	sum := sha256.Sum256(raw)
 	summary := policy.ValidationSummary()
 	return Result{
@@ -72,6 +85,7 @@ func Start(ctx context.Context, opts Options) (Result, error) {
 		ValidationLevel: summary.Level,
 		EnabledGates:    append([]string{}, summary.EnabledGates...),
 		DisabledGates:   append([]string{}, summary.DisabledGates...),
+		RetainedPaths:   retainedResult(retainedPaths),
 	}, nil
 }
 
@@ -82,19 +96,22 @@ func validateOptions(opts Options) error {
 	return nil
 }
 
-func resolveCleanRepo(ctx context.Context, repo string) (string, error) {
-	root, err := gitutil.ResolveRoot(ctx, repo, gitutil.ResolveRootOptions{EmptyAsDot: true, GitError: "not a Git worktree"})
+func requireCleanRepo(ctx context.Context, root string) error {
+	status, err := artifactretention.WorktreeStatus(ctx, root)
 	if err != nil {
-		return "", err
+		return err
 	}
-	status, err := gitutil.Output(ctx, root, nil, nil, "status", "--porcelain=v1", "--untracked-files=all")
-	if err != nil {
-		return "", fmt.Errorf("inspect source state: %w", err)
+	if len(status) != 0 {
+		return errors.New("polis start requires a clean worktree and index outside .polis/artifacts/")
 	}
-	if status != "" {
-		return "", errors.New("polis start requires a clean worktree and index")
+	return nil
+}
+
+func retainedResult(path string) []string {
+	if path == "" {
+		return nil
 	}
-	return root, nil
+	return []string{path}
 }
 
 func loadPolicy(ctx context.Context, root, policyPath string) ([]byte, spec.Policy, error) {

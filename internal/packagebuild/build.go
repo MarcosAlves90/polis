@@ -11,11 +11,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/MarcosAlves90/polis/v6/internal/artifactretention"
 	"github.com/MarcosAlves90/polis/v6/internal/baselineproof"
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
 	"github.com/MarcosAlves90/polis/v6/internal/fileutil"
@@ -44,6 +44,7 @@ type Options struct {
 type Result struct {
 	Path                       string
 	SHA256                     string
+	RetainedPaths              []string `json:"retained_paths,omitempty"`
 	BaseCommit                 string
 	TargetTree                 string
 	ValidationLevel            string
@@ -84,11 +85,15 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	changeRaw, changeContract, regressionPatch, err := loadBuildInputs(repo, opts)
+	retention, err := artifactretention.Load(ctx, repo)
 	if err != nil {
 		return Result{}, err
 	}
-	implementationPlanRaw, implementationPlan, err := implementationplan.Load(repo, opts.ImplementationPlan, changeContract, changeRaw)
+	changeRaw, changeContract, regressionPatch, err := loadBuildInputs(repo, opts, retention)
+	if err != nil {
+		return Result{}, err
+	}
+	implementationPlanRaw, implementationPlan, err := implementationplan.LoadWithRetention(repo, opts.ImplementationPlan, changeContract, changeRaw, retention)
 	if err != nil {
 		return Result{}, fmt.Errorf("invalid implementation plan: %w", err)
 	}
@@ -191,7 +196,31 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return finalizeArtifact(artifact, manifestRaw)
+	result, err := finalizeArtifact(artifact, manifestRaw)
+	if err != nil || !retention.RepositoryEnabled() {
+		return result, err
+	}
+	packageBytes, err := os.ReadFile(result.Path)
+	if err != nil {
+		return Result{}, fmt.Errorf("read generated package for retention: %w", err)
+	}
+	retained := []artifactretention.Artifact{
+		{Class: "contracts", Data: artifact.changeRaw},
+		{Class: "evidence", Data: artifact.evidence},
+		{Class: "packages", Data: packageBytes},
+	}
+	if len(artifact.implementationPlanRaw) > 0 {
+		retained = append(retained, artifactretention.Artifact{Class: "plans", Data: artifact.implementationPlanRaw})
+	}
+	if len(artifact.regressionPatch) > 0 {
+		retained = append(retained, artifactretention.Artifact{Class: "proofs", Data: artifact.regressionPatch})
+	}
+	paths, err := retention.PublishMany(repo, retained)
+	if err != nil {
+		return Result{}, fmt.Errorf("retain generated delivery artifacts: %w", err)
+	}
+	result.RetainedPaths = paths
+	return result, nil
 }
 
 func validateBuildOptions(opts Options) error {
@@ -201,8 +230,8 @@ func validateBuildOptions(opts Options) error {
 	return nil
 }
 
-func loadBuildInputs(repo string, opts Options) ([]byte, spec.ChangeContract, []byte, error) {
-	changeRaw, err := readExternalInput(repo, opts.Contract, 1<<20)
+func loadBuildInputs(repo string, opts Options, retention artifactretention.State) ([]byte, spec.ChangeContract, []byte, error) {
+	changeRaw, err := retention.ReadInput(repo, opts.Contract, "contracts", 1<<20, "input exceeds maximum size %d")
 	if err != nil {
 		return nil, spec.ChangeContract{}, nil, fmt.Errorf("load change contract: %w", err)
 	}
@@ -210,7 +239,7 @@ func loadBuildInputs(repo string, opts Options) ([]byte, spec.ChangeContract, []
 	if err != nil {
 		return nil, spec.ChangeContract{}, nil, fmt.Errorf("invalid change contract: %w", err)
 	}
-	regressionPatch, err := loadRegressionPatch(repo, opts.RegressionPatch, changeContract)
+	regressionPatch, err := loadRegressionPatch(repo, opts.RegressionPatch, changeContract, retention)
 	if err != nil {
 		return nil, spec.ChangeContract{}, nil, err
 	}
@@ -224,7 +253,7 @@ func requireV6ProducerContract(change spec.ChangeContract) error {
 	return nil
 }
 
-func loadRegressionPatch(repo, filename string, change spec.ChangeContract) ([]byte, error) {
+func loadRegressionPatch(repo, filename string, change spec.ChangeContract, retention artifactretention.State) ([]byte, error) {
 	if !change.RequiresRedGreen() {
 		if filename != "" {
 			return nil, errors.New("change contract without red_green must not provide regression-patch")
@@ -237,7 +266,7 @@ func loadRegressionPatch(repo, filename string, change spec.ChangeContract) ([]b
 		}
 		return nil, errors.New("red_green feature build requires regression-patch")
 	}
-	patch, err := readExternalInput(repo, filename, 16<<20)
+	patch, err := retention.ReadInput(repo, filename, "proofs", 16<<20, "input exceeds maximum size %d")
 	if err != nil {
 		return nil, fmt.Errorf("load regression patch: %w", err)
 	}
@@ -346,16 +375,14 @@ func resolveRepo(ctx context.Context, repo string) (string, error) {
 }
 
 func requireCleanIndex(ctx context.Context, repo string) error {
-	cmd := exec.CommandContext(ctx, "git", "-C", repo, "diff", gitCached, "--quiet", "HEAD", "--")
-	err := cmd.Run()
-	if err == nil {
+	staged, err := artifactretention.StagedChanges(ctx, repo)
+	if err != nil {
+		return err
+	}
+	if !staged {
 		return nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-		return errors.New("source index contains staged changes; POLIS build requires index == HEAD")
-	}
-	return fmt.Errorf("inspect source index: %w", err)
+	return errors.New("source index contains staged changes outside .polis/artifacts/; POLIS build requires index == HEAD")
 }
 
 func buildTargetWithTemporaryIndex(ctx context.Context, repo, baseCommit string) (string, []byte, []string, error) {
@@ -373,7 +400,7 @@ func buildTargetWithTemporaryIndex(ctx context.Context, repo, baseCommit string)
 	if _, err := gitutil.Bytes(ctx, repo, env, nil, "read-tree", baseCommit); err != nil {
 		return "", nil, nil, fmt.Errorf("initialize temporary index: %w", err)
 	}
-	if _, err := gitutil.Bytes(ctx, repo, env, nil, "add", "-A", "--", "."); err != nil {
+	if _, err := gitutil.Bytes(ctx, repo, env, nil, "add", "-A", "--", ".", ":(exclude).polis/artifacts/**"); err != nil {
 		return "", nil, nil, fmt.Errorf("capture working tree in temporary index: %w", err)
 	}
 	targetTree, err := gitutil.Output(ctx, repo, env, nil, "write-tree")

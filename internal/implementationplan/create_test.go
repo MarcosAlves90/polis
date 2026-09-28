@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MarcosAlves90/polis/v6/internal/artifactretention"
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
 	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
 	"github.com/MarcosAlves90/polis/v6/spec"
@@ -56,6 +57,68 @@ func TestCreateWritesDeterministicPlanOutsideCleanRepoWithoutGitResidue(t *testi
 	}
 	if after := snapshotPlanRepo(t, repo); !reflect.DeepEqual(after, before) {
 		t.Fatalf("plan creation changed repository state:\nbefore=%+v\nafter=%+v", before, after)
+	}
+}
+
+func TestCreateConsumesRetainedContractAndRetainsReusablePlan(t *testing.T) {
+	repo, externalContract, external := createPlanRepo(t, true)
+	contractRaw, err := os.ReadFile(externalContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retention, err := artifactretention.Load(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retainedContract, err := retention.Publish(repo, "contracts", contractRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contractPath := filepath.Join(repo, filepath.FromSlash(retainedContract))
+	beforeHead := runPlanGit(t, repo, "rev-parse", "HEAD")
+	beforeIndex := runPlanGit(t, repo, "write-tree")
+	beforeStatus, err := artifactretention.WorktreeStatus(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	planOutput := filepath.Join(external, "retained-plan.json")
+	result, err := Create(context.Background(), Options{Repo: repo, Contract: contractPath, Out: planOutput})
+	if err != nil {
+		t.Fatalf("Create() rejected retained contract: %v", err)
+	}
+	if len(result.RetainedPaths) != 1 || !strings.HasPrefix(result.RetainedPaths[0], ".polis/artifacts/plans/") {
+		t.Fatalf("retained paths = %v", result.RetainedPaths)
+	}
+	planRaw, err := os.ReadFile(planOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retainedPlanPath := filepath.Join(repo, filepath.FromSlash(result.RetainedPaths[0]))
+	retainedPlanRaw, err := os.ReadFile(retainedPlanPath)
+	if err != nil || !bytes.Equal(retainedPlanRaw, planRaw) {
+		t.Fatalf("retained plan differs from external output: read error=%v", err)
+	}
+	contract, err := spec.DecodeChangeContract(contractRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadedRaw, loadedPlan, err := LoadWithRetention(repo, retainedPlanPath, contract, contractRaw, retention)
+	if err != nil {
+		t.Fatalf("LoadWithRetention() rejected retained plan: %v", err)
+	}
+	if !bytes.Equal(loadedRaw, planRaw) || loadedPlan == nil || loadedPlan.Strategy != result.Plan.Strategy {
+		t.Fatalf("loaded plan does not match generated plan: %+v", loadedPlan)
+	}
+	if runPlanGit(t, repo, "rev-parse", "HEAD") != beforeHead || runPlanGit(t, repo, "write-tree") != beforeIndex {
+		t.Fatal("retaining generated artifacts changed HEAD or the real index")
+	}
+	afterStatus, err := artifactretention.WorktreeStatus(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterStatus) != string(beforeStatus) {
+		t.Fatalf("source status outside managed artifacts changed: before=%q after=%q", beforeStatus, afterStatus)
 	}
 }
 
@@ -369,7 +432,7 @@ func snapshotPlanRepo(t *testing.T, repo string) planRepoState {
 	return state
 }
 
-func createPlanRepo(t *testing.T) (string, string, string) {
+func createPlanRepo(t *testing.T, repositoryRetention ...bool) (string, string, string) {
 	t.Helper()
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -383,6 +446,12 @@ func createPlanRepo(t *testing.T) (string, string, string) {
 	policyRaw := planPolicyBytes(t)
 	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), policyRaw, 0o644); err != nil {
 		t.Fatal(err)
+	}
+	if len(repositoryRetention) > 0 && repositoryRetention[0] {
+		manifest := []byte("{\"schema_version\":1,\"mode\":\"repository\"}\n")
+		if err := os.WriteFile(filepath.Join(repo, ".polis", "artifact-retention.json"), manifest, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(repo, "source.txt"), []byte("baseline\n"), 0o644); err != nil {
 		t.Fatal(err)
