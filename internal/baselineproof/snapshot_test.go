@@ -244,3 +244,22 @@ func TestBuildIsDeterministic(t *testing.T) {
 		t.Fatal("baseline snapshot bytes are not deterministic")
 	}
 }
+
+func TestIssue12BaselineSizeFailureReportsProjectionAndPaths(t *testing.T) {
+	repo := testRepo(t, "sha1")
+	if err := os.WriteFile(filepath.Join(repo, "large.txt"), []byte(strings.Repeat("x", 4096)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "large.txt")
+	runGit(t, repo, "commit", "-qm", "large baseline")
+	base := runGit(t, repo, "rev-parse", "HEAD")
+	_, err := Build(context.Background(), repo, base, 2048)
+	if err == nil {
+		t.Fatal("ISSUE12-RED: expected projected-size rejection")
+	}
+	for _, fragment := range []string{"2048", "projected", "large.txt"} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Fatalf("ISSUE12-RED: size diagnostic missing %q: %v", fragment, err)
+		}
+	}
+}

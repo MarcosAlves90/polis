@@ -1484,3 +1484,166 @@ func TestRunRejectsInvalidBaselineMode(t *testing.T) {
 		}
 	}
 }
+
+func TestIssue12BuildFailureHasEquivalentTextAndJSONGateDiagnostics(t *testing.T) {
+	repo := makeBuildRepo(t)
+	policyPath := issue12FailingPolicyPath(t)
+	contract := lockedCLIContract(t, repo, policyPath)
+	t.Setenv("POLIS_ISSUE12_GATE_HELPER", "1")
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runBuild := func(format string) string {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		args := []string{"build", "--repo", repo, "--policy", policyPath, "--project", "polis", "--change", "issue-12-diagnostics", "--contract", contract, "--format", format, "--out", filepath.Join(t.TempDir(), "artifact")}
+		if code := run(args, &out, &errOut); code == exitPass {
+			t.Fatalf("ISSUE12-RED: configured gate failure unexpectedly passed: stdout=%q stderr=%q", out.String(), errOut.String())
+		}
+		return errOut.String()
+	}
+
+	textOutput := runBuild("text")
+	for _, fragment := range []string{"test.complete=FAIL", "TestGateCommandDiagnosticHelper", "ISSUE12-GATE-STDOUT", "ISSUE12-GATE-STDERR", "artifact packaging"} {
+		if !strings.Contains(textOutput, fragment) {
+			t.Fatalf("ISSUE12-RED: text diagnostic missing %q: %s", fragment, textOutput)
+		}
+	}
+
+	jsonOutput := runBuild("json")
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(jsonOutput), &payload); err != nil {
+		t.Fatalf("ISSUE12-RED: JSON failure output is invalid: %v: %s", err, jsonOutput)
+	}
+	diagnostic, ok := payload["diagnostic"].(map[string]any)
+	if !ok {
+		t.Fatalf("ISSUE12-RED: JSON failure output has no diagnostic object: %s", jsonOutput)
+	}
+	if diagnostic["stage"] != "project gate validation" {
+		t.Fatalf("ISSUE12-RED: unexpected diagnostic stage: %v", diagnostic["stage"])
+	}
+	statuses, ok := diagnostic["gate_statuses"].(map[string]any)
+	if !ok || statuses["test.complete"] != "FAIL" {
+		t.Fatalf("ISSUE12-RED: missing failed gate status: %v", diagnostic["gate_statuses"])
+	}
+	command, ok := diagnostic["command"].(map[string]any)
+	if !ok {
+		t.Fatalf("ISSUE12-RED: missing failed command context: %v", diagnostic["command"])
+	}
+	for _, fragment := range []string{"TestGateCommandDiagnosticHelper", "ISSUE12-GATE-STDOUT", "ISSUE12-GATE-STDERR", "artifact packaging"} {
+		if !strings.Contains(jsonOutput, fragment) {
+			t.Fatalf("ISSUE12-RED: JSON diagnostic missing %q: %s", fragment, jsonOutput)
+		}
+	}
+	if command["cwd"] != "." {
+		t.Fatalf("ISSUE12-RED: unexpected failed-command cwd: %v", command["cwd"])
+	}
+}
+
+func TestIssue12CaptureRedScopeHasEquivalentTextAndJSONDiagnostics(t *testing.T) {
+	repo := makeBuildRepo(t)
+	contract := lockedIssue12RedGreenContract(t, repo, []string{"calc_test.go"})
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("outside test scope\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCapture := func(format string) string {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		args := []string{"capture-red", "--repo", repo, "--contract", contract, "--out", filepath.Join(t.TempDir(), "red.patch"), "--format", format}
+		if code := run(args, &out, &errOut); code == exitPass {
+			t.Fatalf("ISSUE12-RED: out-of-scope Red probe unexpectedly passed: stdout=%q stderr=%q", out.String(), errOut.String())
+		}
+		return errOut.String()
+	}
+
+	textOutput := runCapture("text")
+	for _, fragment := range []string{"Red probe scope validation", "app.txt", "calc_test.go"} {
+		if !strings.Contains(textOutput, fragment) {
+			t.Fatalf("ISSUE12-RED: capture-red text diagnostic missing %q: %s", fragment, textOutput)
+		}
+	}
+	jsonOutput := runCapture("json")
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(jsonOutput), &payload); err != nil {
+		t.Fatalf("ISSUE12-RED: capture-red JSON failure output is invalid: %v: %s", err, jsonOutput)
+	}
+	diagnostic, ok := payload["diagnostic"].(map[string]any)
+	if !ok || diagnostic["stage"] != "Red probe scope validation" {
+		t.Fatalf("ISSUE12-RED: capture-red JSON lacks scope stage: %s", jsonOutput)
+	}
+	for _, fragment := range []string{"app.txt", "calc_test.go"} {
+		if !strings.Contains(jsonOutput, fragment) {
+			t.Fatalf("ISSUE12-RED: capture-red JSON diagnostic missing %q: %s", fragment, jsonOutput)
+		}
+	}
+}
+
+func issue12FailingPolicyPath(t *testing.T) string {
+	t.Helper()
+	var policy spec.Policy
+	if err := json.Unmarshal(canonicalPolicyBytes(t), &policy); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range policy.Gates {
+		if policy.Gates[i].ID == "test.complete" {
+			policy.Gates[i].Command = &spec.CommandSpec{
+				Argv: []string{executable, "-test.run=TestGateCommandDiagnosticHelper"}, Cwd: ".", TimeoutSeconds: 60,
+				Environment: &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit},
+			}
+		}
+	}
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "issue12-policy.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func lockedIssue12RedGreenContract(t *testing.T, repo string, testPaths []string) string {
+	t.Helper()
+	draftPath := cliDraftContract(t, repo, spec.StrictChangeContractSchemaVersion, nil)
+	raw, err := os.ReadFile(draftPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var draft spec.ChangeContract
+	if err := json.Unmarshal(raw, &draft); err != nil {
+		t.Fatal(err)
+	}
+	draft.Kind = spec.ChangeKindFeature
+	draft.TestScope = &spec.ChangeScope{AllowedPaths: append([]string(nil), testPaths...)}
+	exit := 128
+	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+	regression := spec.CommandSpec{Argv: []string{"git", "rev-parse", "--verify", "ISSUE12-RED-MISSING-REF"}, Cwd: ".", TimeoutSeconds: 60, Environment: env}
+	draft.Regression = spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &regression, BaselineExitCode: &exit, BaselineOutputContains: []string{"fatal"}}
+	raw, err = json.Marshal(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draftPath = filepath.Join(t.TempDir(), "issue12-redgreen-draft-v3.json")
+	if err := os.WriteFile(draftPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(t.TempDir(), "issue12-redgreen-locked-v4.json")
+	if _, err := devstart.Start(context.Background(), devstart.Options{Repo: repo, Contract: draftPath, Out: locked}); err != nil {
+		t.Fatalf("polis start issue-12 fixture: %v", err)
+	}
+	return locked
+}
+
+func TestGateCommandDiagnosticHelper(t *testing.T) {
+	if os.Getenv("POLIS_ISSUE12_GATE_HELPER") != "1" {
+		return
+	}
+	_, _ = io.WriteString(os.Stdout, "ISSUE12-GATE-STDOUT\n")
+	_, _ = io.WriteString(os.Stderr, "ISSUE12-GATE-STDERR\n")
+	os.Exit(23)
+}

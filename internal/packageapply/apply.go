@@ -113,12 +113,14 @@ func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Optio
 		TargetApplyCheckError: "isolated apply check failed",
 		TargetApplyError:      "isolated apply failed",
 		PolicyFailureLabel:    "consumer policy validation",
+		PolicyFailureStage:    "consumer gate validation",
+		PolicyFailureNotRun:   []string{"real repository apply"},
 	}); err != nil {
 		cleanupErr := discardTemporaryEvidence(evidenceFile, evidencePath, false)
 		if cleanupErr != nil {
-			return Result{}, fmt.Errorf("%w: %v; cleanup temporary evidence: %v", ErrValidationFailed, err, cleanupErr)
+			return Result{}, fmt.Errorf("%w: %w; cleanup temporary evidence: %v", ErrValidationFailed, err, cleanupErr)
 		}
-		return Result{}, fmt.Errorf("%w: %v", ErrValidationFailed, err)
+		return Result{}, fmt.Errorf("%w: %w", ErrValidationFailed, err)
 	}
 	if err := discardTemporaryEvidence(evidenceFile, evidencePath, true); err != nil {
 		return Result{}, fmt.Errorf("cleanup temporary evidence: %w", err)
@@ -234,8 +236,10 @@ func PreflightWithOptions(ctx context.Context, artifact, repoPath string, opts O
 		TargetApplyCheckError: "preflight isolated apply check failed",
 		TargetApplyError:      "preflight isolated apply failed",
 		PolicyFailureLabel:    "preflight policy validation",
+		PolicyFailureStage:    "preflight gate validation",
+		PolicyFailureNotRun:   []string{"final preflight checks"},
 	}); err != nil {
-		return Result{}, fmt.Errorf("%w: %v", ErrValidationFailed, err)
+		return Result{}, fmt.Errorf("%w: %w", ErrValidationFailed, err)
 	}
 	if err := verifyAssessmentStable(ctx, repo, pkg, assessment); err != nil {
 		return Result{}, fmt.Errorf("baseline changed after preflight validation: %w", err)

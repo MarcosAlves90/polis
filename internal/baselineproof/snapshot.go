@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 )
 
@@ -50,9 +51,35 @@ func Build(ctx context.Context, repo, baseCommit string, maxBytes uint64) ([]byt
 	if err != nil {
 		return nil, err
 	}
-	descriptors, projected, err := describeBaselineObjects(ctx, repo, baseCommit, ids, maxBytes)
+	descriptors, projected, err := describeBaselineObjects(ctx, repo, baseCommit, ids)
 	if err != nil {
 		return nil, err
+	}
+	if projected > maxBytes {
+		pathsByObject, pathErr := baselineBlobPaths(ctx, repo, baseTree)
+		contributors, totalPaths := baselineContributors(descriptors, pathsByObject)
+		actual := map[string]any{"projected_bytes": projected, "contributing_path_count": totalPaths}
+		if pathErr != nil {
+			actual["path_discovery_error"] = pathErr.Error()
+		}
+		if totalPaths > len(contributors) {
+			actual["additional_paths_omitted"] = totalPaths - len(contributors)
+		}
+		paths := make([]string, len(contributors))
+		for i, contributor := range contributors {
+			paths[i] = contributor.Path
+		}
+		return nil, &diagnostic.Error{
+			Summary: fmt.Sprintf("embedded baseline projected size %d exceeds maximum size %d", projected, maxBytes),
+			Report: diagnostic.Report{
+				Stage:        "baseline snapshot",
+				Condition:    "projected embedded baseline size exceeds the configured member limit",
+				Expected:     map[string]any{"maximum_bytes": maxBytes},
+				Actual:       actual,
+				Paths:        paths,
+				Contributors: contributors,
+			},
+		}
 	}
 	objects, err := readBaselineObjects(ctx, repo, descriptors)
 	if err != nil {
@@ -111,24 +138,72 @@ func baselineObjectIDs(ctx context.Context, repo, baseCommit, baseTree string) (
 	return ids, nil
 }
 
-func describeBaselineObjects(ctx context.Context, repo, baseCommit string, ids []string, maxBytes uint64) ([]objectDescriptor, uint64, error) {
+func describeBaselineObjects(ctx context.Context, repo, baseCommit string, ids []string) ([]objectDescriptor, uint64, error) {
 	projected := uint64(1024) // POSIX tar end-of-archive blocks.
-	if projected > maxBytes {
-		return nil, 0, fmt.Errorf("embedded baseline exceeds maximum size %d", maxBytes)
-	}
 	descriptors := make([]objectDescriptor, 0, len(ids))
 	for _, oid := range ids {
 		descriptor, err := describeBaselineObject(ctx, repo, baseCommit, oid)
 		if err != nil {
 			return nil, 0, err
 		}
-		projected, err = addTarEntrySize(projected, descriptor.Size, maxBytes)
+		projected, err = addTarEntrySize(projected, descriptor.Size, ^uint64(0))
 		if err != nil {
 			return nil, 0, err
 		}
 		descriptors = append(descriptors, descriptor)
 	}
 	return descriptors, projected, nil
+}
+
+func baselineBlobPaths(ctx context.Context, repo, baseTree string) (map[string][]string, error) {
+	raw, err := gitutil.Bytes(ctx, repo, nil, nil, "ls-tree", "-r", "-z", "--full-tree", baseTree)
+	if err != nil {
+		return nil, fmt.Errorf("list baseline file paths: %w", err)
+	}
+	paths := make(map[string][]string)
+	for _, entry := range bytes.Split(raw, []byte{0}) {
+		if len(entry) == 0 {
+			continue
+		}
+		separator := bytes.IndexByte(entry, '\t')
+		if separator < 0 {
+			return nil, errors.New("parse baseline file path: missing metadata separator")
+		}
+		metadata := strings.Fields(string(entry[:separator]))
+		if len(metadata) != 3 || metadata[1] != "blob" {
+			continue
+		}
+		oid := metadata[2]
+		paths[oid] = append(paths[oid], string(entry[separator+1:]))
+	}
+	for oid := range paths {
+		sort.Strings(paths[oid])
+	}
+	return paths, nil
+}
+
+func baselineContributors(descriptors []objectDescriptor, pathsByObject map[string][]string) ([]diagnostic.PathContributor, int) {
+	const maxReportedPaths = 10
+	contributors := make([]diagnostic.PathContributor, 0)
+	for _, descriptor := range descriptors {
+		if descriptor.Type != "blob" {
+			continue
+		}
+		for _, path := range pathsByObject[descriptor.OID] {
+			contributors = append(contributors, diagnostic.PathContributor{Path: path, BlobBytes: descriptor.Size})
+		}
+	}
+	sort.Slice(contributors, func(i, j int) bool {
+		if contributors[i].BlobBytes != contributors[j].BlobBytes {
+			return contributors[i].BlobBytes > contributors[j].BlobBytes
+		}
+		return contributors[i].Path < contributors[j].Path
+	})
+	total := len(contributors)
+	if len(contributors) > maxReportedPaths {
+		contributors = contributors[:maxReportedPaths]
+	}
+	return contributors, total
 }
 
 func describeBaselineObject(ctx context.Context, repo, baseCommit, oid string) (objectDescriptor, error) {

@@ -16,9 +16,16 @@ import (
 
 const maxCoverageReportBytes = 16 * 1024 * 1024
 
+type CommandExecution struct {
+	Argv        []string
+	Cwd         string
+	Observation commandexec.Observation
+}
+
 type Result struct {
-	Overall spec.Status
-	Gates   map[string]spec.Status
+	Overall         spec.Status
+	Gates           map[string]spec.Status
+	CommandFailures map[string]CommandExecution
 }
 
 func Execute(policy spec.Policy, repoRoot string, evidence io.Writer) Result {
@@ -41,6 +48,7 @@ func ExecutePlan(plan policyplan.Plan, repoRoot string, evidence io.Writer) Resu
 	for _, gate := range plan.GatePolicies() {
 		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_started", Gate: gate.ID})
 		status := spec.StatusPass
+		var execution *CommandExecution
 		if planGateDeferred(plan, gate.ID) {
 			status = spec.StatusDeferred
 			reason := spec.DeferredReasonToConsumer
@@ -55,13 +63,21 @@ func ExecutePlan(plan policyplan.Plan, repoRoot string, evidence io.Writer) Resu
 			result.Gates[gate.ID] = status
 			continue
 		case spec.GateModeCoverage:
-			status = executeCoverage(enc, gate, repoRoot)
+			status, execution = executeCoverage(enc, gate, repoRoot)
 		default:
-			status = executeCommand(enc, gate.ID, *gate.Command, repoRoot)
+			observation := executeCommand(enc, gate.ID, *gate.Command, repoRoot)
+			status = observation.Status
+			execution = &CommandExecution{Argv: append([]string(nil), gate.Command.Argv...), Cwd: gate.Command.Cwd, Observation: observation}
 		}
 		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: gate.ID, Status: status, Reason: blockedReason(status)})
 		result.Gates[gate.ID] = status
 		result.Overall = combine(result.Overall, status)
+		if status != spec.StatusPass && execution != nil {
+			if result.CommandFailures == nil {
+				result.CommandFailures = make(map[string]CommandExecution)
+			}
+			result.CommandFailures[gate.ID] = *execution
+		}
 	}
 	return result
 }
@@ -75,24 +91,25 @@ func planGateDeferred(plan policyplan.Plan, gateID string) bool {
 	return false
 }
 
-func executeCoverage(enc *json.Encoder, gate spec.GatePolicy, repoRoot string) spec.Status {
+func executeCoverage(enc *json.Encoder, gate spec.GatePolicy, repoRoot string) (spec.Status, *CommandExecution) {
 	reportPath := filepath.Join(repoRoot, filepath.FromSlash(gate.Report))
 	if err := os.Remove(reportPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return spec.StatusFail
+		return spec.StatusFail, nil
 	}
-	status := executeCommand(enc, gate.ID, *gate.Command, repoRoot)
-	if status != spec.StatusPass {
-		return status
+	observation := executeCommand(enc, gate.ID, *gate.Command, repoRoot)
+	execution := &CommandExecution{Argv: append([]string(nil), gate.Command.Argv...), Cwd: gate.Command.Cwd, Observation: observation}
+	if observation.Status != spec.StatusPass {
+		return observation.Status, execution
 	}
 	raw, err := readCoverageReport(repoRoot, reportPath)
 	if err != nil {
-		return spec.StatusFail
+		return spec.StatusFail, execution
 	}
 	metric, err := spec.ParseCoverage(gate.Adapter, raw)
 	if err != nil {
-		return spec.StatusFail
+		return spec.StatusFail, execution
 	}
-	status = spec.StatusFail
+	status := spec.StatusFail
 	if spec.CoveragePass(metric.Percent, *gate.ThresholdPercent) {
 		status = spec.StatusPass
 	}
@@ -110,7 +127,7 @@ func executeCoverage(enc *json.Encoder, gate spec.GatePolicy, repoRoot string) s
 		Operator:         gate.Operator,
 		ThresholdPercent: &threshold,
 	})
-	return status
+	return status, execution
 }
 
 func readCoverageReport(repoRoot, reportPath string) ([]byte, error) {
@@ -138,7 +155,7 @@ func readCoverageReport(repoRoot, reportPath string) ([]byte, error) {
 	return os.ReadFile(resolved)
 }
 
-func executeCommand(enc *json.Encoder, gate string, command spec.CommandSpec, repoRoot string) spec.Status {
+func executeCommand(enc *json.Encoder, gate string, command spec.CommandSpec, repoRoot string) commandexec.Observation {
 	obs := commandexec.Run(repoRoot, command)
 	exitCode, duration := obs.ExitCode, obs.DurationMS
 	stdoutBytes, stderrBytes := obs.StdoutBytes, obs.StderrBytes
@@ -163,7 +180,7 @@ func executeCommand(enc *json.Encoder, gate string, command spec.CommandSpec, re
 		event.EnvironmentPass = append([]string(nil), command.Environment.Pass...)
 	}
 	_ = enc.Encode(event)
-	return obs.Status
+	return obs
 }
 
 func blockedReason(status spec.Status) *string {
