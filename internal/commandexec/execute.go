@@ -5,10 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"hash"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/MarcosAlves90/polis/v6/spec"
@@ -28,7 +31,14 @@ type Observation struct {
 	StderrSHA256    string
 	StdoutTruncated bool
 	StderrTruncated bool
+	Prerequisite    string
 }
+
+var (
+	missingCommand = regexp.MustCompile(`^(?:(?:/bin/)?(?:sh|bash|zsh): (?:(?:line )?\d+: )?)([^:\s]+): (?:command not found|not found)$`)
+	missingModule  = regexp.MustCompile(`^(?:ModuleNotFoundError: No module named |\S*python\S*: No module named |(?:Error: )?Cannot find (?:module|package) )['"]?([^'"\s]+)`)
+	missingEnv     = regexp.MustCompile(`^(?:(?:/bin/)?(?:sh|bash|zsh): (?:(?:line )?\d+: )?)?([^:\s]+): (?:parameter not set|unbound variable)$`)
+)
 
 type boundedDigestWriter struct {
 	h         hash.Hash
@@ -89,12 +99,24 @@ func Run(repoRoot string, command spec.CommandSpec) Observation {
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		obs.Status = spec.StatusFail
 		obs.ExitCode = exitErr.ExitCode()
+		if prerequisite := missingPrerequisite(obs); prerequisite != "" {
+			obs.Status = spec.StatusBlocked
+			obs.Prerequisite = prerequisite
+		} else {
+			obs.Status = spec.StatusFail
+		}
 		return obs
 	}
 	obs.Status = spec.StatusBlocked
 	obs.ExitCode = -1
+	if errors.Is(err, exec.ErrNotFound) {
+		obs.Prerequisite = "missing executable " + command.Argv[0]
+	} else if errors.Is(err, os.ErrNotExist) {
+		obs.Prerequisite = "missing working directory or executable for " + command.Argv[0]
+	} else {
+		obs.Prerequisite = "command could not start: " + err.Error()
+	}
 	message := err.Error()
 	if obs.Stderr != "" {
 		message = "\n" + message
@@ -105,6 +127,44 @@ func Run(repoRoot string, command spec.CommandSpec) Observation {
 	obs.StderrSHA256 = stderr.digest()
 	obs.StderrTruncated = stderr.truncated
 	return obs
+}
+
+func missingPrerequisite(obs Observation) string {
+	// A failed command can use any exit code, including 127, for an assertion.
+	// Classify only recognizable startup diagnostics before any stdout is emitted.
+	if obs.StdoutBytes != 0 || obs.StderrTruncated {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(obs.Stderr), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	first := strings.TrimSpace(lines[0])
+	if obs.ExitCode == 127 {
+		if match := missingCommand.FindStringSubmatch(first); match != nil {
+			return "missing executable " + match[1]
+		}
+	}
+	if len(lines) == 1 {
+		if match := missingModule.FindStringSubmatch(first); match != nil {
+			return "missing dependency " + match[1]
+		}
+		if match := missingEnv.FindStringSubmatch(first); match != nil {
+			return "missing environment condition " + match[1]
+		}
+	}
+	return ""
+}
+
+func BlockedReason(obs Observation) *string {
+	if obs.Status != spec.StatusBlocked {
+		return nil
+	}
+	reason := "intended checks did not run"
+	if obs.Prerequisite != "" {
+		reason = fmt.Sprintf("%s; %s", obs.Prerequisite, reason)
+	}
+	return &reason
 }
 
 func environmentFor(environment spec.EnvironmentSpec) []string {

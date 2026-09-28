@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Support complete, identity-checked locked baselines up to 128 MiB with coordinated 256 MiB package bounds, so supported large baselines reach configured gates.
 
 ### Fixed
+- Distinguish missing command prerequisites from failed checks in regression and project gate reports, and state when intended checks did not run.
 - Report unprocessable locked baselines as baseline constraints with producer gates explicitly not run.
 - Add actionable, structured diagnostics to baseline-size, capture-red scope, and project-gate failures, with equivalent text and JSON output.
 - Identify the `test_scope.allowed_paths` rule for every path rejected during `capture-red`.
