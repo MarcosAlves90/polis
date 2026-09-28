@@ -70,6 +70,15 @@ not contain the producer base commit. Valid embedded proof is not an override an
 does not reduce guarantees.
 The embedded baseline carries the locked commit and complete tree/blob closure, not refs or parent history. `polis build` replays the locked baseline proof from that exact embedded state, so a baseline command that requires unavailable history is rejected during build rather than producing a non-portable artifact.
 
+A complete embedded baseline can now occupy up to 128 MiB uncompressed; the
+ZIP archive and aggregate uncompressed package remain bounded at 256 MiB each.
+POLIS checks the projected canonical TAR before loading its objects, then
+verifies every Git object ID, commit/tree identity, and package digest. If
+construction or materialization cannot complete, `polis build` reports a
+locked-baseline constraint and the producer gates that did not run. A newer
+producer may create a package over the former 32 MiB limit that an older reader
+rejects; valid historical packages remain readable.
+
 For historical artifacts without embedded baseline proof,
 `--allow-missing-baseline-proof` may be supplied only with `permissive`. It must be
 repeated for `apply`, is never inherited from preflight, and visibly reports every

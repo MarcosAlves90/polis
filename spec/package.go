@@ -15,12 +15,12 @@ const (
 )
 
 const (
-	MaxArchiveBytes           int64  = 64 << 20
-	MaxTotalUncompressedBytes uint64 = 64 << 20
+	MaxArchiveBytes           int64  = 256 << 20
+	MaxTotalUncompressedBytes uint64 = 256 << 20
 	MaxContractMemberBytes    uint64 = 1 << 20
 	MaxEvidenceMemberBytes    uint64 = 16 << 20
 	MaxPatchMemberBytes       uint64 = 32 << 20
-	MaxBaselineMemberBytes    uint64 = 32 << 20
+	MaxBaselineMemberBytes    uint64 = 128 << 20
 	MaxChecksumsMemberBytes   uint64 = 64 << 10
 )
 

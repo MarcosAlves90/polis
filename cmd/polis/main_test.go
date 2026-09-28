@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
+	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
 	"github.com/MarcosAlves90/polis/v6/internal/packageapply"
 	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
@@ -2076,5 +2077,41 @@ func TestIssue13ScopePreflightRejectsInvalidInputs(t *testing.T) {
 	errOut.Reset()
 	if code := run([]string{"check-red-scope", "--repo", repo, "--contract", contract, "--path", "calc_test.go"}, &out, &errOut); code == exitPass || !strings.Contains(errOut.String(), "baseline") {
 		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: stale baseline code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+}
+
+func TestIssue10BaselineConstraintHasDistinctTextAndJSON(t *testing.T) {
+	failure := &diagnostic.Error{
+		Summary: "locked baseline constraint: projected size exceeds maximum",
+		Report: diagnostic.Report{
+			Stage:    "locked baseline constraint",
+			Expected: map[string]any{"maximum_bytes": uint64(128 << 20)},
+			Actual:   map[string]any{"projected_bytes": uint64((128 << 20) + 4096)},
+			NotRun:   []string{"test.complete", "coverage", "artifact packaging"},
+		},
+	}
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			var output bytes.Buffer
+			if got := writeFailure(&output, format, "POLIS BUILD", exitUsage, failure); got != exitUsage {
+				t.Fatalf("exit code=%d", got)
+			}
+			for _, fragment := range []string{"locked baseline constraint", "test.complete", "coverage", "artifact packaging"} {
+				if !strings.Contains(output.String(), fragment) {
+					t.Fatalf("missing %q: %s", fragment, output.String())
+				}
+			}
+			if strings.Contains(output.String(), "Gate statuses:") || strings.Contains(output.String(), `"gate_statuses"`) {
+				t.Fatalf("baseline constraint was represented as a gate result: %s", output.String())
+			}
+			if format == "json" {
+				var report struct {
+					Diagnostic diagnostic.Report `json:"diagnostic"`
+				}
+				if err := json.Unmarshal(output.Bytes(), &report); err != nil || report.Diagnostic.Stage != "locked baseline constraint" {
+					t.Fatalf("invalid JSON baseline diagnostic: %v %s", err, output.String())
+				}
+			}
+		})
 	}
 }

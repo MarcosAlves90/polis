@@ -101,3 +101,12 @@ func TestPackageMemberLimitsIncludeEmbeddedBaseline(t *testing.T) {
 		t.Fatalf("baseline member limit %d exceeds aggregate cap %d", MaxBaselineMemberBytes, MaxTotalUncompressedBytes)
 	}
 }
+
+func TestIssue10LargeBaselineLimitsRemainBounded(t *testing.T) {
+	if MaxBaselineMemberBytes != 128<<20 || MaxTotalUncompressedBytes != 256<<20 || MaxArchiveBytes != 256<<20 {
+		t.Fatalf("unexpected large-baseline limits: baseline=%d total=%d archive=%d", MaxBaselineMemberBytes, MaxTotalUncompressedBytes, MaxArchiveBytes)
+	}
+	if MaxBaselineMemberBytes <= 32<<20 || MaxBaselineMemberBytes >= MaxTotalUncompressedBytes {
+		t.Fatalf("baseline limit must exceed the old cap yet remain below package total: %d", MaxBaselineMemberBytes)
+	}
+}
