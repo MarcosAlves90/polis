@@ -26,6 +26,9 @@ func TestPolicyExecHelper(t *testing.T) {
 	case "fail":
 		fmt.Fprint(os.Stderr, "helper-fail")
 		os.Exit(7)
+	case "missing-dependency":
+		fmt.Fprint(os.Stderr, "ModuleNotFoundError: No module named 'pytest'\n")
+		os.Exit(1)
 	case "sleep":
 		time.Sleep(3 * time.Second)
 		os.Exit(0)
@@ -40,6 +43,27 @@ func TestPolicyExecHelper(t *testing.T) {
 		os.Exit(0)
 	default:
 		os.Exit(9)
+	}
+}
+
+func TestExecuteMarksMissingDependencyBlockedWithoutChangingGateFailure(t *testing.T) {
+	for _, tc := range []struct {
+		mode string
+		want spec.Status
+	}{
+		{"missing-dependency", spec.StatusBlocked},
+		{"fail", spec.StatusFail},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			var evidence bytes.Buffer
+			result := Execute(testPolicy(t, tc.mode), t.TempDir(), &evidence)
+			if result.Gates["test.complete"] != tc.want || result.Overall != tc.want {
+				t.Fatalf("result=%+v evidence=%s", result, evidence.String())
+			}
+			if tc.want == spec.StatusBlocked && (!strings.Contains(evidence.String(), "missing dependency pytest") || !strings.Contains(evidence.String(), "intended checks did not run")) {
+				t.Fatalf("missing prerequisite not reported: %s", evidence.String())
+			}
+		})
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
 	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
@@ -449,6 +450,11 @@ func gatesResult(plan policyplan.Plan, execution policyexec.Result) gatesCLIResu
 		result := gateCLIResult{ID: gate.ID, Status: status, Executed: gateWasRun(gate.ID, status, execution)}
 		if gate.Reason != nil {
 			result.Reason = *gate.Reason
+		}
+		if failure, ok := execution.CommandFailures[gate.ID]; ok && status == spec.StatusBlocked {
+			if reason := commandexec.BlockedReason(failure.Observation); reason != nil {
+				result.Reason = *reason
+			}
 		}
 		gateResults = append(gateResults, result)
 	}

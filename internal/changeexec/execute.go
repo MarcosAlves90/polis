@@ -26,6 +26,11 @@ func ExecuteBaseline(contract spec.ChangeContract, repoRoot string, evidence io.
 	_ = enc.Encode(spec.EvidenceEvent{Event: "gate_started", Gate: "regression"})
 	obs := commandexec.Run(repoRoot, *contract.Regression.Command)
 	writeObservation(enc, "regression", *contract.Regression.Command, obs)
+	if obs.Status == spec.StatusBlocked {
+		reason := commandexec.BlockedReason(obs)
+		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: "regression", Status: spec.StatusBlocked, Reason: reason})
+		return fmt.Errorf("regression prerequisite blocked: %s", *reason)
+	}
 	combined := obs.Stdout + "\n" + obs.Stderr
 	if obs.ExitCode != *contract.Regression.BaselineExitCode {
 		return fmt.Errorf("regression baseline exit code %d, want %d", obs.ExitCode, *contract.Regression.BaselineExitCode)
@@ -78,8 +83,11 @@ func runPassGate(enc *json.Encoder, gate string, command spec.CommandSpec, repoR
 	_ = enc.Encode(spec.EvidenceEvent{Event: "gate_started", Gate: gate})
 	obs := commandexec.Run(repoRoot, command)
 	writeObservation(enc, gate, command, obs)
-	_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: gate, Status: obs.Status, Reason: blockedReason(obs.Status)})
+	_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: gate, Status: obs.Status, Reason: commandexec.BlockedReason(obs)})
 	if obs.Status != spec.StatusPass {
+		if obs.Status == spec.StatusBlocked {
+			return fmt.Errorf("change gate %s prerequisite blocked: %s", gate, *commandexec.BlockedReason(obs))
+		}
 		return fmt.Errorf("change gate %s %s", gate, obs.Status)
 	}
 	return nil
@@ -100,12 +108,4 @@ func writeObservation(enc *json.Encoder, gate string, command spec.CommandSpec, 
 		event.EnvironmentPass = append([]string(nil), command.Environment.Pass...)
 	}
 	_ = enc.Encode(event)
-}
-
-func blockedReason(status spec.Status) *string {
-	if status != spec.StatusBlocked {
-		return nil
-	}
-	reason := "command could not be started in the declared environment"
-	return &reason
 }

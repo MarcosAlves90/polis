@@ -69,7 +69,11 @@ func ExecutePlan(plan policyplan.Plan, repoRoot string, evidence io.Writer) Resu
 			status = observation.Status
 			execution = &CommandExecution{Argv: append([]string(nil), gate.Command.Argv...), Cwd: gate.Command.Cwd, Observation: observation}
 		}
-		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: gate.ID, Status: status, Reason: blockedReason(status)})
+		var reason *string
+		if execution != nil {
+			reason = commandexec.BlockedReason(execution.Observation)
+		}
+		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: gate.ID, Status: status, Reason: reason})
 		result.Gates[gate.ID] = status
 		result.Overall = combine(result.Overall, status)
 		if status != spec.StatusPass && execution != nil {
@@ -181,14 +185,6 @@ func executeCommand(enc *json.Encoder, gate string, command spec.CommandSpec, re
 	}
 	_ = enc.Encode(event)
 	return obs
-}
-
-func blockedReason(status spec.Status) *string {
-	if status != spec.StatusBlocked {
-		return nil
-	}
-	reason := "command could not be started in the declared environment"
-	return &reason
 }
 
 func combine(current, next spec.Status) spec.Status {

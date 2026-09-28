@@ -741,6 +741,88 @@ func TestRunGatesReportsConfiguredResultsWithoutArtifact(t *testing.T) {
 	}
 }
 
+func TestIssue14GateHelper(t *testing.T) {
+	args := os.Args
+	if len(args) < 2 || args[len(args)-2] != "--" {
+		return
+	}
+	switch args[len(args)-1] {
+	case "missing-dependency":
+		_, _ = os.Stderr.WriteString("ModuleNotFoundError: No module named 'pytest'\n")
+		os.Exit(1)
+	case "assertion":
+		_, _ = os.Stderr.WriteString("assertion failed: expected true\n")
+		os.Exit(1)
+	default:
+		os.Exit(9)
+	}
+}
+
+func TestRunGatesExplainsUnrunChecksAndPreservesAssertions(t *testing.T) {
+	for _, tc := range []struct {
+		name, missing string
+		argv          []string
+		wantStatus    spec.Status
+		wantExecuted  bool
+	}{
+		{"missing executable", "missing executable polis-issue14-no-such-command", []string{"polis-issue14-no-such-command"}, spec.StatusBlocked, false},
+		{"missing dependency", "missing dependency pytest", []string{os.Args[0], "-test.run=^TestIssue14GateHelper$", "--", "missing-dependency"}, spec.StatusBlocked, false},
+		{"real assertion", "", []string{os.Args[0], "-test.run=^TestIssue14GateHelper$", "--", "assertion"}, spec.StatusFail, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := makeBuildRepo(t)
+			var policy spec.Policy
+			if err := json.Unmarshal(canonicalPolicyBytes(t), &policy); err != nil {
+				t.Fatal(err)
+			}
+			for i := range policy.Gates {
+				if policy.Gates[i].ID == "test.complete" {
+					policy.Gates[i].Command.Argv = tc.argv
+				}
+			}
+			raw, err := json.Marshal(policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			policyPath := filepath.Join(t.TempDir(), "issue14-policy.json")
+			if err := os.WriteFile(policyPath, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, format := range []string{"json", "text"} {
+				var out, errOut bytes.Buffer
+				code := run([]string{"gates", "--repo", repo, "--policy", policyPath, "--format", format}, &out, &errOut)
+				if code == exitPass {
+					t.Fatalf("gate unexpectedly passed: %s", out.String())
+				}
+				if format == "text" {
+					if tc.missing != "" && (!strings.Contains(out.String(), tc.missing) || !strings.Contains(out.String(), "intended checks did not run") || !strings.Contains(out.String(), "not executed")) {
+						t.Fatalf("text did not explain prerequisite: %s", out.String())
+					}
+					continue
+				}
+				var report gatesCLIResult
+				if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+					t.Fatalf("invalid JSON: %v\n%s", err, out.String())
+				}
+				if report.Status != tc.wantStatus {
+					t.Fatalf("status=%s want=%s report=%+v", report.Status, tc.wantStatus, report)
+				}
+				for _, gate := range report.GateResults {
+					if gate.ID != "test.complete" {
+						continue
+					}
+					if gate.Status != tc.wantStatus || gate.Executed != tc.wantExecuted || !strings.Contains(gate.Reason, tc.missing) {
+						t.Fatalf("gate=%+v", gate)
+					}
+					if tc.missing != "" && !strings.Contains(gate.Reason, "intended checks did not run") {
+						t.Fatalf("blocked gate omitted unrun checks: %+v", gate)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestRunGatesReturnsFailureWithPerGateResults(t *testing.T) {
 	for _, scenario := range []struct {
 		name         string

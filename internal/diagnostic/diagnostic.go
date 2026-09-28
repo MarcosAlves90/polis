@@ -31,6 +31,7 @@ type Command struct {
 	StderrSHA256    string   `json:"stderr_sha256"`
 	StdoutTruncated bool     `json:"stdout_truncated"`
 	StderrTruncated bool     `json:"stderr_truncated"`
+	Prerequisite    string   `json:"prerequisite,omitempty"`
 }
 
 type Report struct {
@@ -131,6 +132,9 @@ func (r Report) FormatText() string {
 		fmt.Fprintf(&out, "Command: %s\n", formatArgv(command.Argv))
 		fmt.Fprintf(&out, "Working directory: %s\n", command.Cwd)
 		fmt.Fprintf(&out, "Process status: %s\nExit code: %d\nDuration: %d ms\n", command.Status, command.ExitCode, command.DurationMS)
+		if command.Prerequisite != "" {
+			fmt.Fprintf(&out, "Prerequisite: %s\nIntended checks: not run\n", command.Prerequisite)
+		}
 		fmt.Fprintf(&out, "Process output bytes: stdout=%d stderr=%d\n", command.StdoutBytes, command.StderrBytes)
 		fmt.Fprintf(&out, "Stdout context: %s\n", displayOutput(command.StdoutContext))
 		fmt.Fprintf(&out, "Stderr context: %s\n", displayOutput(command.StderrContext))

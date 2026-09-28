@@ -219,6 +219,14 @@ and disabled gate lists. Its output explicitly sets
 Project Policy gates does not build or verify a delivery artifact. Use
 `polis build` and `polis verify` for the delivery workflow.
 
+When a configured command cannot start its intended checks, POLIS reports its
+gate as `BLOCKED`, names a missing executable, dependency, or environment
+condition when the startup diagnostic is clear, and says the intended checks
+did not run. Text and JSON gate reports keep genuine assertion failures as
+`FAIL` and mark those checks as executed. The same distinction applies to Red
+regression proof: a missing prerequisite cannot satisfy its expected nonzero
+exit code or output oracle.
+
 ## V6 contract summary
 
 - Unplanned builds use package format v5 with eight regular members under `polis/`. Explicitly planned builds use format v6 with the exact plan as a ninth member; both include the authenticated `polis/polis-baseline.tar`. Valid historical v2-v5 formats remain readable.

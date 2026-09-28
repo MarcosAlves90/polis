@@ -2,10 +2,66 @@ package changeexec
 
 import (
 	"bytes"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
+
+func TestChangeExecPrerequisiteHelper(t *testing.T) {
+	args := os.Args
+	if len(args) < 2 || args[len(args)-2] != "--" {
+		return
+	}
+	switch args[len(args)-1] {
+	case "missing-runner":
+		_, _ = os.Stderr.WriteString("sh: missing-regression-runner: command not found\n")
+		os.Exit(127)
+	case "assertion":
+		_, _ = os.Stderr.WriteString("RED-ASSERTION\n")
+		os.Exit(127)
+	default:
+		os.Exit(9)
+	}
+}
+
+func TestBaselineDoesNotAcceptMissingPrerequisiteAsRed(t *testing.T) {
+	code := 127
+	regression := cmd(os.Args[0], "-test.run=^TestChangeExecPrerequisiteHelper$", "--", "missing-runner")
+	contract := spec.ChangeContract{SchemaVersion: 1, Kind: spec.ChangeKindDefect, Behavior: cmd("true"), Affected: cmd("true"), Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &regression, BaselineExitCode: &code, BaselineOutputContains: []string{"missing-regression-runner"}}}
+	var evidence bytes.Buffer
+	err := ExecuteBaseline(contract, t.TempDir(), &evidence)
+	if err == nil || !strings.Contains(err.Error(), "missing executable missing-regression-runner") || !strings.Contains(err.Error(), "intended checks did not run") {
+		t.Fatalf("missing prerequisite accepted as Red: err=%v evidence=%s", err, evidence.String())
+	}
+	if !strings.Contains(evidence.String(), `"gate":"regression","status":"BLOCKED"`) {
+		t.Fatalf("blocked regression not recorded: %s", evidence.String())
+	}
+}
+
+func TestBaselineStillAcceptsRealAssertionWithExit127(t *testing.T) {
+	code := 127
+	regression := cmd(os.Args[0], "-test.run=^TestChangeExecPrerequisiteHelper$", "--", "assertion")
+	contract := spec.ChangeContract{SchemaVersion: 1, Kind: spec.ChangeKindDefect, Behavior: cmd("true"), Affected: cmd("true"), Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &regression, BaselineExitCode: &code, BaselineOutputContains: []string{"RED-ASSERTION"}}}
+	var evidence bytes.Buffer
+	if err := ExecuteBaseline(contract, t.TempDir(), &evidence); err != nil {
+		t.Fatalf("real Red assertion rejected: %v", err)
+	}
+	if !strings.Contains(evidence.String(), `"gate":"regression","status":"PASS"`) {
+		t.Fatalf("Red oracle did not pass: %s", evidence.String())
+	}
+}
+
+func TestTargetNamesMissingRegressionDependency(t *testing.T) {
+	regression := strictCmd(os.Args[0], "-test.run=^TestChangeExecPrerequisiteHelper$", "--", "missing-runner")
+	contract := strictBehaviorPreservingContract(regression)
+	var evidence bytes.Buffer
+	err := ExecuteTarget(contract, t.TempDir(), &evidence)
+	if err == nil || !strings.Contains(err.Error(), "missing executable missing-regression-runner") || !strings.Contains(err.Error(), "intended checks did not run") {
+		t.Fatalf("missing target prerequisite not reported: %v evidence=%s", err, evidence.String())
+	}
+}
 
 func cmd(argv ...string) spec.CommandSpec {
 	return spec.CommandSpec{Argv: argv, Cwd: ".", TimeoutSeconds: 5}

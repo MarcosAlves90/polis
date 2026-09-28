@@ -18,6 +18,11 @@ without building or verifying a delivery artifact. A passing gate report is
 not package verification; delivery still uses `polis build` followed by
 `polis verify`.
 
+Prerequisite diagnostics are tested with a direct command-not-found case,
+nested missing dependency and environment cases, and real assertion failures
+(including exit 127). Red regression tests ensure a blocked command cannot
+pass a Red oracle with a matching exit code.
+
 Red probe scope preflight tests cover exact and directory-prefix matches,
 multiple rejected paths with their `test_scope.allowed_paths` rule, invalid
 path and stale-baseline rejection, text/JSON output, and preservation of the
