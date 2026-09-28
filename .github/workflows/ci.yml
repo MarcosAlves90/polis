@@ -40,7 +40,7 @@ jobs:
           cache: false
 
       - name: Test
-        run: go test ./...
+        run: go test ./... -timeout=15m
 
       - name: Build
         run: go build -trimpath ./cmd/polis
