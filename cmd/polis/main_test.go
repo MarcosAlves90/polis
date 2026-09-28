@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -154,7 +155,7 @@ func TestRunHelp(t *testing.T) {
 		if code := run(args, &out, &errOut); code != exitPass {
 			t.Fatalf("args=%v code=%d stdout=%s stderr=%s", args, code, out.String(), errOut.String())
 		}
-		for _, fragment := range []string{"POLIS V6", "Usage:", "doctor", "implementation-plan", "export", "polis help <command>"} {
+		for _, fragment := range []string{"POLIS V6", "Usage:", "doctor", "implementation-plan", "gates", "export", "polis help <command>"} {
 			if !strings.Contains(out.String(), fragment) {
 				t.Errorf("args=%v help missing %q: %s", args, fragment, out.String())
 			}
@@ -671,6 +672,211 @@ func TestRunPlanReportsExternalPolicySourceWithoutPath(t *testing.T) {
 	}
 	if strings.Contains(out.String(), policyPath) {
 		t.Fatalf("external policy pathname leaked into plan output: %q", policyPath)
+	}
+}
+
+func TestRunGatesReportsConfiguredResultsWithoutArtifact(t *testing.T) {
+	repo := makeBuildRepo(t)
+	for _, format := range []string{"text", "json"} {
+		t.Run(format, func(t *testing.T) {
+			args := []string{"gates", "--repo", repo, "--format", format}
+			var out, errOut bytes.Buffer
+			if code := run(args, &out, &errOut); code != exitPass {
+				t.Fatalf("RED: gates command should execute configured project gates without a delivery artifact: code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+			}
+			if format == "text" {
+				for _, fragment := range []string{
+					"POLIS GATES: PASS",
+					"Gate test.complete: PASS (executed)",
+					"Gate coverage: PASS (executed)",
+					"Gate lint: NOT_APPLICABLE (not executed)",
+					"Delivery artifact: not built or verified",
+					"Gate validation does not mean a delivery artifact was built or verified.",
+				} {
+					if !strings.Contains(out.String(), fragment) {
+						t.Errorf("text gates output missing %q: %s", fragment, out.String())
+					}
+				}
+				return
+			}
+
+			var report struct {
+				Status                   string   `json:"status"`
+				ValidationOnly           bool     `json:"validation_only"`
+				ExecutedGates            []string `json:"executed_gates"`
+				DeliveryArtifactBuilt    bool     `json:"delivery_artifact_built"`
+				DeliveryArtifactVerified bool     `json:"delivery_artifact_verified"`
+				DeliveryArtifactNotice   string   `json:"delivery_artifact_notice"`
+				GateResults              []struct {
+					ID       string `json:"id"`
+					Status   string `json:"status"`
+					Executed bool   `json:"executed"`
+				} `json:"gate_results"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+				t.Fatalf("invalid gates JSON: %v\n%s", err, out.String())
+			}
+			if report.Status != string(spec.StatusPass) || !report.ValidationOnly || !slices.Equal(report.ExecutedGates, []string{"test.complete", "coverage"}) || report.DeliveryArtifactBuilt || report.DeliveryArtifactVerified || report.DeliveryArtifactNotice != "Gate validation does not mean a delivery artifact was built or verified." {
+				t.Fatalf("gates report=%+v", report)
+			}
+			statuses := make(map[string]struct {
+				status   string
+				executed bool
+			}, len(report.GateResults))
+			for _, result := range report.GateResults {
+				statuses[result.ID] = struct {
+					status   string
+					executed bool
+				}{status: result.Status, executed: result.Executed}
+			}
+			if len(statuses) != len(spec.ProjectGateOrder) || statuses["test.complete"].status != string(spec.StatusPass) || !statuses["test.complete"].executed || statuses["coverage"].status != string(spec.StatusPass) || !statuses["coverage"].executed || statuses["lint"].status != string(spec.StatusNotApplicable) || statuses["lint"].executed {
+				t.Fatalf("gate results=%+v", report.GateResults)
+			}
+		})
+	}
+
+	if _, err := os.Stat(filepath.Join(repo, ".polis", "artifacts", "packages")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("gate-only command created a delivery package directory: stat err=%v", err)
+	}
+}
+
+func TestRunGatesReturnsFailureWithPerGateResults(t *testing.T) {
+	for _, scenario := range []struct {
+		name         string
+		argv         []string
+		overall      spec.Status
+		gateStatus   spec.Status
+		gateExecuted bool
+		exitCode     int
+		executed     []string
+	}{
+		{name: "failed process", argv: []string{"git", "polis-test-command-that-does-not-exist"}, overall: spec.StatusFail, gateStatus: spec.StatusFail, gateExecuted: true, exitCode: exitValidationFailed, executed: []string{"test.complete", "coverage"}},
+		{name: "blocked process start", argv: []string{"polis-issue11-no-such-executable"}, overall: spec.StatusBlocked, gateStatus: spec.StatusBlocked, gateExecuted: false, exitCode: exitBlocked, executed: []string{"coverage"}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			repo := makeBuildRepo(t)
+			policy := spec.Policy{}
+			if err := json.Unmarshal(canonicalPolicyBytes(t), &policy); err != nil {
+				t.Fatal(err)
+			}
+			for i := range policy.Gates {
+				if policy.Gates[i].ID == "test.complete" {
+					policy.Gates[i].Command.Argv = scenario.argv
+				}
+			}
+			policyRaw, err := json.Marshal(policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			policyPath := filepath.Join(t.TempDir(), "failing-policy.json")
+			if err := os.WriteFile(policyPath, append(policyRaw, '\n'), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out, errOut bytes.Buffer
+			code := run([]string{"gates", "--repo", repo, "--policy", policyPath, "--format", "json"}, &out, &errOut)
+			if code != scenario.exitCode {
+				t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+			}
+			var report struct {
+				Status                   string   `json:"status"`
+				ExecutedGates            []string `json:"executed_gates"`
+				DeliveryArtifactBuilt    bool     `json:"delivery_artifact_built"`
+				DeliveryArtifactVerified bool     `json:"delivery_artifact_verified"`
+				DeliveryArtifactNotice   string   `json:"delivery_artifact_notice"`
+				GateResults              []struct {
+					ID       string `json:"id"`
+					Status   string `json:"status"`
+					Executed bool   `json:"executed"`
+				} `json:"gate_results"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+				t.Fatalf("invalid gates failure JSON: %v\n%s", err, out.String())
+			}
+			statuses := make(map[string]struct {
+				status   string
+				executed bool
+			}, len(report.GateResults))
+			for _, result := range report.GateResults {
+				statuses[result.ID] = struct {
+					status   string
+					executed bool
+				}{status: result.Status, executed: result.Executed}
+			}
+			if report.Status != string(scenario.overall) || !slices.Equal(report.ExecutedGates, scenario.executed) || report.DeliveryArtifactBuilt || report.DeliveryArtifactVerified || report.DeliveryArtifactNotice != "Gate validation does not mean a delivery artifact was built or verified." || statuses["test.complete"].status != string(scenario.gateStatus) || statuses["test.complete"].executed != scenario.gateExecuted || statuses["coverage"].status != string(spec.StatusPass) {
+				t.Fatalf("failure report=%+v statuses=%v", report, statuses)
+			}
+		})
+	}
+}
+
+func TestRunGatesDoesNotMarkCoverageCommandRunWhenReportCleanupFails(t *testing.T) {
+	repo := makeBuildRepo(t)
+	reportPath := filepath.Join(repo, ".polis", "coverage.out")
+	if err := os.Remove(reportPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(reportPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(reportPath, "keep.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{"gates", "--repo", repo, "--format", "json"}, &out, &errOut)
+	if code != exitValidationFailed {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	var report struct {
+		Status        string   `json:"status"`
+		ExecutedGates []string `json:"executed_gates"`
+		GateResults   []struct {
+			ID       string `json:"id"`
+			Status   string `json:"status"`
+			Executed bool   `json:"executed"`
+		} `json:"gate_results"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("invalid gates cleanup failure JSON: %v\n%s", err, out.String())
+	}
+	statuses := make(map[string]struct {
+		status   string
+		executed bool
+	}, len(report.GateResults))
+	for _, result := range report.GateResults {
+		statuses[result.ID] = struct {
+			status   string
+			executed bool
+		}{status: result.Status, executed: result.Executed}
+	}
+	if report.Status != string(spec.StatusFail) || !slices.Equal(report.ExecutedGates, []string{"test.complete"}) || statuses["coverage"].status != string(spec.StatusFail) || statuses["coverage"].executed {
+		t.Fatalf("coverage cleanup report=%+v statuses=%v", report, statuses)
+	}
+}
+
+func TestRunGatesRejectsInvalidArgumentsAndReportsHelp(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"help", "gates"}, &out, &errOut); code != exitPass {
+		t.Fatalf("help code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	for _, fragment := range []string{"polis gates [--repo <path>]", "run configured project gates", "without building a delivery artifact"} {
+		if !strings.Contains(out.String(), fragment) {
+			t.Errorf("gates help missing %q: %s", fragment, out.String())
+		}
+	}
+	for _, args := range [][]string{{"gates", "--format", "xml"}, {"gates", "--repo", ".", "unexpected"}} {
+		out.Reset()
+		errOut.Reset()
+		if code := run(args, &out, &errOut); code != exitUsage || !strings.Contains(errOut.String(), "usage: polis gates") {
+			t.Errorf("args=%v code=%d stderr=%s", args, code, errOut.String())
+		}
+	}
+
+	repo := makeBuildRepo(t)
+	missingPolicy := filepath.Join(t.TempDir(), "missing-policy.json")
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"gates", "--repo", repo, "--policy", missingPolicy}, &out, &errOut); code != exitValidationFailed || !strings.Contains(errOut.String(), "POLIS GATES: FAIL") || !strings.Contains(errOut.String(), "read external Project Policy") {
+		t.Fatalf("missing policy code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
 	}
 }
 

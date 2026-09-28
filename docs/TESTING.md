@@ -6,6 +6,11 @@ verification; project-wide line coverage must remain above 80%. The CI workflow
 also runs the race detector and coverage checks. These existing gates remain
 the acceptance bar for changes.
 
+Run `polis gates --repo .` to execute the committed configured gates locally
+without building or verifying a delivery artifact. A passing gate report is
+not package verification; delivery still uses `polis build` followed by
+`polis verify`.
+
 For repository artifact retention, unit tests cover strict manifest parsing,
 HEAD/working-copy agreement, content-addressed atomic writes, path containment,
 and Git status filtering. Integration tests use temporary committed Git

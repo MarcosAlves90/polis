@@ -16,11 +16,13 @@ import (
 
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
 	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
+	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
 	"github.com/MarcosAlves90/polis/v6/internal/offlinekit"
 	"github.com/MarcosAlves90/polis/v6/internal/packageapply"
 	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
 	"github.com/MarcosAlves90/polis/v6/internal/policyinit"
 	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
 	"github.com/MarcosAlves90/polis/v6/internal/redcapture"
@@ -34,15 +36,16 @@ const version = "6.8.1"
 const captureRedCommand = "capture-red"
 
 const (
-	outputFormatHelp     = "output format: text or json"
-	externalPolicyHelp   = "external Project Policy schema-v3 JSON outside the worktree"
-	repoHelp             = "Git worktree path"
-	targetRepoHelp       = "target Git worktree path"
-	preflightLabel       = "POLIS PREFLIGHT"
-	applyLabel           = "POLIS APPLY"
-	baselineModeHelp     = "consumer baseline mode: strict, compatible, or permissive"
-	overrideBaselineHelp = "explicitly waive unavailable baseline development proof; requires permissive mode"
-	commitModeHelp       = "artifact-backed commit behavior: none, prompt, or auto"
+	outputFormatHelp       = "output format: text or json"
+	externalPolicyHelp     = "external Project Policy schema-v3 JSON outside the worktree"
+	repoHelp               = "Git worktree path"
+	targetRepoHelp         = "target Git worktree path"
+	preflightLabel         = "POLIS PREFLIGHT"
+	applyLabel             = "POLIS APPLY"
+	baselineModeHelp       = "consumer baseline mode: strict, compatible, or permissive"
+	overrideBaselineHelp   = "explicitly waive unavailable baseline development proof; requires permissive mode"
+	commitModeHelp         = "artifact-backed commit behavior: none, prompt, or auto"
+	deliveryArtifactNotice = "Gate validation does not mean a delivery artifact was built or verified."
 )
 
 const (
@@ -66,6 +69,7 @@ var commandHelpEntries = []commandHelpEntry{
 	{name: "doctor", usage: "polis doctor [--format text|json]", summary: "check Git and runtime prerequisites"},
 	{name: "init", usage: "polis init [--repo <path>] [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]", summary: "create or preview a Project Policy"},
 	{name: "plan", usage: "polis plan [--repo <path>] [--policy <policy-v3.json>] [--defer-gate <id> ...] [--format text|json]", summary: "compile and report the effective Project Policy"},
+	{name: "gates", usage: "polis gates [--repo <path>] [--policy <policy-v3.json>] [--format text|json]", summary: "run configured project gates without building a delivery artifact"},
 	{name: "start", usage: "polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3-or-v5.json> --out <locked-v4-or-v6.json>", summary: "lock a strict Change Contract baseline"},
 	{name: "implementation-plan", usage: "polis implementation-plan --repo <path> [--policy <policy-v3.json>] --contract <locked-v4-or-v6.json> --out <external-plan.json> [--format text|json]", summary: "generate an optional contract-bound implementation plan"},
 	{name: captureRedCommand, usage: "polis capture-red --repo <path> --contract <change.json> [--implementation-plan <plan.json>] [--format text|json] --out <regression.patch>", summary: "capture the required Red proof"},
@@ -131,6 +135,8 @@ func run(args []string, out, errOut io.Writer) int {
 		return runInit(args[1:], out, errOut)
 	case "plan":
 		return runPlan(args[1:], out, errOut)
+	case "gates":
+		return runGates(args[1:], out, errOut)
 	case "start":
 		return runStart(args[1:], out, errOut)
 	case "implementation-plan":
@@ -367,6 +373,132 @@ func runPlan(args []string, out, errOut io.Writer) int {
 		writePlanText(out, plan)
 	}
 	return exitPass
+}
+
+type gateCLIResult struct {
+	ID       string      `json:"id"`
+	Status   spec.Status `json:"status"`
+	Executed bool        `json:"executed"`
+	Reason   string      `json:"reason,omitempty"`
+}
+
+type gatesCLIResult struct {
+	Status                   spec.Status     `json:"status"`
+	ValidationOnly           bool            `json:"validation_only"`
+	ValidationLevel          string          `json:"validation_level"`
+	EnabledGates             []string        `json:"enabled_gates"`
+	DisabledGates            []string        `json:"disabled_gates"`
+	ExecutedGates            []string        `json:"executed_gates"`
+	GateResults              []gateCLIResult `json:"gate_results"`
+	DeliveryArtifactBuilt    bool            `json:"delivery_artifact_built"`
+	DeliveryArtifactVerified bool            `json:"delivery_artifact_verified"`
+	DeliveryArtifactNotice   string          `json:"delivery_artifact_notice"`
+}
+
+func runGates(args []string, out, errOut io.Writer) int {
+	fs := flag.NewFlagSet("gates", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	repo := fs.String("repo", ".", targetRepoHelp)
+	policy := fs.String("policy", "", externalPolicyHelp)
+	format := fs.String("format", "text", outputFormatHelp)
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 0 || !validFormat(*format) {
+		fmt.Fprintln(errOut, "usage: polis gates [--repo <path>] [--policy <policy-v3.json>] [--format text|json]")
+		return exitUsage
+	}
+
+	ctx := context.Background()
+	repoRoot, err := gitutil.ResolveRoot(ctx, *repo, gitutil.ResolveRootOptions{EmptyAsDot: true, GitError: "not a Git worktree"})
+	if err != nil {
+		return writeFailure(errOut, *format, "POLIS GATES", exitValidationFailed, err)
+	}
+	plan, err := policyplan.Load(ctx, policyplan.Options{Repo: repoRoot, Policy: *policy})
+	if err != nil {
+		return writeFailure(errOut, *format, "POLIS GATES", exitValidationFailed, err)
+	}
+	result := policyexec.ExecutePlan(plan, repoRoot, io.Discard)
+	report := gatesResult(plan, result)
+	if *format == "json" {
+		writeJSON(out, report)
+	} else {
+		writeGatesText(out, report)
+	}
+	switch result.Overall {
+	case spec.StatusPass:
+		return exitPass
+	case spec.StatusBlocked:
+		return exitBlocked
+	default:
+		return exitValidationFailed
+	}
+}
+
+func gatesResult(plan policyplan.Plan, execution policyexec.Result) gatesCLIResult {
+	gateResults := make([]gateCLIResult, 0, len(plan.Gates))
+	for _, gate := range plan.Gates {
+		status, ok := execution.Gates[gate.ID]
+		if !ok {
+			status = spec.StatusBlocked
+		}
+		result := gateCLIResult{ID: gate.ID, Status: status, Executed: gateWasRun(gate.ID, status, execution)}
+		if gate.Reason != nil {
+			result.Reason = *gate.Reason
+		}
+		gateResults = append(gateResults, result)
+	}
+	executedGates := make([]string, 0, len(plan.EnabledGates))
+	for _, gateID := range plan.ExecutionOrder {
+		if status, ok := execution.Gates[gateID]; ok && gateWasRun(gateID, status, execution) {
+			executedGates = append(executedGates, gateID)
+		}
+	}
+	return gatesCLIResult{
+		Status:                   execution.Overall,
+		ValidationOnly:           true,
+		ValidationLevel:          plan.ValidationLevel,
+		EnabledGates:             append([]string{}, plan.EnabledGates...),
+		DisabledGates:            append([]string{}, plan.DisabledGates...),
+		ExecutedGates:            executedGates,
+		GateResults:              gateResults,
+		DeliveryArtifactBuilt:    false,
+		DeliveryArtifactVerified: false,
+		DeliveryArtifactNotice:   deliveryArtifactNotice,
+	}
+}
+
+func gateWasRun(gateID string, status spec.Status, execution policyexec.Result) bool {
+	switch status {
+	case spec.StatusPass:
+		return true
+	case spec.StatusFail:
+		_, commandRan := execution.CommandFailures[gateID]
+		return commandRan
+	default:
+		return false
+	}
+}
+
+func writeGatesText(out io.Writer, report gatesCLIResult) {
+	fmt.Fprintf(out, "POLIS GATES: %s\nValidation only: yes\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\nGates executed: %s\nGate results:\n",
+		report.Status, report.ValidationLevel, displayGateList(report.EnabledGates), displayGateList(report.DisabledGates), displayGateList(report.ExecutedGates))
+	if len(report.GateResults) == 0 {
+		fmt.Fprintln(out, "- none")
+	}
+	for _, gate := range report.GateResults {
+		action := "executed"
+		if !gate.Executed {
+			action = "not executed"
+		}
+		fmt.Fprintf(out, "- Gate %s: %s (%s)", gate.ID, gate.Status, action)
+		if gate.Reason != "" {
+			fmt.Fprintf(out, "; reason=%s", gate.Reason)
+		}
+		fmt.Fprintln(out)
+	}
+	fmt.Fprintln(out, "Delivery artifact: not built or verified")
+	fmt.Fprintf(out, "%s\n", report.DeliveryArtifactNotice)
 }
 
 func writePlanText(out io.Writer, plan policyplan.Plan) {
