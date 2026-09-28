@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 
 	"github.com/MarcosAlves90/polis/v6/internal/changeexec"
+	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
 	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
@@ -33,6 +35,8 @@ type Validation struct {
 	TargetApplyCheckError string
 	TargetApplyError      string
 	PolicyFailureLabel    string
+	PolicyFailureStage    string
+	PolicyFailureNotRun   []string
 }
 
 func Validate(ctx context.Context, validation Validation) error {
@@ -166,7 +170,54 @@ func validateTarget(ctx context.Context, validation Validation, redProof map[str
 		*validation.PolicyResult = result
 	}
 	if result.Overall != spec.StatusPass {
-		return fmt.Errorf("%s %s", validation.PolicyFailureLabel, result.Overall)
+		stage := validation.PolicyFailureStage
+		if stage == "" {
+			stage = validation.PolicyFailureLabel
+		}
+		gateStatuses := make(map[string]string, len(result.Gates))
+		gateIDs := make([]string, 0, len(result.Gates))
+		for gate, status := range result.Gates {
+			gateStatuses[gate] = string(status)
+			gateIDs = append(gateIDs, gate)
+		}
+		sort.Strings(gateIDs)
+		notRun := append([]string(nil), validation.PolicyFailureNotRun...)
+		for _, gate := range gateIDs {
+			status := result.Gates[gate]
+			if status == spec.StatusBlocked || status == spec.StatusDeferred || status == spec.StatusNotApplicable {
+				notRun = append(notRun, fmt.Sprintf("gate %s (%s)", gate, status))
+			}
+		}
+		commandIDs := make([]string, 0, len(result.CommandFailures))
+		for gate := range result.CommandFailures {
+			commandIDs = append(commandIDs, gate)
+		}
+		sort.Strings(commandIDs)
+		commands := make([]diagnostic.Command, 0, len(commandIDs))
+		for _, gate := range commandIDs {
+			execution := result.CommandFailures[gate]
+			observation := execution.Observation
+			stdout, stdoutPreviewTruncated := diagnostic.BoundProcessOutput(observation.Stdout)
+			stderr, stderrPreviewTruncated := diagnostic.BoundProcessOutput(observation.Stderr)
+			commands = append(commands, diagnostic.Command{
+				Gate: gate, Argv: append([]string(nil), execution.Argv...), Cwd: execution.Cwd,
+				Status: string(observation.Status), ExitCode: observation.ExitCode, DurationMS: observation.DurationMS,
+				StdoutContext: stdout, StderrContext: stderr, StdoutBytes: observation.StdoutBytes, StderrBytes: observation.StderrBytes,
+				StdoutSHA256: observation.StdoutSHA256, StderrSHA256: observation.StderrSHA256,
+				StdoutTruncated: observation.StdoutTruncated || stdoutPreviewTruncated,
+				StderrTruncated: observation.StderrTruncated || stderrPreviewTruncated,
+			})
+		}
+		report := diagnostic.Report{
+			Stage: stage, Condition: "one or more configured project gates did not pass",
+			Expected:     map[string]any{"overall_gate_status": string(spec.StatusPass)},
+			Actual:       map[string]any{"overall_gate_status": string(result.Overall)},
+			GateStatuses: gateStatuses, Commands: commands, NotRun: notRun,
+		}
+		if len(commands) == 1 {
+			report.Command = &commands[0]
+		}
+		return &diagnostic.Error{Summary: fmt.Sprintf("%s %s", validation.PolicyFailureLabel, result.Overall), Report: report}
 	}
 	return nil
 }

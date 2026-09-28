@@ -175,6 +175,8 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 		TargetApplyCheckError: "isolated git apply --check failed",
 		TargetApplyError:      "isolated git apply --index failed",
 		PolicyFailureLabel:    "project policy validation",
+		PolicyFailureStage:    "project gate validation",
+		PolicyFailureNotRun:   []string{"artifact packaging"},
 	}
 	if err := isolation.Validate(ctx, validation); err != nil {
 		return Result{}, err

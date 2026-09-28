@@ -15,6 +15,7 @@ import (
 
 	"github.com/MarcosAlves90/polis/v6/internal/changeexec"
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
+	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
 	"github.com/MarcosAlves90/polis/v6/internal/fileutil"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
@@ -281,7 +282,30 @@ func validateProbe(ctx context.Context, repo, head string, patch []byte, contrac
 	}
 	paths := sortedPathKeys(changed)
 	if err := contract.ValidateTestPaths(paths); err != nil {
-		return fmt.Errorf("Red probe scope validation: %w", err)
+		offending := make([]string, 0)
+		for _, repoPath := range paths {
+			if spec.ValidateRepoRelativePath(repoPath) == nil && !contract.TestScopeAllowsPath(repoPath) {
+				offending = append(offending, repoPath)
+			}
+		}
+		if len(offending) == 0 {
+			return fmt.Errorf("Red probe scope validation: %w", err)
+		}
+		allowed := []string(nil)
+		if contract.TestScope != nil {
+			allowed = append(allowed, contract.TestScope.AllowedPaths...)
+		}
+		return &diagnostic.Error{
+			Summary: fmt.Sprintf("Red probe scope validation: %v", err),
+			Report: diagnostic.Report{
+				Stage:     "Red probe scope validation",
+				Condition: "captured Red probe paths must match the declared Change Contract test_scope",
+				Expected:  map[string]any{"allowed_test_paths": allowed},
+				Actual:    map[string]any{"offending_paths": offending},
+				Paths:     offending,
+			},
+			Cause: err,
+		}
 	}
 	if err := changeexec.ExecuteBaseline(contract, worktree, io.Discard); err != nil {
 		return fmt.Errorf("regression Red oracle not satisfied: %w", err)

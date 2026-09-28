@@ -340,11 +340,17 @@ func TestCaptureStrictFeatureAcceptsTestOnlyRed(t *testing.T) {
 	}
 }
 
-func TestCaptureStrictFeatureRejectsProductionPathBeforeRed(t *testing.T) {
+func TestIssue12CaptureRedScopeDiagnosticIncludesAllowedPaths(t *testing.T) {
 	repo, contract := strictFeatureFixture(t, true)
 	out := filepath.Join(t.TempDir(), "strict-feature-red.patch")
-	if _, err := Capture(context.Background(), Options{Repo: repo, Contract: contract, Out: out}); err == nil || !strings.Contains(err.Error(), "outside test scope") {
+	_, err := Capture(context.Background(), Options{Repo: repo, Contract: contract, Out: out})
+	if err == nil || !strings.Contains(err.Error(), "outside test scope") {
 		t.Fatalf("expected test-scope rejection, got %v", err)
+	}
+	for _, fragment := range []string{"app.txt", "regression.txt"} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Fatalf("ISSUE12-RED: scope diagnostic missing %q: %v", fragment, err)
+		}
 	}
 }
 

@@ -18,7 +18,7 @@ polis init --repo /path/to/repo [--profile auto|go|custom] [--validation-level s
 polis plan --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
 polis start --repo /path/to/repo --policy /outside/policy-v3.json --contract /outside/draft-v5.json --out /outside/locked-v6.json
 polis implementation-plan --repo /path/to/repo [--policy /outside/policy-v3.json] --contract /outside/locked-v6.json --out /outside/implementation-plan.json
-polis capture-red --repo /path/to/repo --contract /outside/locked-v6.json [--implementation-plan /outside/implementation-plan.json] --out /outside/regression.patch
+polis capture-red --repo /path/to/repo --contract /outside/locked-v6.json [--implementation-plan /outside/implementation-plan.json] --out /outside/regression.patch [--format text|json]
 polis build --repo /path/to/repo --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/locked-v6.json --regression-patch /outside/regression.patch [--implementation-plan /outside/implementation-plan.json] --out /outside/output
 polis verify [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
 polis inspect [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis

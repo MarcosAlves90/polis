@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 ### Fixed
+- Add actionable, structured diagnostics to baseline-size, capture-red scope, and project-gate failures, with equivalent text and JSON output.
 
 ## [6.8.1] - 2026-09-24
 

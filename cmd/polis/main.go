@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
+	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
 	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
 	"github.com/MarcosAlves90/polis/v6/internal/offlinekit"
 	"github.com/MarcosAlves90/polis/v6/internal/packageapply"
@@ -67,7 +68,7 @@ var commandHelpEntries = []commandHelpEntry{
 	{name: "plan", usage: "polis plan [--repo <path>] [--policy <policy-v3.json>] [--defer-gate <id> ...] [--format text|json]", summary: "compile and report the effective Project Policy"},
 	{name: "start", usage: "polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3-or-v5.json> --out <locked-v4-or-v6.json>", summary: "lock a strict Change Contract baseline"},
 	{name: "implementation-plan", usage: "polis implementation-plan --repo <path> [--policy <policy-v3.json>] --contract <locked-v4-or-v6.json> --out <external-plan.json> [--format text|json]", summary: "generate an optional contract-bound implementation plan"},
-	{name: captureRedCommand, usage: "polis capture-red --repo <path> --contract <change.json> [--implementation-plan <plan.json>] --out <regression.patch>", summary: "capture the required Red proof"},
+	{name: captureRedCommand, usage: "polis capture-red --repo <path> --contract <change.json> [--implementation-plan <plan.json>] [--format text|json] --out <regression.patch>", summary: "capture the required Red proof"},
 	{name: "build", usage: "polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--defer-gate <id> ...] [--format text|json] --out <directory>", summary: "build a .polis delivery package"},
 	{name: "verify", usage: "polis verify [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate a .polis artifact"},
 	{name: "inspect", usage: "polis inspect [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "inspect validated artifact metadata"},
@@ -523,19 +524,23 @@ func runCaptureRed(args []string, out, errOut io.Writer) int {
 	contract := fs.String("contract", "", "defect Change Contract JSON outside the worktree")
 	implementationPlanPath := fs.String("implementation-plan", "", "optional contract-bound Implementation Plan JSON outside the worktree")
 	outPath := fs.String("out", "", "output regression patch outside the worktree")
+	format := fs.String("format", "text", outputFormatHelp)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	if fs.NArg() != 0 || *repo == "" || *contract == "" || *outPath == "" {
-		fmt.Fprintln(errOut, "usage: polis capture-red --repo <path> --contract <change.json> [--implementation-plan <plan.json>] --out <regression.patch>")
+	if fs.NArg() != 0 || *repo == "" || *contract == "" || *outPath == "" || !validFormat(*format) {
+		fmt.Fprintln(errOut, "usage: polis capture-red --repo <path> --contract <change.json> [--implementation-plan <plan.json>] [--format text|json] --out <regression.patch>")
 		return exitUsage
 	}
 	result, err := redcapture.Capture(context.Background(), redcapture.Options{Repo: *repo, Contract: *contract, ImplementationPlan: *implementationPlanPath, Out: *outPath})
 	if err != nil {
-		fmt.Fprintf(errOut, "POLIS CAPTURE-RED: FAIL: %v\n", err)
-		return exitUsage
+		return writeFailure(errOut, *format, "POLIS CAPTURE-RED", exitUsage, err)
 	}
-	fmt.Fprintf(out, "POLIS CAPTURE-RED: PASS\nPatch: %s\nSHA256: %s\n", result.Path, result.SHA256)
+	if *format == "json" {
+		writeJSON(out, map[string]any{"status": "PASS", "patch": result.Path, "sha256": result.SHA256})
+	} else {
+		fmt.Fprintf(out, "POLIS CAPTURE-RED: PASS\nPatch: %s\nSHA256: %s\n", result.Path, result.SHA256)
+	}
 	return exitPass
 }
 
@@ -919,8 +924,23 @@ func escapeJSONC1Controls(encoded string) string {
 }
 
 func writeFailure(w io.Writer, format, label string, code int, err error) int {
+	structured, hasDiagnostic := diagnostic.As(err)
 	if format == "json" {
-		writeJSON(w, map[string]any{"status": "FAIL", "exit_code": code, "error": err.Error()})
+		payload := map[string]any{"status": "FAIL", "exit_code": code, "error": err.Error()}
+		if hasDiagnostic {
+			if structured.Summary != "" {
+				payload["error"] = structured.Summary
+			}
+			payload["diagnostic"] = structured.Report
+		}
+		writeJSON(w, payload)
+	} else if hasDiagnostic {
+		summary := structured.Summary
+		if summary == "" {
+			summary = err.Error()
+		}
+		fmt.Fprintf(w, "%s: FAIL: %s\n", label, summary)
+		fmt.Fprint(w, structured.Report.FormatText())
 	} else {
 		fmt.Fprintf(w, "%s: FAIL: %v\n", label, err)
 	}
