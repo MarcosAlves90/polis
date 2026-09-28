@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/MarcosAlves90/polis/v6/internal/changestatus"
 	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
 	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
@@ -71,6 +72,7 @@ var commandHelpEntries = []commandHelpEntry{
 	{name: "doctor", usage: "polis doctor [--format text|json]", summary: "check Git and runtime prerequisites"},
 	{name: "init", usage: "polis init [--repo <path>] [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]", summary: "create or preview a Project Policy"},
 	{name: "plan", usage: "polis plan [--repo <path>] [--policy <policy-v3.json>] [--defer-gate <id> ...] [--format text|json]", summary: "compile and report the effective Project Policy"},
+	{name: "status", usage: "polis status [--repo <path>] [--policy <policy-v3.json>] [--contract <locked-v4-or-v6.json>] [--regression-patch <red.patch>] [--artifact <artifact.polis>] [--format text|json]", summary: "summarize persisted change state and the next valid workflow action"},
 	{name: "gates", usage: "polis gates [--repo <path>] [--policy <policy-v3.json>] [--format text|json]", summary: "run configured project gates without building a delivery artifact"},
 	{name: "start", usage: "polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3-or-v5.json> --out <locked-v4-or-v6.json>", summary: "lock a strict Change Contract baseline"},
 	{name: "implementation-plan", usage: "polis implementation-plan --repo <path> [--policy <policy-v3.json>] --contract <locked-v4-or-v6.json> --out <external-plan.json> [--format text|json]", summary: "generate an optional contract-bound implementation plan"},
@@ -138,6 +140,8 @@ func run(args []string, out, errOut io.Writer) int {
 		return runInit(args[1:], out, errOut)
 	case "plan":
 		return runPlan(args[1:], out, errOut)
+	case "status":
+		return runStatus(args[1:], out, errOut)
 	case "gates":
 		return runGates(args[1:], out, errOut)
 	case "start":
@@ -399,6 +403,84 @@ type gatesCLIResult struct {
 	DeliveryArtifactVerified bool            `json:"delivery_artifact_verified"`
 	DeliveryArtifactNotice   string          `json:"delivery_artifact_notice"`
 }
+
+func runStatus(args []string, out, errOut io.Writer) int {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	repo := fs.String("repo", ".", repoHelp)
+	policy := fs.String("policy", "", externalPolicyHelp)
+	contract := fs.String("contract", "", "persisted locked schema-v4 or v6 Change Contract outside the worktree or retained by repository mode")
+	regressionPatch := fs.String("regression-patch", "", "persisted Red proof outside the worktree or retained by repository mode")
+	artifact := fs.String("artifact", "", "persisted .polis delivery package outside the worktree or retained by repository mode")
+	format := fs.String("format", "text", outputFormatHelp)
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 0 || !validFormat(*format) {
+		fmt.Fprintln(errOut, "usage: polis status [--repo <path>] [--policy <policy-v3.json>] [--contract <locked-v4-or-v6.json>] [--regression-patch <red.patch>] [--artifact <artifact.polis>] [--format text|json]")
+		return exitUsage
+	}
+	report, err := changestatus.Summarize(context.Background(), changestatus.Options{
+		Repo: *repo, Policy: *policy, Contract: *contract, RegressionPatch: *regressionPatch, Artifact: *artifact,
+	})
+	if err != nil {
+		return writeFailure(errOut, *format, "POLIS STATUS", exitValidationFailed, err)
+	}
+	if *format == "json" {
+		writeJSON(out, report)
+	} else {
+		writeChangeStatusText(out, report)
+	}
+	if !report.Consistent {
+		return exitValidationFailed
+	}
+	return exitPass
+}
+
+func writeChangeStatusText(out io.Writer, report changestatus.Report) {
+	fmt.Fprintf(out, "POLIS STATUS: %s\nState: %s\n", report.Status, report.State)
+	if report.Contract != nil {
+		fmt.Fprintf(out, "Contract: %s (schema v%d, %s, %s)\n", report.Contract.Source, report.Contract.SchemaVersion, report.Contract.Kind, report.Contract.RegressionMode)
+	}
+	if report.Baseline != nil {
+		fmt.Fprintf(out, "Locked baseline: commit=%s tree=%s policy=%s specification=%s\n", report.Baseline.BaseCommit, report.Baseline.BaseTree, report.Baseline.PolicySHA256, report.Baseline.SpecificationSHA256)
+	}
+	if report.Artifact != nil {
+		fmt.Fprintf(out, "Artifact: %s (project=%s change=%s target=%s)\n", report.Artifact.Path, report.Artifact.Project, report.Artifact.Change, report.Artifact.TargetTree)
+	}
+	fmt.Fprintln(out, "Evidence:")
+	for _, evidence := range report.Evidence {
+		fmt.Fprintf(out, "- %s: %s", evidence.ID, evidence.State)
+		if evidence.Detail != "" {
+			fmt.Fprintf(out, " (%s)", evidence.Detail)
+		}
+		fmt.Fprintln(out)
+	}
+	fmt.Fprintln(out, "Gates:")
+	if len(report.Gates) == 0 {
+		fmt.Fprintln(out, "- none")
+	}
+	for _, gate := range report.Gates {
+		fmt.Fprintf(out, "- %s: %s", gate.ID, gate.State)
+		if gate.Status != "" {
+			fmt.Fprintf(out, " [%s]", gate.Status)
+		}
+		if gate.Reason != "" {
+			fmt.Fprintf(out, "; reason=%s", gate.Reason)
+		}
+		fmt.Fprintln(out)
+	}
+	for _, problem := range report.Problems {
+		fmt.Fprintf(out, "Problem: %s\n", problem)
+	}
+	if report.NextAction.Command != "" {
+		fmt.Fprintf(out, "Next action: %s\n", report.NextAction.Command)
+	} else {
+		fmt.Fprintf(out, "Next action: %s\n", report.NextAction.Action)
+	}
+	fmt.Fprintf(out, "Reason: %s\n", report.NextAction.Reason)
+}
+
 
 func runGates(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("gates", flag.ContinueOnError)

@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- Add `polis status` to summarize persisted locked contract/baseline state, evidence and gate completion, inconsistencies, and the next valid workflow action.
 - Add committed repository artifact-retention preferences and content-addressed copies for generated contracts, plans, proofs, validation evidence, and delivery packages.
 - Add `polis gates` to run configured Project Policy gates without building or verifying a delivery artifact.
 - Add `polis check-red-scope` to preflight proposed Red probe paths against a locked Change Contract without executing the probe or capturing proof.

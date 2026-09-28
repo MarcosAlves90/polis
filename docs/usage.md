@@ -16,6 +16,7 @@ polis help [command]
 polis doctor [--format text|json]
 polis init --repo /path/to/repo [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]
 polis plan --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
+polis status --repo /path/to/repo [--policy /outside/policy-v3.json] [--contract /outside/locked-v6.json] [--regression-patch /outside/regression.patch] [--artifact /outside/change.polis] [--format text|json]
 polis gates --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
 polis start --repo /path/to/repo --policy /outside/policy-v3.json --contract /outside/draft-v5.json --out /outside/locked-v6.json
 polis implementation-plan --repo /path/to/repo [--policy /outside/policy-v3.json] --contract /outside/locked-v6.json --out /outside/implementation-plan.json
@@ -109,6 +110,17 @@ the actual captured patch before executing the Red command.
 Use `polis capture-red` for Red-to-Green work. Use the locked contract with
 `polis build`; the resulting package can be inspected, verified, and applied by
 the consumer workflow.
+
+Use `polis status` when resuming a change. Point it at the persisted locked
+contract and, when present, its regression proof or delivery package. The
+command reads these artifacts without writing workflow state, reports the exact
+locked baseline, classifies required evidence and Project Policy gates as
+complete, missing, incomplete, or not required, and names the next valid
+workflow command. A validated delivery package supplies its own locked contract,
+policy, and evidence, so `--artifact` can be used without separately passing
+`--contract`. If explicitly supplied artifacts disagree, status reports an
+inconsistent persisted state and does not infer completion from prior command
+output.
 
 ## Repository artifact retention
 

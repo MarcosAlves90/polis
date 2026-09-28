@@ -156,7 +156,7 @@ func TestRunHelp(t *testing.T) {
 		if code := run(args, &out, &errOut); code != exitPass {
 			t.Fatalf("args=%v code=%d stdout=%s stderr=%s", args, code, out.String(), errOut.String())
 		}
-		for _, fragment := range []string{"POLIS V6", "Usage:", "doctor", "implementation-plan", "gates", "export", "polis help <command>"} {
+		for _, fragment := range []string{"POLIS V6", "Usage:", "doctor", "implementation-plan", "status", "gates", "export", "polis help <command>"} {
 			if !strings.Contains(out.String(), fragment) {
 				t.Errorf("args=%v help missing %q: %s", args, fragment, out.String())
 			}
@@ -1073,6 +1073,158 @@ func TestRunBuildRequiresFlags(t *testing.T) {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
 }
+
+func TestRunStatusResumesLockedPartialState(t *testing.T) {
+	repo := makeBuildRepo(t)
+	contract := lockedCLIContract(t, repo)
+	var out, errOut bytes.Buffer
+	if code := run([]string{"status", "--repo", repo, "--contract", contract, "--format", "json"}, &out, &errOut); code != exitPass {
+		t.Fatalf("status code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	var report struct {
+		Status string `json:"status"`
+		State string `json:"state"`
+		Baseline *spec.BaselineLock `json:"baseline"`
+		Evidence []struct { ID, State string } `json:"evidence"`
+		Gates []struct { ID, State, Status string } `json:"gates"`
+		NextAction struct { Command string `json:"command"` } `json:"next_action"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode status JSON: %v\n%s", err, out.String())
+	}
+	if report.Status != "PASS" || report.State != "ready_to_build" || report.Baseline == nil || report.Baseline.BaseCommit == "" || report.NextAction.Command != "polis build" {
+		t.Fatalf("unexpected status report: %+v", report)
+	}
+	if got := evidenceState(report.Evidence, "regression_proof"); got != "not_required" {
+		t.Fatalf("regression proof state=%q", got)
+	}
+	if got := gateState(report.Gates, "test.complete"); got != "missing" {
+		t.Fatalf("test.complete state=%q", got)
+	}
+}
+
+func TestRunStatusReportsBuiltEvidenceAndDeferredGate(t *testing.T) {
+	repo := makeBuildRepo(t)
+	contract := lockedCLIContract(t, repo)
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	built, err := packagebuild.Build(context.Background(), packagebuild.Options{
+		Repo: repo, Project: "polis", Change: "issue-15-status", Out: t.TempDir(), Contract: contract, DeferredGates: []string{"coverage"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := run([]string{"status", "--repo", repo, "--artifact", built.Path, "--format", "json"}, &out, &errOut); code != exitPass {
+		t.Fatalf("status code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	var report struct {
+		State string `json:"state"`
+		Gates []struct { ID, State, Status string } `json:"gates"`
+		NextAction struct { Command string `json:"command"` } `json:"next_action"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode status JSON: %v\n%s", err, out.String())
+	}
+	if report.State != "built" || report.NextAction.Command != "polis preflight" {
+		t.Fatalf("unexpected built status: %+v", report)
+	}
+	if state, status := gateStateAndStatus(report.Gates, "test.complete"); state != "complete" || status != string(spec.StatusPass) {
+		t.Fatalf("test.complete state/status=%q/%q", state, status)
+	}
+	if state, status := gateStateAndStatus(report.Gates, "coverage"); state != "incomplete" || status != string(spec.StatusDeferred) {
+		t.Fatalf("coverage state/status=%q/%q", state, status)
+	}
+}
+
+func TestRunStatusReportsInconsistentPersistedState(t *testing.T) {
+	repo := makeBuildRepo(t)
+	contract := lockedCLIContract(t, repo)
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	built, err := packagebuild.Build(context.Background(), packagebuild.Options{Repo: repo, Project: "polis", Change: "issue-15-mismatch", Out: t.TempDir(), Contract: contract})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatched, err := spec.DecodeChangeContract(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatched.BaselineLock.BaseTree = strings.Repeat("0", 64)
+	mismatchRaw, err := json.Marshal(mismatched)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatchPath := filepath.Join(t.TempDir(), "mismatched-contract.json")
+	if err := os.WriteFile(mismatchPath, mismatchRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := run([]string{"status", "--repo", repo, "--contract", mismatchPath, "--artifact", built.Path, "--format", "json"}, &out, &errOut)
+	if code != exitValidationFailed {
+		t.Fatalf("status code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	var report struct {
+		Status string `json:"status"`
+		State string `json:"state"`
+		Consistent bool `json:"consistent"`
+		Problems []string `json:"problems"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode inconsistent status JSON: %v\n%s", err, out.String())
+	}
+	if report.Status != "FAIL" || report.State != "inconsistent" || report.Consistent || len(report.Problems) == 0 {
+		t.Fatalf("unexpected inconsistent report: %+v", report)
+	}
+}
+
+func TestRunStatusWithoutPersistedContractPointsToStart(t *testing.T) {
+	repo := makeBuildRepo(t)
+	var out, errOut bytes.Buffer
+	if code := run([]string{"status", "--repo", repo, "--format", "json"}, &out, &errOut); code != exitPass {
+		t.Fatalf("status code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	var report struct {
+		State string `json:"state"`
+		NextAction struct { Command string `json:"command"` } `json:"next_action"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.State != "unlocked" || report.NextAction.Command != "polis start" {
+		t.Fatalf("unexpected empty status report: %+v", report)
+	}
+}
+
+func evidenceState(items []struct{ ID, State string }, id string) string {
+	for _, item := range items {
+		if item.ID == id {
+			return item.State
+		}
+	}
+	return ""
+}
+
+func gateState(items []struct{ ID, State, Status string }, id string) string {
+	state, _ := gateStateAndStatus(items, id)
+	return state
+}
+
+func gateStateAndStatus(items []struct{ ID, State, Status string }, id string) (string, string) {
+	for _, item := range items {
+		if item.ID == id {
+			return item.State, item.Status
+		}
+	}
+	return "", ""
+}
+
 
 func TestRunApplyAppliesBuiltPackage(t *testing.T) {
 	repo := makeBuildRepo(t)
