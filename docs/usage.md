@@ -16,7 +16,7 @@ polis help [command]
 polis doctor [--format text|json]
 polis init --repo /path/to/repo [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]
 polis plan --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
-polis gates --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
+polis gates [--repo /path/to/repo] [--policy /outside/policy-v3.json] [--contract /outside/locked-v6.json] [--gate <id> ... | --affected] [--jobs <1..16>] [--environment-id <nonsecret-version>] [--reuse /outside/run.json | --replay /outside/run.json | --inspect-run /outside/run.json] [--out-run /outside/new-run.json] [--format text|json]
 polis start --repo /path/to/repo --policy /outside/policy-v3.json --contract /outside/draft-v5.json --out /outside/locked-v6.json
 polis status [--repo /path/to/repo] [--contract /outside/retained-locked-contract.json] [--format text|json]
 polis implementation-plan --repo /path/to/repo [--policy /outside/policy-v3.json] --contract /outside/locked-v6.json --out /outside/implementation-plan.json
@@ -38,6 +38,85 @@ instructions; use these help entry points without other arguments.
 The [agent command instructions](#agent-command-instructions) below are the
 canonical source embedded in the CLI, including its command index and syntax.
 No repository checkout or network access is needed to read installed help.
+
+### Incremental gate runs and replay
+
+`polis gates` now includes a versioned run manifest in JSON output. Use
+`--out-run /outside/new-run.json` to save an inspectable record; the file must
+not already exist. It records the source digest and HEAD, staging state,
+effective policy digest, optional locked contract and baseline, commands and
+repository-relative working directories, declared environment mode/names,
+dependency-result identities, POLIS/runtime version, selection, jobs bound,
+per-gate outcomes, exit status, duration and output digests. It never stores
+environment values or command output text. The content-derived run ID is
+stable for that record; a fresh nonce distinguishes every new execution.
+
+```bash
+polis gates --repo /repo --gate coverage --gate lint --jobs 2 --environment-id toolchain-v1 --out-run /outside/first.json
+polis gates --repo /repo --gate coverage --gate lint --environment-id toolchain-v1 --reuse /outside/first.json --out-run /outside/second.json
+polis gates --inspect-run /outside/first.json --format json
+polis gates --repo /repo --environment-id toolchain-v1 --replay /outside/first.json --out-run /outside/replay.json
+polis gates --repo /repo --affected --reuse /outside/first.json --environment-id toolchain-v1
+```
+
+Repeat `--gate` for explicit selection; all required prerequisites (including
+`test.complete` for coverage) are added. `--affected` captures staged,
+unstaged, deleted and nonignored untracked changes against HEAD, or against
+the baseline of an explicitly supplied external `--contract <locked.json>`.
+Policy schema-v3 command and coverage gates can declare `input_paths` as
+normalized exact paths or directory prefixes (no globs), for example
+`"input_paths": ["internal", "go.mod"]`. Mapping is a caller assertion of
+complete gate inputs, not inferred dependency analysis. Unmapped gates are
+always included; any unmapped changed path falls back to all configured
+checks. Policies without mapping continue running all configured checks.
+
+Only a prior passing result with a complete matching identity can be reused.
+Reports distinguish `executed`, `reused`, `omitted`, and dependency-blocked
+gates; stale results name changed categories in text and JSON. Source
+identity conservatively covers all tracked and nonignored untracked files,
+including file contents, executable bits, contained symlink targets and
+staging entries, the staged delta and index visibility flags; any source change
+invalidates reuse, even if unrelated to a gate's mapping. Submodules, escaping
+symlinks, nonregular source files,
+more than 100,000 files or more than 256 MiB of source fail closed.
+
+Ignored files, tools, external services/resources, Git configuration and
+environment values are not automatically fingerprinted. `--environment-id`
+is an explicit nonsecret caller-provided version assertion for these inputs
+and must change whenever any can affect a result. Without it, gates execute
+normally but results are not reused and replay is refused. Never put secrets
+in the identifier or literal command arguments. This is provenance under
+declared inputs, not hermetic execution or authentication of an untrusted
+manifest. Records are caller-owned and checksummed, not signed delivery proof.
+Startup failure reasons use fixed prerequisite categories rather than tokens
+from command output, since expanded command/module names can contain secrets.
+
+Replay requires the same available source/configuration and an explicit
+matching environment identifier; supply the same external policy and locked
+contract when originally used. Changed/missing inputs fail before execution.
+Replay uses the recorded dependency-closed selection and jobs bound, executes
+every selected gate anew and records `replay_of` with a new run ID. Do not pass
+`--jobs`, `--gate`, `--affected` or `--reuse` to replay. Inspection describes a
+historical record; it does not mark its results current in another worktree.
+
+`--jobs` defaults to 1 and accepts 1 through 16. Gates overlap only when every
+concurrently running gate explicitly declares `"parallel_safe": true` in
+the policy. This asserts that shared inputs/outputs and external resources
+do not contend; otherwise the gate is exclusive. Coverage remains exclusive
+because it owns report cleanup/measurement. Prerequisites must finish PASS
+before a dependent starts; failure blocks dependents, not unrelated gates.
+Results and evidence are emitted in stable topological plan order.
+
+Source identity is checked before scheduling and at completion. A detected
+source mutation marks evidence stale rather than binding old outcomes to the
+new source. Do not edit the source concurrently; checks are not a filesystem
+lock and cannot guarantee detection of a transient change restored between
+observations. Gate commands and their safety declarations remain trusted.
+Incremental runs are validation-only: omitted enabled gates provide no
+current guarantee, and build/apply never consume these records or reuse their
+results. All delivery invariants and complete project validation still apply.
+Existing v3 policies remain valid; older POLIS readers reject policies that
+use these newly introduced optional fields.
 
 `--executable` embeds a selected POLIS binary without executing it, and
 `--runtime` declares the target `GOOS/GOARCH` recorded in the bundle manifest.
@@ -475,33 +554,42 @@ Do not use:
 <!-- command-help: gates -->
 ```text
 Usage:
-  polis gates [--repo <path>] [--policy <policy-v3.json>] [--format text|json]
+  polis gates [--repo <path>] [--policy <policy-v3.json>] [--contract <locked.json>] [--gate <id> ... | --affected] [--jobs <1..16>] [--environment-id <nonsecret-version>] [--reuse <run.json> | --replay <run.json> | --inspect-run <run.json>] [--out-run <external-new.json>] [--format text|json]
 Purpose:
-  run configured project gates without building a delivery artifact
+  run configured project gates selectively with provenance without building a delivery artifact
 When to use:
-  Validate the current local worktree against the reviewed Project Policy.
+  Validate all gates, a dependency-closed subset, or gates affected by Git changes;
+  inspect or replay a prior run when reproducibility and iteration speed matter.
 Prerequisites:
-  Git worktree, valid effective policy, and all enabled command dependencies.
+  Git worktree and a valid effective policy. Reuse/replay also requires matching
+  recorded inputs and an explicit nonsecret --environment-id for external inputs.
 Required inputs:
-  External --policy schema-v3 JSON or committed unchanged .polis/policy.json.
+  Optional external schema-v3 --policy and locked --contract; repeat --gate for
+  selection, or use --affected. Inspect/replay/reuse take a prior run manifest.
 Workflow:
-  Use plan to inspect first; gates is local feedback, then build/verify for delivery.
+  Add required prerequisites to selected gates; only reuse a prior PASS with a
+  complete matching identity. Replay reexecutes the recorded selection and bound.
 Reads/writes:
-  Reads policy/source and executes enabled commands in the real worktree. Commands
-  can write reports/caches or access network/services; this is not sandboxed.
-  Writes a report; delivery artifact is not built or verified, and no contract is locked.
+  Reads policy/source/manifest and executes commands in the real worktree. Commands
+  are not sandboxed. Optional --out-run writes a new external manifest without
+  environment values or command output; a delivery artifact is not built or verified.
 Options/defaults:
-  --repo defaults to .; --policy defaults to committed .polis/policy.json.
-  --format defaults to text; json includes executed flags and validation-only notices.
+  --repo defaults to .; --policy defaults to committed .polis/policy.json; --format
+  defaults to text; --jobs defaults to 1 (range 1..16). --gate and --affected are
+  mutually exclusive. Parallel overlap requires every concurrent gate to declare
+  parallel_safe. --inspect-run only accepts --format; --replay forbids selection,
+  reuse and explicit jobs. --out-run must be a new external file.
 Outcomes:
-  Success (0): enabled gates pass; proceed to build, not consumer apply directly.
-  BLOCKED (4): intended checks did not run; repair missing dependencies/environment.
-  Failure (6): inspect failing executed gates/policy; fix the cause without disabling
-  required gates. Invalid syntax/format returns 2. Disabled gates provide no guarantee.
+  Success (0): selected/configured gates pass; this is local validation, not delivery
+  proof. BLOCKED (4): intended checks did not run or prerequisites failed. Failure (6):
+  inspect per-gate outcomes and stale-input categories. Invalid syntax returns 2.
 Examples:
-  polis gates --repo /path/to/repo --policy /outside/policy-v3.json --format json
+  polis gates --repo /repo --gate coverage --gate lint --jobs 2 --environment-id toolchain-v1 --out-run /outside/run.json
+  polis gates --repo /repo --affected --reuse /outside/run.json --environment-id toolchain-v1
+  polis gates --inspect-run /outside/run.json --format json
 Do not use:
-  As artifact verification, strict development proof, or a read-only check of untrusted code.
+  As artifact verification, strict development proof, or a read-only check of untrusted
+  code. Never place secret values in environment identifiers, manifests, or arguments.
 ```
 <!-- /command-help -->
 

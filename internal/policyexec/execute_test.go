@@ -60,7 +60,7 @@ func TestExecuteMarksMissingDependencyBlockedWithoutChangingGateFailure(t *testi
 			if result.Gates["test.complete"] != tc.want || result.Overall != tc.want {
 				t.Fatalf("result=%+v evidence=%s", result, evidence.String())
 			}
-			if tc.want == spec.StatusBlocked && (!strings.Contains(evidence.String(), "missing dependency pytest") || !strings.Contains(evidence.String(), "intended checks did not run")) {
+			if tc.want == spec.StatusBlocked && (!strings.Contains(evidence.String(), "missing dependency") || !strings.Contains(evidence.String(), "intended checks did not run")) {
 				t.Fatalf("missing prerequisite not reported: %s", evidence.String())
 			}
 		})

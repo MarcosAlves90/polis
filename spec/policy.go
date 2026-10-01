@@ -87,6 +87,8 @@ type EnvironmentSpec struct {
 type GatePolicy struct {
 	ID               string       `json:"id"`
 	Mode             string       `json:"mode"`
+	InputPaths       []string     `json:"input_paths,omitempty"`
+	ParallelSafe     bool         `json:"parallel_safe,omitempty"`
 	Command          *CommandSpec `json:"command,omitempty"`
 	Reason           *string      `json:"reason,omitempty"`
 	DependsOn        []string     `json:"depends_on,omitempty"`
@@ -194,6 +196,24 @@ func decodeGatePolicy(raw json.RawMessage) (GatePolicy, error) {
 		return GatePolicy{}, err
 	}
 	gate := GatePolicy{ID: id, Mode: mode}
+	if mode == GateModeNotApplicable {
+		if _, ok := fields["parallel_safe"]; ok {
+			return GatePolicy{}, errors.New("disabled gates cannot declare parallel_safe")
+		}
+		if _, ok := fields["input_paths"]; ok {
+			return GatePolicy{}, errors.New("disabled gates cannot declare input_paths")
+		}
+	}
+	if raw, ok := fields["parallel_safe"]; ok {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &gate.ParallelSafe) != nil {
+			return GatePolicy{}, errors.New("parallel_safe must be a boolean")
+		}
+	}
+	if raw, ok := fields["input_paths"]; ok {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &gate.InputPaths) != nil || len(gate.InputPaths) == 0 {
+			return GatePolicy{}, errors.New("input_paths must be a non-empty array of paths")
+		}
+	}
 	if err := decodeGateModeFields(&gate, fields); err != nil {
 		return GatePolicy{}, err
 	}
@@ -208,6 +228,7 @@ func decodeGateFields(raw json.RawMessage) (map[string]json.RawMessage, error) {
 	allowed := map[string]struct{}{
 		"id": {}, "mode": {}, "command": {}, "reason": {}, "adapter": {},
 		"report": {}, "operator": {}, "threshold_percent": {}, "depends_on": {},
+		"input_paths": {}, "parallel_safe": {},
 	}
 	for key := range fields {
 		if _, ok := allowed[key]; !ok {
@@ -309,10 +330,13 @@ func decodeNotApplicableGate(gate *GatePolicy, fields map[string]json.RawMessage
 }
 
 func dependencyFieldCount(fields map[string]json.RawMessage) int {
-	if _, ok := fields["depends_on"]; ok {
-		return 1
+	count := 0
+	for _, key := range []string{"depends_on", "input_paths", "parallel_safe"} {
+		if _, ok := fields[key]; ok {
+			count++
+		}
 	}
-	return 0
+	return count
 }
 
 func decodeDependencies(gate *GatePolicy, fields map[string]json.RawMessage) error {
@@ -543,6 +567,9 @@ func validatePolicyGateAt(index int, expectedID string, gate GatePolicy, schemaV
 	if schemaVersion < PolicySchemaVersion && gate.DependsOn != nil {
 		return fmt.Errorf("gate %q: policy schema v%d does not support depends_on", gate.ID, schemaVersion)
 	}
+	if schemaVersion < PolicySchemaVersion && (gate.InputPaths != nil || gate.ParallelSafe) {
+		return fmt.Errorf("gate %q: incremental configuration requires policy schema v3", gate.ID)
+	}
 	if err := gate.Validate(); err != nil {
 		return fmt.Errorf("gate %q: %w", gate.ID, err)
 	}
@@ -565,6 +592,19 @@ func validatePolicyGateAt(index int, expectedID string, gate GatePolicy, schemaV
 }
 
 func (g GatePolicy) Validate() error {
+	seenPaths := make(map[string]bool)
+	for _, input := range g.InputPaths {
+		if err := ValidateRepoRelativePath(input); err != nil {
+			return fmt.Errorf("input_paths: %w", err)
+		}
+		if seenPaths[input] {
+			return errors.New("input_paths contains a duplicate path")
+		}
+		seenPaths[input] = true
+	}
+	if g.Mode == GateModeNotApplicable && (len(g.InputPaths) != 0 || g.ParallelSafe) {
+		return errors.New("disabled gates cannot declare incremental inputs or parallel safety")
+	}
 	if err := g.validateDependencies(); err != nil {
 		return err
 	}

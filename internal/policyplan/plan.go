@@ -69,6 +69,8 @@ type Runtime struct {
 
 type Gate struct {
 	ID                  string            `json:"id"`
+	InputPaths          []string          `json:"input_paths,omitempty"`
+	ParallelSafe        bool              `json:"parallel_safe,omitempty"`
 	State               string            `json:"state"`
 	Mode                string            `json:"mode"`
 	ProducerAction      string            `json:"producer_action"`
@@ -262,6 +264,8 @@ func describeGate(policyGate spec.GatePolicy, dependencies []string, deferred ma
 	}
 	return Gate{
 		ID:                  policyGate.ID,
+		InputPaths:          append([]string{}, policyGate.InputPaths...),
+		ParallelSafe:        policyGate.ParallelSafe,
 		State:               state,
 		Mode:                policyGate.Mode,
 		ProducerAction:      producerAction,
@@ -307,6 +311,7 @@ func cloneGatePolicy(gate spec.GatePolicy) spec.GatePolicy {
 	copy.Command = cloneCommand(gate.Command)
 	copy.Reason = cloneString(gate.Reason)
 	copy.DependsOn = append([]string{}, gate.DependsOn...)
+	copy.InputPaths = append([]string{}, gate.InputPaths...)
 	copy.ThresholdPercent = cloneFloat(gate.ThresholdPercent)
 	return copy
 }

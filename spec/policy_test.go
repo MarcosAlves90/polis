@@ -309,3 +309,37 @@ func indexOfGate(gates []string, wanted string) int {
 	}
 	return len(gates)
 }
+
+func TestPolicyIncrementalConfigurationRoundTripAndValidation(t *testing.T) {
+	p := decodeDependencyPolicy(t, ValidationLevelStrict, GateModeCommand, GateModeCoverage)
+	p.Gates[0].InputPaths = []string{"src", "go.mod"}
+	p.Gates[0].ParallelSafe = true
+	raw, _ := json.Marshal(p)
+	decoded, err := DecodePolicy(raw)
+	if err != nil || !decoded.Gates[0].ParallelSafe || len(decoded.Gates[0].InputPaths) != 2 {
+		t.Fatalf("policy=%+v err=%v", decoded, err)
+	}
+	for _, paths := range [][]string{{"../escape"}, {"src", "src"}, {""}} {
+		p.Gates[0].InputPaths = paths
+		if p.Validate() == nil {
+			t.Fatal("invalid input paths accepted", paths)
+		}
+	}
+	base := string(raw)
+	for _, invalid := range []string{
+		strings.Replace(base, `"parallel_safe":true`, `"parallel_safe":null`, 1),
+		strings.Replace(base, `"parallel_safe":true`, `"parallel_safe":"yes"`, 1),
+		strings.Replace(base, `"input_paths":["src","go.mod"]`, `"input_paths":null`, 1),
+		strings.Replace(base, `"input_paths":["src","go.mod"]`, `"input_paths":[]`, 1),
+		strings.Replace(base, `"id":"lint","mode":"not_applicable"`, `"id":"lint","mode":"not_applicable","parallel_safe":false`, 1),
+	} {
+		if _, err := DecodePolicy([]byte(invalid)); err == nil {
+			t.Fatal("invalid incremental configuration accepted", invalid)
+		}
+	}
+	p.Gates[0].InputPaths = []string{"src"}
+	p.SchemaVersion = LegacyPolicySchemaVersion
+	if p.Validate() == nil {
+		t.Fatal("legacy schema accepted incremental configuration")
+	}
+}

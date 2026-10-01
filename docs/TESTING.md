@@ -40,3 +40,13 @@ Run the focused package tests during development, then run `go test ./...`,
 `go test -race ./...`, project coverage, `go vet ./...`, `go build ./...`,
 `go mod verify`, and the POLIS build/verify flow before delivery. A failing
 test is fixed or removed; it is not skipped indefinitely.
+
+Incremental gate tests cover exact category identities, index/worktree
+changes, dependency closure, mapping fallbacks, valid reuse, missing identity,
+dependency-output changes, version/environment invalidation, new replay
+execution, empty selections, contract/baseline binding, source mutation,
+bounded manifest parsing, tampering and secret-value exclusion. Scheduler
+tests coordinate real child processes through external start/release files,
+proving overlap, the concurrency bound, exclusive unsafe gates, prerequisite
+completion, unrelated outcomes after failure and stable evidence order without
+relying on elapsed-time comparisons. The race detector covers both seams.

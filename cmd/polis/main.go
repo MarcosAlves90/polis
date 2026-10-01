@@ -16,10 +16,9 @@ import (
 
 	"github.com/MarcosAlves90/polis/v6/docs"
 	"github.com/MarcosAlves90/polis/v6/internal/changestatus"
-	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
 	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
-	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v6/internal/gaterun"
 	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
 	"github.com/MarcosAlves90/polis/v6/internal/offlinekit"
 	"github.com/MarcosAlves90/polis/v6/internal/packageapply"
@@ -446,80 +445,45 @@ func runPlan(args []string, out, errOut io.Writer) int {
 }
 
 type gateCLIResult struct {
-	ID       string      `json:"id"`
-	Status   spec.Status `json:"status"`
-	Executed bool        `json:"executed"`
-	Reason   string      `json:"reason,omitempty"`
+	ID              string      `json:"id"`
+	Status          spec.Status `json:"status"`
+	Executed        bool        `json:"executed"`
+	Reason          string      `json:"reason,omitempty"`
+	Action          string      `json:"action,omitempty"`
+	StaleCategories []string    `json:"stale_categories,omitempty"`
 }
 
 type gatesCLIResult struct {
-	Status                   spec.Status     `json:"status"`
-	ValidationOnly           bool            `json:"validation_only"`
-	ValidationLevel          string          `json:"validation_level"`
-	EnabledGates             []string        `json:"enabled_gates"`
-	DisabledGates            []string        `json:"disabled_gates"`
-	ExecutedGates            []string        `json:"executed_gates"`
-	GateResults              []gateCLIResult `json:"gate_results"`
-	DeliveryArtifactBuilt    bool            `json:"delivery_artifact_built"`
-	DeliveryArtifactVerified bool            `json:"delivery_artifact_verified"`
-	DeliveryArtifactNotice   string          `json:"delivery_artifact_notice"`
+	Status                   spec.Status       `json:"status"`
+	ValidationOnly           bool              `json:"validation_only"`
+	ValidationLevel          string            `json:"validation_level"`
+	EnabledGates             []string          `json:"enabled_gates"`
+	DisabledGates            []string          `json:"disabled_gates"`
+	ExecutedGates            []string          `json:"executed_gates"`
+	GateResults              []gateCLIResult   `json:"gate_results"`
+	DeliveryArtifactBuilt    bool              `json:"delivery_artifact_built"`
+	DeliveryArtifactVerified bool              `json:"delivery_artifact_verified"`
+	DeliveryArtifactNotice   string            `json:"delivery_artifact_notice"`
+	Run                      *gaterun.Manifest `json:"run,omitempty"`
 }
 
 func runGates(args []string, out, errOut io.Writer) int {
-	fs := flag.NewFlagSet("gates", flag.ContinueOnError)
-	fs.SetOutput(errOut)
-	repo := fs.String("repo", ".", targetRepoHelp)
-	policy := fs.String("policy", "", externalPolicyHelp)
-	format := fs.String("format", "text", outputFormatHelp)
-	if err := fs.Parse(args); err != nil {
-		return exitUsage
-	}
-	if fs.NArg() != 0 || !validFormat(*format) {
-		fmt.Fprintln(errOut, "usage: polis gates [--repo <path>] [--policy <policy-v3.json>] [--format text|json]")
-		return exitUsage
-	}
-
-	ctx := context.Background()
-	repoRoot, err := gitutil.ResolveRoot(ctx, *repo, gitutil.ResolveRootOptions{EmptyAsDot: true, GitError: "not a Git worktree"})
-	if err != nil {
-		return writeFailure(errOut, *format, "POLIS GATES", exitValidationFailed, err)
-	}
-	plan, err := policyplan.Load(ctx, policyplan.Options{Repo: repoRoot, Policy: *policy})
-	if err != nil {
-		return writeFailure(errOut, *format, "POLIS GATES", exitValidationFailed, err)
-	}
-	result := policyexec.ExecutePlan(plan, repoRoot, io.Discard)
-	report := gatesResult(plan, result)
-	if *format == "json" {
-		writeJSON(out, report)
-	} else {
-		writeGatesText(out, report)
-	}
-	switch result.Overall {
-	case spec.StatusPass:
-		return exitPass
-	case spec.StatusBlocked:
-		return exitBlocked
-	default:
-		return exitValidationFailed
-	}
+	return runRecordedGates(args, out, errOut)
 }
 
 func gatesResult(plan policyplan.Plan, execution policyexec.Result) gatesCLIResult {
 	gateResults := make([]gateCLIResult, 0, len(plan.Gates))
-	for _, gate := range plan.Gates {
+	for _, gate := range plan.GatePolicies() {
 		status, ok := execution.Gates[gate.ID]
 		if !ok {
 			status = spec.StatusBlocked
 		}
 		result := gateCLIResult{ID: gate.ID, Status: status, Executed: gateWasRun(gate.ID, status, execution)}
+		if outcome, ok := execution.Outcomes[gate.ID]; ok {
+			result.Reason = outcome.Reason
+		}
 		if gate.Reason != nil {
 			result.Reason = *gate.Reason
-		}
-		if failure, ok := execution.CommandFailures[gate.ID]; ok && status == spec.StatusBlocked {
-			if reason := commandexec.BlockedReason(failure.Observation); reason != nil {
-				result.Reason = *reason
-			}
 		}
 		gateResults = append(gateResults, result)
 	}
@@ -544,6 +508,9 @@ func gatesResult(plan policyplan.Plan, execution policyexec.Result) gatesCLIResu
 }
 
 func gateWasRun(gateID string, status spec.Status, execution policyexec.Result) bool {
+	if outcome, ok := execution.Outcomes[gateID]; ok {
+		return outcome.Action == "executed" && outcome.Command != nil && outcome.Command.Observation.Status != spec.StatusBlocked
+	}
 	switch status {
 	case spec.StatusPass:
 		return true
@@ -566,14 +533,29 @@ func writeGatesText(out io.Writer, report gatesCLIResult) {
 		if !gate.Executed {
 			action = "not executed"
 		}
+		if gate.Action == "reused" {
+			action = "reused"
+		}
+		if gate.Action == "omitted" && gate.Status != spec.StatusNotApplicable {
+			action = "omitted"
+		}
+		if gate.Action == "blocked" {
+			action = "blocked"
+		}
 		fmt.Fprintf(out, "- Gate %s: %s (%s)", gate.ID, gate.Status, action)
 		if gate.Reason != "" {
 			fmt.Fprintf(out, "; reason=%s", gate.Reason)
+		}
+		if len(gate.StaleCategories) > 0 {
+			fmt.Fprintf(out, "; stale inputs=%s", strings.Join(gate.StaleCategories, ", "))
 		}
 		fmt.Fprintln(out)
 	}
 	fmt.Fprintln(out, "Delivery artifact: not built or verified")
 	fmt.Fprintf(out, "%s\n", report.DeliveryArtifactNotice)
+	if report.Run != nil {
+		fmt.Fprintf(out, "Run: %s (current=%t, jobs=%d)\nSelection: %s\n", report.Run.RunID, report.Run.Current, report.Run.Jobs, report.Run.SelectionReason)
+	}
 }
 
 func writePlanText(out io.Writer, plan policyplan.Plan) {
@@ -607,6 +589,12 @@ func writePlanGates(out io.Writer, gates []policyplan.Gate) {
 
 func writePlanGate(out io.Writer, gate policyplan.Gate) {
 	fmt.Fprintf(out, "- %s %s (%s) producer_action=%s consumer_requirement=%s", strings.ToUpper(gate.State), gate.ID, gate.Mode, gate.ProducerAction, gate.ConsumerRequirement)
+	if gate.Command != nil {
+		fmt.Fprintf(out, " parallel_safe=%t", gate.ParallelSafe)
+	}
+	if len(gate.InputPaths) != 0 {
+		fmt.Fprintf(out, " input_paths=%q", gate.InputPaths)
+	}
 	writePlanCommand(out, gate)
 	writePlanCoverage(out, gate)
 	if gate.Reason != nil {
