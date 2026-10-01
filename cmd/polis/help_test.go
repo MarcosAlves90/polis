@@ -75,7 +75,7 @@ func TestAgentHelpSafetyAndOptions(t *testing.T) {
 		"doctor":              {"--format", "project dependencies", "4"},
 		"init":                {"--repo", "--profile", "--validation-level", "--disable-gate", "--test-argv", "--coverage-argv", "--coverage-adapter", "--coverage-report", "--coverage-threshold", "80", "--dry-run", "no --format"},
 		"plan":                {"--repo", "--policy", "--defer-gate", "--format", "does not execute"},
-		"gates":               {"--repo", "--policy", "--format", "not built or verified", "BLOCKED"},
+		"gates":               {"--repo", "--policy", "--contract", "--gate", "--affected", "--jobs", "--environment-id", "--reuse", "--replay", "--inspect-run", "--out-run", "--format", "not built or verified", "BLOCKED", "parallel_safe"},
 		"start":               {"--repo", "--policy", "--contract", "--out", "clean", "schema-v3", "schema-v5", "no --format"},
 		"implementation-plan": {"--repo", "--policy", "--contract", "--out", "--format", "same plan bytes", "optional"},
 		"status":              {"--repo", "--contract", "--format", "unavailable", "not implementation completion"},

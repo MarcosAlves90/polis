@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- Add input-bound, checksummed gate-run manifests, explicit and affected gate selection, valid-evidence reuse, inspection, and fresh replay execution to `polis gates`.
+- Add a validated 1..16 jobs bound and explicit policy `parallel_safe` and `input_paths` declarations while preserving complete delivery validation.
+
+### Fixed
+- Block dependent gates after unsuccessful prerequisites without suppressing unrelated gate results; emit outcomes in stable plan order.
+
 ## [6.9.0] - 2026-09-28
 
 ### Added

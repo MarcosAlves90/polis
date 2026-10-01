@@ -1042,8 +1042,8 @@ func TestRunGatesExplainsUnrunChecksAndPreservesAssertions(t *testing.T) {
 		wantStatus    spec.Status
 		wantExecuted  bool
 	}{
-		{"missing executable", "missing executable polis-issue14-no-such-command", []string{"polis-issue14-no-such-command"}, spec.StatusBlocked, false},
-		{"missing dependency", "missing dependency pytest", []string{os.Args[0], "-test.run=^TestIssue14GateHelper$", "--", "missing-dependency"}, spec.StatusBlocked, false},
+		{"missing executable", "missing executable", []string{"polis-issue14-no-such-command"}, spec.StatusBlocked, false},
+		{"missing dependency", "missing dependency", []string{os.Args[0], "-test.run=^TestIssue14GateHelper$", "--", "missing-dependency"}, spec.StatusBlocked, false},
 		{"real assertion", "", []string{os.Args[0], "-test.run=^TestIssue14GateHelper$", "--", "assertion"}, spec.StatusFail, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1110,8 +1110,8 @@ func TestRunGatesReturnsFailureWithPerGateResults(t *testing.T) {
 		exitCode     int
 		executed     []string
 	}{
-		{name: "failed process", argv: []string{"git", "polis-test-command-that-does-not-exist"}, overall: spec.StatusFail, gateStatus: spec.StatusFail, gateExecuted: true, exitCode: exitValidationFailed, executed: []string{"test.complete", "coverage"}},
-		{name: "blocked process start", argv: []string{"polis-issue11-no-such-executable"}, overall: spec.StatusBlocked, gateStatus: spec.StatusBlocked, gateExecuted: false, exitCode: exitBlocked, executed: []string{"coverage"}},
+		{name: "failed process", argv: []string{"git", "polis-test-command-that-does-not-exist"}, overall: spec.StatusFail, gateStatus: spec.StatusFail, gateExecuted: true, exitCode: exitValidationFailed, executed: []string{"test.complete"}},
+		{name: "blocked process start", argv: []string{"polis-issue11-no-such-executable"}, overall: spec.StatusBlocked, gateStatus: spec.StatusBlocked, gateExecuted: false, exitCode: exitBlocked, executed: []string{}},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			repo := makeBuildRepo(t)
@@ -1162,7 +1162,7 @@ func TestRunGatesReturnsFailureWithPerGateResults(t *testing.T) {
 					executed bool
 				}{status: result.Status, executed: result.Executed}
 			}
-			if report.Status != string(scenario.overall) || !slices.Equal(report.ExecutedGates, scenario.executed) || report.DeliveryArtifactBuilt || report.DeliveryArtifactVerified || report.DeliveryArtifactNotice != "Gate validation does not mean a delivery artifact was built or verified." || statuses["test.complete"].status != string(scenario.gateStatus) || statuses["test.complete"].executed != scenario.gateExecuted || statuses["coverage"].status != string(spec.StatusPass) {
+			if report.Status != string(scenario.overall) || !slices.Equal(report.ExecutedGates, scenario.executed) || report.DeliveryArtifactBuilt || report.DeliveryArtifactVerified || report.DeliveryArtifactNotice != "Gate validation does not mean a delivery artifact was built or verified." || statuses["test.complete"].status != string(scenario.gateStatus) || statuses["test.complete"].executed != scenario.gateExecuted || statuses["coverage"].status != string(spec.StatusBlocked) || statuses["coverage"].executed {
 				t.Fatalf("failure report=%+v statuses=%v", report, statuses)
 			}
 		})
@@ -1186,30 +1186,13 @@ func TestRunGatesDoesNotMarkCoverageCommandRunWhenReportCleanupFails(t *testing.
 	if code != exitValidationFailed {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
 	}
-	var report struct {
-		Status        string   `json:"status"`
-		ExecutedGates []string `json:"executed_gates"`
-		GateResults   []struct {
-			ID       string `json:"id"`
-			Status   string `json:"status"`
-			Executed bool   `json:"executed"`
-		} `json:"gate_results"`
+	// Provenance now rejects a tracked source file replaced by a directory
+	// before any command runs, rather than reaching coverage cleanup.
+	if out.Len() != 0 || !strings.Contains(errOut.String(), "not a regular file") {
+		t.Fatalf("invalid source did not fail closed: stdout=%s stderr=%s", out.String(), errOut.String())
 	}
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
-		t.Fatalf("invalid gates cleanup failure JSON: %v\n%s", err, out.String())
-	}
-	statuses := make(map[string]struct {
-		status   string
-		executed bool
-	}, len(report.GateResults))
-	for _, result := range report.GateResults {
-		statuses[result.ID] = struct {
-			status   string
-			executed bool
-		}{status: result.Status, executed: result.Executed}
-	}
-	if report.Status != string(spec.StatusFail) || !slices.Equal(report.ExecutedGates, []string{"test.complete"}) || statuses["coverage"].status != string(spec.StatusFail) || statuses["coverage"].executed {
-		t.Fatalf("coverage cleanup report=%+v statuses=%v", report, statuses)
+	if _, err := os.Stat(filepath.Join(reportPath, "keep.txt")); err != nil {
+		t.Fatal(err)
 	}
 }
 

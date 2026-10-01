@@ -26,6 +26,7 @@ type Result struct {
 	Overall         spec.Status
 	Gates           map[string]spec.Status
 	CommandFailures map[string]CommandExecution
+	Outcomes        map[string]Outcome
 }
 
 func Execute(policy spec.Policy, repoRoot string, evidence io.Writer) Result {
@@ -37,53 +38,7 @@ func Execute(policy spec.Policy, repoRoot string, evidence io.Writer) Result {
 }
 
 func ExecutePlan(plan policyplan.Plan, repoRoot string, evidence io.Writer) Result {
-	result := Result{Overall: spec.StatusPass, Gates: make(map[string]spec.Status, len(plan.Gates))}
-	enc := json.NewEncoder(evidence)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(spec.EvidenceEvent{
-		Event: "validation_configured", Gate: "policy", ValidationLevel: plan.ValidationLevel,
-		EnabledGates: append([]string{}, plan.EnabledGates...), DisabledGates: append([]string{}, plan.DisabledGates...),
-		DeferredGates: append([]string{}, plan.DeferredGates...),
-	})
-	for _, gate := range plan.GatePolicies() {
-		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_started", Gate: gate.ID})
-		status := spec.StatusPass
-		var execution *CommandExecution
-		if planGateDeferred(plan, gate.ID) {
-			status = spec.StatusDeferred
-			reason := spec.DeferredReasonToConsumer
-			_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: gate.ID, Status: status, Reason: &reason})
-			result.Gates[gate.ID] = status
-			continue
-		}
-		switch gate.Mode {
-		case spec.GateModeNotApplicable:
-			status = spec.StatusNotApplicable
-			_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: gate.ID, Status: status, Reason: gate.Reason})
-			result.Gates[gate.ID] = status
-			continue
-		case spec.GateModeCoverage:
-			status, execution = executeCoverage(enc, gate, repoRoot)
-		default:
-			observation := executeCommand(enc, gate.ID, *gate.Command, repoRoot)
-			status = observation.Status
-			execution = &CommandExecution{Argv: append([]string(nil), gate.Command.Argv...), Cwd: gate.Command.Cwd, Observation: observation}
-		}
-		var reason *string
-		if execution != nil {
-			reason = commandexec.BlockedReason(execution.Observation)
-		}
-		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: gate.ID, Status: status, Reason: reason})
-		result.Gates[gate.ID] = status
-		result.Overall = combine(result.Overall, status)
-		if status != spec.StatusPass && execution != nil {
-			if result.CommandFailures == nil {
-				result.CommandFailures = make(map[string]CommandExecution)
-			}
-			result.CommandFailures[gate.ID] = *execution
-		}
-	}
-	return result
+	return ExecutePlanWithOptions(plan, repoRoot, evidence, Options{Jobs: 1})
 }
 
 func planGateDeferred(plan policyplan.Plan, gateID string) bool {
