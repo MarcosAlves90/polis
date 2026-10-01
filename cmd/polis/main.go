@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/MarcosAlves90/polis/v6/docs"
 	"github.com/MarcosAlves90/polis/v6/internal/changestatus"
 	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
 	"github.com/MarcosAlves90/polis/v6/internal/devstart"
@@ -61,36 +62,12 @@ const (
 	exitApplyFailed      = 7
 )
 
-type commandHelpEntry struct {
-	name    string
-	usage   string
-	summary string
-}
-
-var commandHelpEntries = []commandHelpEntry{
-	{name: "help", usage: "polis help [command]", summary: "show general or command-specific help"},
-	{name: "doctor", usage: "polis doctor [--format text|json]", summary: "check Git and runtime prerequisites"},
-	{name: "init", usage: "polis init [--repo <path>] [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]", summary: "create or preview a Project Policy"},
-	{name: "plan", usage: "polis plan [--repo <path>] [--policy <policy-v3.json>] [--defer-gate <id> ...] [--format text|json]", summary: "compile and report the effective Project Policy"},
-	{name: "gates", usage: "polis gates [--repo <path>] [--policy <policy-v3.json>] [--format text|json]", summary: "run configured project gates without building a delivery artifact"},
-	{name: "start", usage: "polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3-or-v5.json> --out <locked-v4-or-v6.json>", summary: "lock a strict Change Contract baseline"},
-	{name: "implementation-plan", usage: "polis implementation-plan --repo <path> [--policy <policy-v3.json>] --contract <locked-v4-or-v6.json> --out <external-plan.json> [--format text|json]", summary: "generate an optional contract-bound implementation plan"},
-	{name: "status", usage: "polis status [--repo <path>] [--contract <retained-locked-contract.json>] [--format text|json]", summary: "summarize persisted strict-development state and the next valid action"},
-	{name: checkRedScopeCommand, usage: "polis check-red-scope [--repo <path>] --contract <locked-v4-or-v6.json> --path <file> [--path <file> ...] [--format text|json]", summary: "check proposed Red probe paths against the locked test scope"},
-	{name: captureRedCommand, usage: "polis capture-red --repo <path> --contract <change.json> [--implementation-plan <plan.json>] [--format text|json] --out <regression.patch>", summary: "capture the required Red proof"},
-	{name: "build", usage: "polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--defer-gate <id> ...] [--format text|json] --out <directory>", summary: "build a .polis delivery package"},
-	{name: "verify", usage: "polis verify [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate a .polis artifact"},
-	{name: "inspect", usage: "polis inspect [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "inspect validated artifact metadata"},
-	{name: "preflight", usage: "polis preflight [--repo <path>] [--baseline-mode strict|compatible|permissive] [--allow-missing-baseline-proof] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate an artifact without applying it"},
-	{name: "apply", usage: "polis apply [--repo <path>] [--baseline-mode strict|compatible|permissive] [--allow-missing-baseline-proof] [--commit-mode none|prompt|auto] [--format text|json] [--signature <file> --trusted-key <pem>] <artifact.polis>", summary: "validate and apply an artifact transactionally"},
-	{name: "sign", usage: "polis sign --key <private.pem> --out <artifact.polis.sig> [--format text|json] <artifact.polis>", summary: "create a detached artifact signature"},
-	{name: "export", usage: "polis export --out <polis-offline.zip> [--format text|json] [--executable <file>] [--runtime <GOOS/GOARCH>]", summary: "create a self-contained offline runtime bundle"},
-}
+var commandHelpEntries = docs.CommandHelpEntries()
 
 func rootUsageLine() string {
 	names := make([]string, 0, len(commandHelpEntries))
 	for _, command := range commandHelpEntries {
-		names = append(names, command.name)
+		names = append(names, command.Name)
 	}
 	return "usage: polis <" + strings.Join(names, "|") + ">"
 }
@@ -105,10 +82,10 @@ func runHelp(args []string, out, errOut io.Writer) int {
 	}
 	if len(args) == 1 {
 		for _, command := range commandHelpEntries {
-			if command.name != args[0] {
+			if command.Name != args[0] {
 				continue
 			}
-			fmt.Fprintf(out, "POLIS V6 %s\n\nUsage:\n  %s\n\n%s\n", version, command.usage, command.summary)
+			fmt.Fprintf(out, "POLIS V6 %s\n\n%s", version, command.Instructions)
 			return exitPass
 		}
 		fmt.Fprintf(errOut, "unknown command %q\n", args[0])
@@ -117,9 +94,10 @@ func runHelp(args []string, out, errOut io.Writer) int {
 
 	fmt.Fprintf(out, "POLIS V6 %s\n\nUsage:\n  polis <command> [options]\n\nCommands:\n", version)
 	for _, command := range commandHelpEntries {
-		fmt.Fprintf(out, "  %-12s %s\n", command.name, command.summary)
+		fmt.Fprintf(out, "  %-12s %s\n", command.Name, command.Summary)
 	}
-	fmt.Fprintln(out, "\nUse `polis help <command>` for command syntax.")
+	fmt.Fprintln(out, "\nUse `polis help <command>` for syntax and agent-oriented operational instructions.")
+	fmt.Fprintln(out, "Command help: `polis <command> -h` or `polis <command> --help` (no other arguments).")
 	fmt.Fprintln(out, "Aliases: `polis -h` and `polis --help`.")
 	return exitPass
 }
@@ -130,6 +108,14 @@ func run(args []string, out, errOut io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(errOut, rootUsageLine())
 		return exitUsage
+	}
+	// Resolve standalone help before parsing required inputs or executing commands.
+	if len(args) == 2 && (args[1] == "-h" || args[1] == "--help") {
+		for _, command := range commandHelpEntries {
+			if command.Name == args[0] {
+				return runHelp([]string{command.Name}, out, errOut)
+			}
+		}
 	}
 	switch args[0] {
 	case "help", "-h", "--help":
