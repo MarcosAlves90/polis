@@ -114,9 +114,9 @@ func runRecordedGates(args []string, out, errOut io.Writer) int {
 }
 
 func writeGateRunText(out io.Writer, m gaterun.Manifest) {
-	fmt.Fprintf(out, "POLIS GATE RUN: %s\nRun: %s\nRecorded current: %t (not a check against this worktree)\nSource: %s\nPolicy: %s\nSelected gates: %s\nJobs: %d\n", m.Status, m.RunID, m.Current, m.Inputs.SourceSHA256, m.Inputs.PolicySHA256, displayGateList(m.SelectedGates), m.Jobs)
+	fmt.Fprintf(out, "POLIS GATE RUN: %q\nRun: %q\nRecorded current: %t (not a check against this worktree)\nSource: %q\nPolicy: %q\nSelected gates: %q\nJobs: %d\n", m.Status, m.RunID, m.Current, m.Inputs.SourceSHA256, m.Inputs.PolicySHA256, displayGateList(m.SelectedGates), m.Jobs)
 	for _, gate := range m.Gates {
-		fmt.Fprintf(out, "- Gate %s: %s (%s); reason=%s; stale inputs=%s\n", gate.ID, gate.Status, gate.Action, gate.Reason, strings.Join(gate.StaleCategories, ", "))
+		fmt.Fprintf(out, "- Gate %q: %q (%q); reason=%q; stale inputs=%q\n", gate.ID, gate.Status, gate.Action, gate.Reason, strings.Join(gate.StaleCategories, ", "))
 	}
 	fmt.Fprintln(out, "Replay with: polis gates --replay <this-run.json> --repo <same-repo> [--policy <same-policy>] [--contract <same-contract>] --environment-id <same-nonsecret-version> --out-run <new-external.json>")
 	fmt.Fprintln(out, deliveryArtifactNotice)
