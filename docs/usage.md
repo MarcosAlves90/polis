@@ -600,42 +600,46 @@ Do not use:
 ```text
 Usage:
   polis workspace validate --repo <path> --contract <locked-v4-or-v6.json> [--policy <policy-v3.json>] [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--out-report <new-external.json>] [--format text|json]
+  polis workspace status --repo <path> --contract <external-locked-v4-or-v6.json> --report <external-workspace-validation-v1.json> [--policy <policy-v3.json>] [--format text|json]
 Purpose:
-  validate a locked change in the current workspace without producing a delivery package
+  validate a locked change without a package, or compare an unsigned checkpoint's source identity
 When to use:
-  After implementation when the agent and consumer share the same checkout and no portable package is requested.
+  Use validate after implementation; use status to resume by comparing a saved report with the current checkout.
 Prerequisites:
-  Git worktree, clean real index, nonempty in-scope worktree delta, locked strict contract,
-  matching policy, required development proof, and project gate dependencies.
+  Validate requires a Git worktree, clean real index, nonempty in-scope delta, locked strict contract,
+  matching policy, required development proof, and project gate dependencies. Status requires a
+  version-1 external report, external locked contract, matching policy, and a comparable source snapshot.
 Required inputs:
-  --contract selects a locked schema-v4/v6 contract. Supply its exact Red proof for
-  Red-to-Green work and the same contract-bound plan if one was used.
+  Validate: --contract; exact Red proof for Red-to-Green work and same plan bytes if used.
+  Status: external --contract and an external workspace-validation-v1 --report.
 Workflow:
-  start -> required proof -> implementation -> workspace validate. Use build -> verify
-  when a portable delivery package, signature boundary, or consumer handoff is required.
+  start -> required proof -> implementation -> workspace validate. Workspace status can then compare
+  recorded base/tree/contract/policy identities. Use build -> verify when portable delivery is required.
 Reads/writes:
-  Replays locked proof and runs complete policy validation in isolated worktrees, then
-  checks that the source target tree did not change during validation. Preserves HEAD,
-  the real index and source files. It creates no .polis package or retained artifact.
-  Optional --out-report writes a new external JSON checkpoint with mode 0600 on
-  POSIX systems; Windows uses the destination directory's inherited ACL.
-  Project commands may still access network services; isolation is not a sandbox.
+  Validate replays proof and runs enabled gates in isolated worktrees, then checks the target tree;
+  it preserves HEAD/index/source and creates no .polis package. Optional --out-report writes a new
+  external checkpoint. Status reads a bounded external report and current identities only; it does
+  not execute gate commands or intentionally change the repository. Git may invoke configured clean
+  filters while creating its temporary-index snapshot; status is not a sandbox. Neither command
+  authenticates reports.
 Options/defaults:
-  --repo defaults to .; --policy defaults to committed .polis/policy.json; --contract
-  is required. --regression-patch is required only for Red-to-Green contracts;
-  --implementation-plan defaults absent. --out-report defaults absent and never
-  overwrites; its parent directory must exist. --format defaults to text.
+  --repo defaults to .; --policy defaults to committed .polis/policy.json. Validate requires
+  --contract; Red-to-Green requires --regression-patch. Status requires external --contract and --report.
+  Reports must be regular non-symlink files outside the resolved worktree. --format defaults to text.
 Outcomes:
-  Success (0): the exact reported target tree passed locked proof and all enabled
-  non-deferred project gates. JSON explicitly says workspace_validated=true and
-  delivery_artifact_built/verified=false. Failure (6): inspect structured diagnostics;
-  no success report is written. Invalid syntax returns 2.
+  Validate success (0) means the exact target passed locked proof and enabled non-deferred gates;
+  JSON says workspace_validated=true and delivery_artifact_built/verified=false. Status success (0)
+  means comparison completed; JSON reports source_snapshot_matches, source_snapshot_differs, or
+  checkpoint_unavailable. Status always says report_authenticated=false, current_validation_established=false,
+  proof_input_digests_bound=false, and delivery_artifact_verified=false. Run validate for fresh gates.
+  Malformed inputs or validation failure return 6; invalid syntax returns 2.
 Examples:
-  polis workspace validate --repo /repo --contract /outside/locked-v6.json --regression-patch /outside/regression.patch --out-report /outside/workspace.json --format json
+  polis workspace validate --repo /repo --contract /outside/locked-v6.json --regression-patch /outside/red.patch --out-report /outside/workspace.json --format json
+  polis workspace status --repo /repo --contract /outside/locked-v6.json --report /outside/workspace.json --format json
 Do not use:
-  As package verification, producer authentication, consumer preflight/apply, or a
-  substitute for build when a portable artifact is required. Reports are unsigned
-  historical checkpoints; any later workspace edit requires validation again.
+  Status as fresh validation, signature/producer authentication, or package verification. Version-1
+  reports do not bind Red proof or plan digests; a matching source snapshot is not validation evidence.
+  Use build -> verify -> preflight/apply for portable delivery and consumer handoff.
 ```
 <!-- /command-help -->
 

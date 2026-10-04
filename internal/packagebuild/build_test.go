@@ -1482,3 +1482,46 @@ func TestBuildLockedFeatureRejectsNonDescendantProducerHead(t *testing.T) {
 		t.Fatalf("expected non-descendant locked-baseline rejection, got %v", err)
 	}
 }
+
+func TestWorkspaceTargetTreeUsesTemporaryIndexWithoutMutation(t *testing.T) {
+	repo := newV6Repo(t, false)
+	base := runGit(t, repo, "rev-parse", "HEAD")
+	beforeHead := runGit(t, repo, "rev-parse", "HEAD")
+	beforeIndex := runGit(t, repo, "write-tree")
+	beforeStatus := runGit(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
+
+	baseTree, err := WorkspaceTargetTree(context.Background(), repo, base)
+	if err != nil {
+		t.Fatalf("WorkspaceTargetTree() at baseline: %v", err)
+	}
+	if want := runGit(t, repo, "rev-parse", "HEAD^{tree}"); baseTree != want {
+		t.Fatalf("base snapshot tree=%s want %s", baseTree, want)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "new-source.txt"), []byte("new source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	targetTree, err := WorkspaceTargetTree(context.Background(), repo, base)
+	if err != nil {
+		t.Fatalf("WorkspaceTargetTree() with a worktree delta: %v", err)
+	}
+	if targetTree == baseTree {
+		t.Fatal("worktree source delta did not change the target tree")
+	}
+	if got := runGit(t, repo, "rev-parse", "HEAD"); got != beforeHead {
+		t.Fatalf("WorkspaceTargetTree() changed HEAD: got %s want %s", got, beforeHead)
+	}
+	if got := runGit(t, repo, "write-tree"); got != beforeIndex {
+		t.Fatalf("WorkspaceTargetTree() changed index: got %s want %s", got, beforeIndex)
+	}
+	if got := runGit(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); got == beforeStatus {
+		t.Fatal("WorkspaceTargetTree() did not preserve the untracked worktree delta")
+	}
+
+	if err := os.WriteFile(filepath.Join(repo, "staged-source.txt"), []byte("staged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "staged-source.txt")
+	if _, err := WorkspaceTargetTree(context.Background(), repo, base); err == nil || !strings.Contains(err.Error(), "index contains staged changes") {
+		t.Fatalf("staged source should be unavailable, got %v", err)
+	}
+}

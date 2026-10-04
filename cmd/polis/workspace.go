@@ -16,7 +16,7 @@ import (
 
 func runWorkspace(args []string, out, errOut io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(errOut, "usage: polis workspace validate [options]; see polis help workspace")
+		fmt.Fprintln(errOut, "usage: polis workspace validate|status [options]; see polis help workspace")
 		return exitUsage
 	}
 	if len(args) == 2 && (args[1] == "-h" || args[1] == "--help") {
@@ -25,6 +25,8 @@ func runWorkspace(args []string, out, errOut io.Writer) int {
 	switch args[0] {
 	case "validate":
 		return runWorkspaceValidate(args[1:], out, errOut)
+	case "status":
+		return runWorkspaceStatus(args[1:], out, errOut)
 	default:
 		fmt.Fprintf(errOut, "unknown workspace operation %q\n", args[0])
 		return exitUsage
@@ -60,7 +62,7 @@ func runWorkspaceValidate(args []string, out, errOut io.Writer) int {
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS WORKSPACE VALIDATE", exitValidationFailed, err)
 	}
-	report := workspaceValidationReport{
+	report := spec.WorkspaceValidationReport{
 		SchemaVersion: 1, Status: "PASS", ValidationKind: "workspace_validation",
 		WorkspaceValidated: true, DeliveryArtifactBuilt: false, DeliveryArtifactVerified: false,
 		BaseCommit: result.BaseCommit, TargetTree: result.TargetTree,
@@ -90,21 +92,4 @@ func runWorkspaceValidate(args []string, out, errOut io.Writer) int {
 		fmt.Fprintf(out, "Report: %s\n", *outReport)
 	}
 	return exitPass
-}
-
-type workspaceValidationReport struct {
-	SchemaVersion            int                    `json:"schema_version"`
-	Status                   string                 `json:"status"`
-	ValidationKind           string                 `json:"validation_kind"`
-	WorkspaceValidated       bool                   `json:"workspace_validated"`
-	DeliveryArtifactBuilt    bool                   `json:"delivery_artifact_built"`
-	DeliveryArtifactVerified bool                   `json:"delivery_artifact_verified"`
-	BaseCommit               string                 `json:"base_commit"`
-	TargetTree               string                 `json:"target_tree"`
-	ContractSHA256           string                 `json:"contract_sha256"`
-	PolicySHA256             string                 `json:"policy_sha256"`
-	ValidationLevel          string                 `json:"validation_level"`
-	EnabledGates             []string               `json:"enabled_gates"`
-	DisabledGates            []string               `json:"disabled_gates"`
-	ProducerGateStatuses     map[string]spec.Status `json:"producer_gate_statuses"`
 }

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:polis:workspace-status-v1",
+  "title": "POLIS Workspace Checkpoint Status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "checkpoint_state",
+    "recorded_validation_status",
+    "report_authenticated",
+    "current_validation_established",
+    "proof_input_digests_bound",
+    "delivery_artifact_verified",
+    "locked_base_commit",
+    "recorded_base_commit",
+    "recorded_target_tree",
+    "current_target_tree",
+    "recorded_contract_sha256",
+    "contract_sha256",
+    "recorded_policy_sha256",
+    "policy_sha256",
+    "differences",
+    "next_action"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "status": {"const": "PASS"},
+    "checkpoint_state": {"enum": ["source_snapshot_matches", "source_snapshot_differs", "checkpoint_unavailable"]},
+    "recorded_validation_status": {"const": "PASS"},
+    "report_authenticated": {"const": false},
+    "current_validation_established": {"const": false},
+    "proof_input_digests_bound": {"const": false},
+    "delivery_artifact_verified": {"const": false},
+    "locked_base_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "recorded_base_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "recorded_target_tree": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "current_target_tree": {
+      "oneOf": [
+        {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+        {"type": "null"}
+      ]
+    },
+    "recorded_contract_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "contract_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "recorded_policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "differences": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"enum": ["base_commit", "contract_sha256", "policy_sha256", "target_tree", "current_source_snapshot_unavailable"]}
+    },
+    "next_action": {"const": "polis workspace validate"}
+  }
+}

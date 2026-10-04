@@ -23,8 +23,13 @@ For a locked change whose target remains in the agent's current checkout, use
 same required proof and complete target/project validation without creating a
 `.polis` package. Its optional external JSON report is a local checkpoint, not
 an authenticated or portable delivery artifact; validate again after any later
-workspace edit. Use `polis build` and `polis verify` when delivery packaging is
-required.
+workspace edit. `polis workspace status --repo . --contract <external-locked-contract>
+--report <external-workspace-report>` compares the saved report's source,
+contract, and policy identities without running gates. Status requires an external
+locked contract and report; an explicit external policy is also read with a
+bounded file-descriptor path. It always reports that current validation and report authentication are not established; use
+`workspace validate` for fresh checks and `polis build`/`polis verify` when
+delivery packaging is required.
 
 Prerequisite diagnostics are tested with a direct command-not-found case,
 nested missing dependency and environment cases, and real assertion failures

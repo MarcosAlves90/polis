@@ -99,6 +99,26 @@ func ValidateWorkspace(ctx context.Context, opts WorkspaceOptions) (Result, erro
 	}, true)
 }
 
+// WorkspaceTargetTree computes the current source tree against a locked base
+// using the same temporary-index snapshot path as producer validation.
+func WorkspaceTargetTree(ctx context.Context, repo, baseCommit string) (string, error) {
+	if repo == "" || baseCommit == "" {
+		return "", errors.New("repo and base commit are required")
+	}
+	root, err := resolveRepo(ctx, repo)
+	if err != nil {
+		return "", err
+	}
+	if err := requireBuildSourceState(ctx, root); err != nil {
+		return "", err
+	}
+	targetTree, _, _, err := buildTargetWithTemporaryIndex(ctx, root, baseCommit)
+	if err != nil {
+		return "", fmt.Errorf("compute workspace target tree: %w", err)
+	}
+	return targetTree, nil
+}
+
 func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (Result, error) {
 	if workspaceValidation {
 		if opts.Repo == "" || opts.Contract == "" {
