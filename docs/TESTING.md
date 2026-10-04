@@ -18,6 +18,14 @@ without building or verifying a delivery artifact. A passing gate report is
 not package verification; delivery still uses `polis build` followed by
 `polis verify`.
 
+For a locked change whose target remains in the agent's current checkout, use
+`polis workspace validate --repo . --contract <locked-contract>` to run the
+same required proof and complete target/project validation without creating a
+`.polis` package. Its optional external JSON report is a local checkpoint, not
+an authenticated or portable delivery artifact; validate again after any later
+workspace edit. Use `polis build` and `polis verify` when delivery packaging is
+required.
+
 Prerequisite diagnostics are tested with a direct command-not-found case,
 nested missing dependency and environment cases, and real assertion failures
 (including exit 127). Red regression tests ensure a blocked command cannot

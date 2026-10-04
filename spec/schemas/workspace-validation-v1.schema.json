@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "POLIS Workspace Validation Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "validation_kind",
+    "workspace_validated",
+    "delivery_artifact_built",
+    "delivery_artifact_verified",
+    "base_commit",
+    "target_tree",
+    "contract_sha256",
+    "policy_sha256",
+    "validation_level",
+    "enabled_gates",
+    "disabled_gates",
+    "producer_gate_statuses"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "status": {"const": "PASS"},
+    "validation_kind": {"const": "workspace_validation"},
+    "workspace_validated": {"const": true},
+    "delivery_artifact_built": {"const": false},
+    "delivery_artifact_verified": {"const": false},
+    "base_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "target_tree": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "contract_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "validation_level": {"enum": ["strict", "standard", "minimal"]},
+    "enabled_gates": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "disabled_gates": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "producer_gate_statuses": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "minLength": 1}
+    }
+  }
+}

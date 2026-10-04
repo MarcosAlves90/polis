@@ -127,6 +127,8 @@ func run(args []string, out, errOut io.Writer) int {
 		return runPlan(args[1:], out, errOut)
 	case "gates":
 		return runGates(args[1:], out, errOut)
+	case "workspace":
+		return runWorkspace(args[1:], out, errOut)
 	case "start":
 		return runStart(args[1:], out, errOut)
 	case "implementation-plan":

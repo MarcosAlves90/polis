@@ -17,6 +17,7 @@ polis doctor [--format text|json]
 polis init --repo /path/to/repo [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]
 polis plan --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
 polis gates [--repo /path/to/repo] [--policy /outside/policy-v3.json] [--contract /outside/locked-v6.json] [--gate <id> ... | --affected] [--jobs <1..16>] [--environment-id <nonsecret-version>] [--reuse /outside/run.json | --replay /outside/run.json | --inspect-run /outside/run.json] [--out-run /outside/new-run.json] [--format text|json]
+polis workspace validate --repo /path/to/repo --contract /outside/locked-v6.json [--policy /outside/policy-v3.json] [--regression-patch /outside/regression.patch] [--implementation-plan /outside/plan.json] [--out-report /outside/workspace-validation.json] [--format text|json]
 polis start --repo /path/to/repo --policy /outside/policy-v3.json --contract /outside/draft-v5.json --out /outside/locked-v6.json
 polis status [--repo /path/to/repo] [--contract /outside/retained-locked-contract.json] [--format text|json]
 polis implementation-plan --repo /path/to/repo [--policy /outside/policy-v3.json] --contract /outside/locked-v6.json --out /outside/implementation-plan.json
@@ -590,6 +591,51 @@ Examples:
 Do not use:
   As artifact verification, strict development proof, or a read-only check of untrusted
   code. Never place secret values in environment identifiers, manifests, or arguments.
+```
+<!-- /command-help -->
+
+### workspace
+
+<!-- command-help: workspace -->
+```text
+Usage:
+  polis workspace validate --repo <path> --contract <locked-v4-or-v6.json> [--policy <policy-v3.json>] [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--out-report <new-external.json>] [--format text|json]
+Purpose:
+  validate a locked change in the current workspace without producing a delivery package
+When to use:
+  After implementation when the agent and consumer share the same checkout and no portable package is requested.
+Prerequisites:
+  Git worktree, clean real index, nonempty in-scope worktree delta, locked strict contract,
+  matching policy, required development proof, and project gate dependencies.
+Required inputs:
+  --contract selects a locked schema-v4/v6 contract. Supply its exact Red proof for
+  Red-to-Green work and the same contract-bound plan if one was used.
+Workflow:
+  start -> required proof -> implementation -> workspace validate. Use build -> verify
+  when a portable delivery package, signature boundary, or consumer handoff is required.
+Reads/writes:
+  Replays locked proof and runs complete policy validation in isolated worktrees, then
+  checks that the source target tree did not change during validation. Preserves HEAD,
+  the real index and source files. It creates no .polis package or retained artifact.
+  Optional --out-report writes a new external JSON checkpoint with mode 0600 on
+  POSIX systems; Windows uses the destination directory's inherited ACL.
+  Project commands may still access network services; isolation is not a sandbox.
+Options/defaults:
+  --repo defaults to .; --policy defaults to committed .polis/policy.json; --contract
+  is required. --regression-patch is required only for Red-to-Green contracts;
+  --implementation-plan defaults absent. --out-report defaults absent and never
+  overwrites; its parent directory must exist. --format defaults to text.
+Outcomes:
+  Success (0): the exact reported target tree passed locked proof and all enabled
+  non-deferred project gates. JSON explicitly says workspace_validated=true and
+  delivery_artifact_built/verified=false. Failure (6): inspect structured diagnostics;
+  no success report is written. Invalid syntax returns 2.
+Examples:
+  polis workspace validate --repo /repo --contract /outside/locked-v6.json --regression-patch /outside/regression.patch --out-report /outside/workspace.json --format json
+Do not use:
+  As package verification, producer authentication, consumer preflight/apply, or a
+  substitute for build when a portable artifact is required. Reports are unsigned
+  historical checkpoints; any later workspace edit requires validation again.
 ```
 <!-- /command-help -->
 

@@ -42,12 +42,22 @@ type Options struct {
 	DeferredGates      []string
 }
 
+type WorkspaceOptions struct {
+	Repo               string
+	Policy             string
+	Contract           string
+	RegressionPatch    string
+	ImplementationPlan string
+}
+
 type Result struct {
 	Path                       string
 	SHA256                     string
 	RetainedPaths              []string `json:"retained_paths,omitempty"`
 	BaseCommit                 string
 	TargetTree                 string
+	ContractSHA256             string `json:"contract_sha256,omitempty"`
+	PolicySHA256               string `json:"policy_sha256,omitempty"`
 	ValidationLevel            string
 	EnabledGates               []string
 	DisabledGates              []string
@@ -79,7 +89,22 @@ type buildArtifact struct {
 }
 
 func Build(ctx context.Context, opts Options) (Result, error) {
-	if err := validateBuildOptions(opts); err != nil {
+	return executeBuild(ctx, opts, false)
+}
+
+func ValidateWorkspace(ctx context.Context, opts WorkspaceOptions) (Result, error) {
+	return executeBuild(ctx, Options{
+		Repo: opts.Repo, Policy: opts.Policy, Contract: opts.Contract,
+		RegressionPatch: opts.RegressionPatch, ImplementationPlan: opts.ImplementationPlan,
+	}, true)
+}
+
+func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (Result, error) {
+	if workspaceValidation {
+		if opts.Repo == "" || opts.Contract == "" {
+			return Result{}, errors.New("repo and contract are required")
+		}
+	} else if err := validateBuildOptions(opts); err != nil {
 		return Result{}, err
 	}
 	repo, err := resolveRepo(ctx, opts.Repo)
@@ -122,7 +147,7 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, fmt.Errorf("locked development baseline: %w", err)
 	}
 	if policy.SchemaVersion != spec.PolicySchemaVersion {
-		return Result{}, errors.New("POLIS V6 build requires Project Policy schema v3")
+		return Result{}, errors.New("POLIS V6 producer validation requires Project Policy schema v3")
 	}
 	if err := requireV6ProducerContract(changeContract); err != nil {
 		return Result{}, err
@@ -153,16 +178,20 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	}
 	baseline, err := baselineproof.Build(ctx, repo, baseCommit, spec.MaxBaselineMemberBytes)
 	if err != nil {
-		return Result{}, baselineConstraintError(fmt.Errorf("build embedded baseline: %w", err), plan)
+		return Result{}, baselineConstraintError(fmt.Errorf("build embedded baseline: %w", err), plan, workspaceValidation)
 	}
 	baselineRepo, cleanupBaseline, err := baselineproof.Materialize(ctx, baseline, objectFormat, baseCommit, changeContract.BaselineLock.BaseTree)
 	if err != nil {
-		return Result{}, baselineConstraintError(fmt.Errorf("materialize embedded baseline for producer replay: %w", err), plan)
+		return Result{}, baselineConstraintError(fmt.Errorf("materialize embedded baseline for producer replay: %w", err), plan, workspaceValidation)
 	}
 	defer cleanupBaseline()
 
 	var evidence bytes.Buffer
 	var producerResult policyexec.Result
+	notRun := []string{"artifact packaging"}
+	if workspaceValidation {
+		notRun = nil
+	}
 	validation := isolation.Validation{
 		BaselineRepo:          baselineRepo,
 		BaselineCommit:        baseCommit,
@@ -182,10 +211,31 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 		TargetApplyError:      "isolated git apply --index failed",
 		PolicyFailureLabel:    "project policy validation",
 		PolicyFailureStage:    "project gate validation",
-		PolicyFailureNotRun:   []string{"artifact packaging"},
+		PolicyFailureNotRun:   notRun,
 	}
 	if err := isolation.Validate(ctx, validation); err != nil {
 		return Result{}, err
+	}
+	if workspaceValidation {
+		if err := requireBuildSourceState(ctx, repo); err != nil {
+			return Result{}, err
+		}
+		currentTree, _, _, err := buildTargetWithTemporaryIndex(ctx, repo, baseCommit)
+		if err != nil {
+			return Result{}, fmt.Errorf("recheck workspace target after validation: %w", err)
+		}
+		if currentTree != targetTree {
+			return Result{}, errors.New("workspace changed during validation; no current validation result can be reported")
+		}
+		summary := policy.ValidationSummary()
+		return Result{
+			BaseCommit: baseCommit, TargetTree: targetTree,
+			ContractSHA256: sha256Hex(changeRaw), PolicySHA256: sha256Hex(policyRaw),
+			ValidationLevel:      summary.Level,
+			EnabledGates:         append([]string(nil), summary.EnabledGates...),
+			DisabledGates:        append([]string(nil), summary.DisabledGates...),
+			ProducerGateStatuses: cloneGateStatuses(producerResult.Gates),
+		}, nil
 	}
 
 	artifact := buildArtifact{
@@ -224,14 +274,16 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 	return result, nil
 }
 
-func baselineConstraintError(err error, plan policyplan.Plan) error {
+func baselineConstraintError(err error, plan policyplan.Plan, workspaceValidation bool) error {
 	notRun := make([]string, 0, len(plan.EnabledGates)+1)
 	for _, gate := range plan.Gates {
 		if gate.ProducerAction == policyplan.ProducerActionExecute {
 			notRun = append(notRun, gate.ID)
 		}
 	}
-	notRun = append(notRun, "artifact packaging")
+	if !workspaceValidation {
+		notRun = append(notRun, "artifact packaging")
+	}
 	report := diagnostic.Report{
 		Stage:     "locked baseline constraint",
 		Condition: "complete identity-checked embedded baseline could not be processed",
@@ -278,7 +330,7 @@ func loadBuildInputs(repo string, opts Options, retention artifactretention.Stat
 
 func requireV6ProducerContract(change spec.ChangeContract) error {
 	if !change.IsLockedStrictDevelopment() || change.DevelopmentMethod != spec.DevelopmentMethodStrictSDDTDDV2 || change.BaselineLock == nil {
-		return errors.New("POLIS V6 build requires locked Change Contract schema v4 or v6 produced by polis start")
+		return errors.New("POLIS V6 producer validation requires locked Change Contract schema v4 or v6 produced by polis start")
 	}
 	return nil
 }
@@ -292,9 +344,9 @@ func loadRegressionPatch(repo, filename string, change spec.ChangeContract, rete
 	}
 	if filename == "" {
 		if change.Kind == spec.ChangeKindDefect {
-			return nil, errors.New("defect build requires regression-patch")
+			return nil, errors.New("Red-to-Green defect requires regression-patch")
 		}
-		return nil, errors.New("red_green feature build requires regression-patch")
+		return nil, errors.New("Red-to-Green feature requires regression-patch")
 	}
 	patch, err := retention.ReadInput(repo, filename, "proofs", 16<<20, "input exceeds maximum size %d")
 	if err != nil {
@@ -412,7 +464,7 @@ func requireCleanIndex(ctx context.Context, repo string) error {
 	if !staged {
 		return nil
 	}
-	return errors.New("source index contains staged changes outside .polis/artifacts/; POLIS build requires index == HEAD")
+	return errors.New("source index contains staged changes outside .polis/artifacts/; POLIS producer validation requires index == HEAD")
 }
 
 func buildTargetWithTemporaryIndex(ctx context.Context, repo, baseCommit string) (string, []byte, []string, error) {

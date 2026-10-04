@@ -13,8 +13,8 @@ import (
 
 func TestCommandHelpEntriesAreCanonicalAndIndependent(t *testing.T) {
 	entries := CommandHelpEntries()
-	if len(entries) != 17 {
-		t.Fatalf("command count=%d want=17", len(entries))
+	if len(entries) != 18 {
+		t.Fatalf("command count=%d want=18", len(entries))
 	}
 	guide := strings.ReplaceAll(usageGuide, "\r\n", "\n")
 	for _, entry := range entries {

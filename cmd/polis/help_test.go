@@ -10,7 +10,7 @@ import (
 )
 
 var agentHelpCommands = []string{
-	"help", "doctor", "init", "plan", "gates", "start", "implementation-plan", "status",
+	"help", "doctor", "init", "plan", "gates", "workspace", "start", "implementation-plan", "status",
 	"check-red-scope", "capture-red", "build", "verify", "inspect", "preflight", "apply", "sign", "export",
 }
 
@@ -76,6 +76,7 @@ func TestAgentHelpSafetyAndOptions(t *testing.T) {
 		"init":                {"--repo", "--profile", "--validation-level", "--disable-gate", "--test-argv", "--coverage-argv", "--coverage-adapter", "--coverage-report", "--coverage-threshold", "80", "--dry-run", "no --format"},
 		"plan":                {"--repo", "--policy", "--defer-gate", "--format", "does not execute"},
 		"gates":               {"--repo", "--policy", "--contract", "--gate", "--affected", "--jobs", "--environment-id", "--reuse", "--replay", "--inspect-run", "--out-run", "--format", "not built or verified", "BLOCKED", "parallel_safe"},
+		"workspace":           {"validate", "--contract", "--out-report", "workspace_validated=true", "delivery_artifact_built/verified=false", "without producing a delivery package"},
 		"start":               {"--repo", "--policy", "--contract", "--out", "clean", "schema-v3", "schema-v5", "no --format"},
 		"implementation-plan": {"--repo", "--policy", "--contract", "--out", "--format", "same plan bytes", "optional"},
 		"status":              {"--repo", "--contract", "--format", "unavailable", "not implementation completion"},
