@@ -6,12 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [6.10.0] - 2026-10-04
+
 ### Added
+- Add `polis workspace validate` for complete agent-native workspace validation with an external checkpoint report and no `.polis` package creation.
+- Add `polis workspace status` to compare a saved checkpoint with current source, contract, and effective policy identities without rerunning gates.
+- Add detailed operational instructions to `polis help <command>` and per-command `-h`/`--help` aliases, with one canonical embedded guide.
 - Add input-bound, checksummed gate-run manifests, explicit and affected gate selection, valid-evidence reuse, inspection, and fresh replay execution to `polis gates`.
 - Add a validated 1..16 jobs bound and explicit policy `parallel_safe` and `input_paths` declarations while preserving complete delivery validation.
 
 ### Fixed
 - Block dependent gates after unsuccessful prerequisites without suppressing unrelated gate results; emit outcomes in stable plan order.
+- Escape manifest-derived text in `polis gates --inspect-run` output to prevent raw terminal control sequences from altering display.
+- Bound committed-policy blob reads and ignore Git replacement refs in workspace status, preventing replacement-ref changes from bypassing the policy size limit.
 
 ## [6.9.0] - 2026-09-28
 
@@ -255,7 +262,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Aligned the Go module identity with the repository before the V4 semantic import-path migration.
 - Made Git-based CI fixtures deterministic across Windows line-ending behavior.
 
-[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.9.0...HEAD
+[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.10.0...HEAD
+[6.10.0]: https://github.com/MarcosAlves90/polis/compare/v6.9.0...v6.10.0
 [6.9.0]: https://github.com/MarcosAlves90/polis/compare/v6.8.1...v6.9.0
 [6.8.1]: https://github.com/MarcosAlves90/polis/compare/v6.8.0...v6.8.1
 [6.8.0]: https://github.com/MarcosAlves90/polis/compare/v6.7.0...v6.8.0
