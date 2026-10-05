@@ -127,6 +127,9 @@ func CompileWithOptions(policy spec.Policy, opts CompileOptions) (Plan, error) {
 	if err := policy.Validate(); err != nil {
 		return Plan{}, fmt.Errorf("compile execution plan: %w", err)
 	}
+	if err := validateCommandPortability(policy); err != nil {
+		return Plan{}, fmt.Errorf("compile execution plan: %w", err)
+	}
 	lint := spec.LintPolicy(policy)
 	if err := lint.Err(); err != nil {
 		return Plan{}, fmt.Errorf("compile execution plan: %w", err)

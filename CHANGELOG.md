@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- Add portability validation for shell command-string wrappers and host-incompatible Project Policy commands before gate execution.
+- Add a cross-platform Python multi-tool runner example that uses `sys.executable`, direct subprocess argv, explicit working directories, and fail-closed prerequisite checks.
+
+### Changed
+- Compose `environment.mode=clean` from an empty POLIS base, present Windows structural bootstrap variables, and the explicit policy allowlist, with case-insensitive Windows matching and deterministic deduplication.
+- Reject selected Windows environment-name collisions with conflicting values; continue omitting absent structural variables and all unapproved ambient variables.
+
 ## [6.10.0] - 2026-10-04
 
 ### Added

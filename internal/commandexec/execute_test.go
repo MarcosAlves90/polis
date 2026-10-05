@@ -40,6 +40,15 @@ func TestPrerequisiteHelper(t *testing.T) {
 	}
 }
 
+func TestDirectExecutionHelper(t *testing.T) {
+	for i, arg := range os.Args {
+		if arg == "--" && i+1 < len(os.Args) && os.Args[i+1] == "direct-exec-helper" {
+			_, _ = os.Stdout.WriteString(strings.Join(os.Args[i+2:], "\x00"))
+			os.Exit(0)
+		}
+	}
+}
+
 func prerequisiteCommand(mode string) spec.CommandSpec {
 	return spec.CommandSpec{Argv: []string{os.Args[0], "-test.run=^TestPrerequisiteHelper$", "--", mode}, Cwd: ".", TimeoutSeconds: 5}
 }
@@ -106,11 +115,36 @@ func TestRunTimeoutFails(t *testing.T) {
 func TestRunDoesNotInterpretShellTokens(t *testing.T) {
 	root := t.TempDir()
 	marker := filepath.Join(root, "pwned")
-	got := Run(root, spec.CommandSpec{Argv: []string{"printf", "%s", "&& touch " + marker}, Cwd: ".", TimeoutSeconds: 5})
-	if got.Status != spec.StatusPass || !strings.Contains(got.Stdout, "&& touch") {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	literal := "&& touch " + marker
+	got := Run(root, spec.CommandSpec{
+		Argv: []string{executable, "-test.run=^TestDirectExecutionHelper$", "--", "direct-exec-helper", "argument with spaces", literal},
+		Cwd:  ".", TimeoutSeconds: 5,
+	})
+	if got.Status != spec.StatusPass || got.Stdout != "argument with spaces\x00"+literal {
 		t.Fatalf("got=%+v", got)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("shell token executed, stat=%v", err)
+	}
+}
+
+func TestRunDirectExecutableWithCleanEnvironment(t *testing.T) {
+	root := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := Run(root, spec.CommandSpec{
+		Argv:           []string{executable, "-test.run=^TestDirectExecutionHelper$", "--", "direct-exec-helper", "argument with spaces", "&&"},
+		Cwd:            ".",
+		TimeoutSeconds: 5,
+		Environment:    &spec.EnvironmentSpec{Mode: spec.EnvironmentModeClean},
+	})
+	if got.Status != spec.StatusPass || got.Stdout != "argument with spaces\x00&&" {
+		t.Fatalf("direct executable result=%+v", got)
 	}
 }

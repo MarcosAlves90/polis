@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -76,10 +78,20 @@ func Run(repoRoot string, command spec.CommandSpec) Observation {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, command.Argv[0], command.Argv[1:]...)
 	cmd.Dir = filepath.Join(repoRoot, filepath.FromSlash(command.Cwd))
-	if command.Environment != nil {
-		cmd.Env = environmentFor(*command.Environment)
-	}
 	stdout, stderr := newBoundedDigestWriter(), newBoundedDigestWriter()
+	if command.Environment != nil {
+		childEnvironment, err := environmentFor(*command.Environment)
+		if err != nil {
+			return Observation{
+				Status:       spec.StatusBlocked,
+				ExitCode:     -1,
+				StdoutSHA256: stdout.digest(),
+				StderrSHA256: stderr.digest(),
+				Prerequisite: "invalid clean environment: " + err.Error(),
+			}
+		}
+		cmd.Env = childEnvironment
+	}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	started := time.Now()
@@ -167,15 +179,79 @@ func BlockedReason(obs Observation) *string {
 	return &reason
 }
 
-func environmentFor(environment spec.EnvironmentSpec) []string {
+var windowsBootstrapEnvironment = []string{
+	"SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "ProgramFiles",
+	"ProgramFiles(x86)", "ProgramW6432", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "HOMEDRIVE", "HOMEPATH",
+}
+
+type environmentEntry struct {
+	value string
+}
+
+func environmentFor(environment spec.EnvironmentSpec) ([]string, error) {
+	return environmentForParent(environment, os.Environ(), runtime.GOOS)
+}
+
+func environmentForParent(environment spec.EnvironmentSpec, parent []string, goos string) ([]string, error) {
 	if environment.Mode == spec.EnvironmentModeInherit {
-		return os.Environ()
+		return append([]string(nil), parent...), nil
 	}
-	result := make([]string, 0, len(environment.Pass))
-	for _, name := range environment.Pass {
-		if value, ok := os.LookupEnv(name); ok {
-			result = append(result, name+"="+value)
+	if environment.Mode != spec.EnvironmentModeClean {
+		return nil, fmt.Errorf("unsupported environment mode %q", environment.Mode)
+	}
+
+	windows := goos == "windows"
+	selectedNames := make(map[string]string, len(environment.Pass)+len(windowsBootstrapEnvironment))
+	add := func(name string) {
+		key := environmentKey(name, windows)
+		if _, alreadySelected := selectedNames[key]; !alreadySelected {
+			selectedNames[key] = name
 		}
 	}
-	return result
+	if windows {
+		for _, name := range windowsBootstrapEnvironment {
+			add(name)
+		}
+	}
+	for _, name := range environment.Pass {
+		add(name)
+	}
+
+	parentByName := make(map[string]environmentEntry, len(selectedNames))
+	for _, value := range parent {
+		name, variableValue, ok := strings.Cut(value, "=")
+		if !ok || name == "" {
+			continue
+		}
+		key := environmentKey(name, windows)
+		if _, selected := selectedNames[key]; !selected {
+			continue
+		}
+		if existing, found := parentByName[key]; found {
+			if existing.value != variableValue {
+				return nil, fmt.Errorf("conflicting values for environment variable %q", selectedNames[key])
+			}
+			continue
+		}
+		parentByName[key] = environmentEntry{value: variableValue}
+	}
+
+	keys := make([]string, 0, len(parentByName))
+	for key := range parentByName {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		entry := parentByName[key]
+		result = append(result, selectedNames[key]+"="+entry.value)
+	}
+	return result, nil
+}
+
+func environmentKey(name string, windows bool) string {
+	if windows {
+		return strings.ToUpper(name)
+	}
+	return name
 }

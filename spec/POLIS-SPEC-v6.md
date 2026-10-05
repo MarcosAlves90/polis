@@ -97,6 +97,20 @@ Before any project command executes, policy validation MUST lint the combined gr
 
 The linter MUST produce a deterministic topological execution order. The executor MUST use that order, while plan output MUST retain the canonical gate inventory and report the effective dependency edges and execution order. Disabling a dependency removes the guarantee represented by the dependent enabled gate; it MUST never happen silently.
 
+### 4.2.3 Portable commands and clean environments
+
+Project Policy commands MUST be executed as the declared `argv`; POLIS MUST NOT insert a shell. Before executing gates, `plan`, `build`, `preflight`, and `apply` MUST reject shell command-string forms that use recognized POSIX shells (`sh`, `bash`, `dash`, `ash`, `zsh`, `ksh`, `fish`) with `-c`/`--command`, Windows command shells (`cmd`/`cmd.exe`) with `/c` or `/k`, or PowerShell (`powershell`, `pwsh`, and their `.exe` forms) with `-Command`, `-c`, or `-EncodedCommand`. This classification is lexical and MUST NOT interpret arbitrary direct-command arguments as shell syntax.
+
+Recognized platform-specific interpreters and scripts MUST fail before gate execution when their platform is incompatible with the current runtime. Direct invocation of a POSIX `.sh` script is supported on POSIX; direct `.bat`, `.cmd`, and `.ps1` entrypoints are rejected because they require an interpreter. A native interpreter invoked to run a script on its own platform remains the project author's responsibility. Diagnostics MUST name the gate and recommend direct argv or a versioned cross-platform project runner. POLIS MUST NOT rewrite a Project Policy or its commands.
+
+For multiple tools or working directories, projects SHOULD use a versioned runner in the project and declare the runner as one direct-argv gate. Python runners MUST execute test modules through `sys.executable -m <module>`, use explicit working directories, preserve child exit codes, and fail explicitly when required tools or modules are absent.
+
+For this specification, `environment.mode=inherit` passes the process environment unchanged. `environment.mode=clean` constructs the child environment from an empty, deterministic POLIS base, the present required OS bootstrap variables, and the values named by the policy's `pass` allowlist. On Windows, the bootstrap set is exactly `SystemRoot`, `WINDIR`, `COMSPEC`, `PATHEXT`, `TEMP`, `TMP`, `ProgramFiles`, `ProgramFiles(x86)`, `ProgramW6432`, `USERPROFILE`, `LOCALAPPDATA`, `APPDATA`, `HOMEDRIVE`, and `HOMEPATH`. POLIS MUST copy only values present in the parent process and MUST NOT synthesize missing values. POSIX adds no Windows bootstrap variables.
+
+Windows environment names are case-insensitive for both bootstrap lookup and explicit allowlist matching; the resulting environment MUST contain at most one entry per case-insensitive name. Conflicting parent values for a selected case-insensitive name MUST block execution. Unselected ambient variables, including credentials and application state, MUST remain excluded. Environment values MUST NOT be serialized into policy, evidence, or artifacts.
+
+A change to Project Policy bytes remains bound by the strict baseline's `policy_sha256`; it MUST be made through a new policy input and new `polis start`/artifact workflow. Existing locked contracts and artifacts MUST NOT be silently rewritten.
+
 ### 4.3 Committed-policy compatibility
 
 When `--policy` is omitted, V6 MAY retain the historical producer behavior that reads exact committed `.polis/policy.json` bytes. This exists for compatibility and self-hosting; it is not the canonical zero-residue workflow.

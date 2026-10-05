@@ -14,6 +14,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/isolation"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
 	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
+	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -67,6 +68,9 @@ func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Optio
 	pkg, err := packageverify.Load(artifact)
 	if err != nil {
 		return Result{}, fmt.Errorf("verify package: %w", err)
+	}
+	if _, err := policyplan.Compile(pkg.Policy); err != nil {
+		return Result{}, fmt.Errorf("validate packaged Project Policy before apply: %w", err)
 	}
 	if commitMode != CommitModeNone && pkg.Change.Commit == nil {
 		return Result{}, fmt.Errorf("%w: artifact has no commit.message", ErrCommitBlocked)
@@ -203,6 +207,9 @@ func PreflightWithOptions(ctx context.Context, artifact, repoPath string, opts O
 	pkg, err := packageverify.Load(artifact)
 	if err != nil {
 		return Result{}, fmt.Errorf("verify package: %w", err)
+	}
+	if _, err := policyplan.Compile(pkg.Policy); err != nil {
+		return Result{}, fmt.Errorf("validate packaged Project Policy before preflight: %w", err)
 	}
 	repo, err := resolveRepo(ctx, repoPath)
 	if err != nil {

@@ -299,6 +299,39 @@ development-proof, and transactional invariants remain mandatory.
 other ecosystems and provide direct argv for test and coverage commands. POLIS
 does not synthesize shell commands.
 
+### Portable project commands
+
+Policy commands are executed as direct `argv`, not through a shell. `polis plan`
+reports a validation error for recognized shell command-string forms such as
+`bash -lc`, `sh -c`, `powershell -Command`, and `cmd.exe /c`; producer and
+consumer validation apply the same check before gates run. The check is lexical
+and does not treat arguments to a direct executable as shell syntax.
+
+Use `python -m pytest` for a single Python test command. For multiple tools or
+working directories, put a runner under version control in the project and
+declare one direct command such as
+`python scripts/validate_project.py`. The
+example at [`docs/examples/validate_project.py`](examples/validate_project.py)
+can be copied to `<project>/scripts/validate_project.py` and adjusted to the
+project's directory layout. It invokes pytest through
+`sys.executable -m pytest`, runs Flutter directly with an explicit `cwd`,
+preserves child exit codes, and reports missing required tools/modules as
+failures. It never uses `shell=True`.
+
+For `environment.mode=clean`, POLIS starts with an empty deterministic base,
+adds only present Windows bootstrap variables (`SystemRoot`, `WINDIR`,
+`COMSPEC`, `PATHEXT`, `TEMP`, `TMP`, `ProgramFiles`, `ProgramFiles(x86)`,
+`ProgramW6432`, `USERPROFILE`, `LOCALAPPDATA`, `APPDATA`, `HOMEDRIVE`, and
+`HOMEPATH`), then adds values named by the policy's explicit `pass` list.
+Windows variable names are matched case-insensitively and emitted once. Missing
+values are not invented; arbitrary variables and credentials remain excluded.
+`inherit` continues to pass the process environment unchanged. Environment
+values are never included in evidence or artifacts.
+
+Do not let POLIS rewrite a policy already bound to a Change Contract or
+artifact. If a project's command changes, create a new effective policy and
+lock a new baseline with `polis start` before building a replacement artifact.
+
 Each gate may declare `depends_on`. POLIS adds essential dependencies, rejects
 unknown IDs, cycles, and enabled gates depending on `not_applicable` gates, then
 executes a deterministic topological order.

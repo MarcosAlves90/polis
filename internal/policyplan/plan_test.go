@@ -137,6 +137,14 @@ func TestCompileRejectsInvalidPolicy(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsNonportableShellCommand(t *testing.T) {
+	policy := planPolicy(spec.ValidationLevelStrict)
+	policy.Gates[0].Command.Argv = []string{"bash", "-lc", "cd backend && pytest"}
+	if _, err := Compile(policy); err == nil || !strings.Contains(err.Error(), "test.complete") {
+		t.Fatalf("PORTABILITY-RED: shell-based Project Policy command was accepted: %v", err)
+	}
+}
+
 func TestCompileWithOptionsDefersAndCanonicalizesEnabledGates(t *testing.T) {
 	policy := planPolicy(spec.ValidationLevelStrict)
 	command := policy.Gates[0].Command
