@@ -415,7 +415,7 @@ func materializeObjects(ctx context.Context, objects map[string]object, objectFo
 			paths.WriteString(filename)
 			paths.WriteByte('\n')
 		}
-		raw, err := gitutil.Bytes(ctx, repo, nil, strings.NewReader(paths.String()), "hash-object", "-t", ordered[start].Type, "-w", "--stdin-paths")
+		raw, err := gitutil.Bytes(ctx, repo, nil, strings.NewReader(paths.String()), "hash-object", "-t", ordered[start].Type, "-w", "--stdin-paths", "--no-filters")
 		if err != nil {
 			cleanup()
 			return "", nil, fmt.Errorf("materialize baseline %s objects: %w", ordered[start].Type, err)

@@ -49,6 +49,12 @@ func testRepo(t *testing.T, objectFormat string) string {
 }
 
 func TestBuildVerifyAndMaterializePreservesNativeBaseline(t *testing.T) {
+	// Baseline object materialization must preserve exact bytes even when the
+	// caller's Git configuration would normally apply line-ending filters.
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.autocrlf")
+	t.Setenv("GIT_CONFIG_VALUE_0", "true")
+
 	for _, objectFormat := range []string{"sha1", "sha256"} {
 		t.Run(objectFormat, func(t *testing.T) {
 			repo := testRepo(t, objectFormat)
