@@ -1282,7 +1282,7 @@ func TestRunBuildCreatesPackage(t *testing.T) {
 	}
 	outDir := filepath.Join(t.TempDir(), "out")
 	var out, errOut bytes.Buffer
-	code := run([]string{"build", "--repo", repo, "--policy", policyPath, "--project", "gitrex", "--change", "cli-build", "--contract", contract, "--defer-gate", "coverage", "--out", outDir}, &out, &errOut)
+	code := run([]string{"build", "--repo", repo, "--policy", policyPath, "--project", "gitrex", "--change", "cli-build", "--contract", contract, "--defer-gate", "coverage", "--jobs", "2", "--out", outDir}, &out, &errOut)
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, errOut.String())
 	}
@@ -1324,6 +1324,16 @@ func TestRunBuildDeferralTextAndJSONReporting(t *testing.T) {
 		if !strings.HasPrefix(path, ".polis/artifacts/") {
 			t.Errorf("unexpected retained path %q", path)
 		}
+	}
+}
+
+func TestRunBuildRejectsInvalidJobs(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"build", "--jobs", "17"}, &out, &errOut); code != exitUsage {
+		t.Fatalf("invalid jobs code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "jobs must be between 1 and 16") {
+		t.Fatalf("invalid jobs diagnostic missing: %q", errOut.String())
 	}
 }
 

@@ -228,14 +228,18 @@ func checkRegularPath(root, relative string) error {
 }
 
 type Artifact struct {
-	Class string
-	Data  []byte
+	Class  string
+	Data   []byte
+	Source string
 }
 
 type pendingArtifact struct {
 	relative string
 	dest     string
 	data     []byte
+	source   string
+	digest   string
+	size     int64
 	temp     string
 	reused   bool
 	created  os.FileInfo
@@ -268,20 +272,24 @@ func (s State) PublishMany(repo string, artifacts []Artifact) ([]string, error) 
 		if err != nil {
 			return nil, err
 		}
-		if len(artifact.Data) == 0 {
-			return nil, fmt.Errorf("retained %s artifact must not be empty", artifact.Class)
+		item, err := preparePendingArtifact(artifact, extension)
+		if err != nil {
+			return nil, err
 		}
-		digest := sha256.Sum256(artifact.Data)
-		relative := filepath.ToSlash(filepath.Join(ManagedRoot, artifact.Class, "sha256-"+hex.EncodeToString(digest[:])+extension))
-		if previous, ok := byPath[relative]; ok {
-			if !bytes.Equal(items[previous].data, artifact.Data) {
-				return nil, fmt.Errorf("content-address collision at %s", relative)
+		item.dest = filepath.Join(root, filepath.FromSlash(item.relative))
+		if previous, ok := byPath[item.relative]; ok {
+			equal, err := samePendingArtifact(items[previous], item)
+			if err != nil {
+				return nil, fmt.Errorf("compare duplicate retained artifact %s: %w", item.relative, err)
+			}
+			if !equal {
+				return nil, fmt.Errorf("content-address collision at %s", item.relative)
 			}
 			items[index] = items[previous]
 			continue
 		}
-		byPath[relative] = index
-		items[index] = pendingArtifact{relative: relative, dest: filepath.Join(root, filepath.FromSlash(relative)), data: artifact.Data}
+		byPath[item.relative] = index
+		items[index] = item
 	}
 
 	for index := range items {
@@ -296,11 +304,11 @@ func (s State) PublishMany(repo string, artifacts []Artifact) ([]string, error) 
 			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 				return nil, fmt.Errorf("retained artifact path is not a regular file: %s", items[index].relative)
 			}
-			existing, err := os.ReadFile(items[index].dest)
+			equal, err := identicalRegularArtifact(items[index].dest, items[index])
 			if err != nil {
 				return nil, fmt.Errorf("read existing retained artifact %s: %w", items[index].relative, err)
 			}
-			if !bytes.Equal(existing, items[index].data) {
+			if !equal {
 				return nil, fmt.Errorf("retained artifact path contains different bytes: %s", items[index].relative)
 			}
 			items[index].reused = true
@@ -336,7 +344,7 @@ func (s State) PublishMany(repo string, artifacts []Artifact) ([]string, error) 
 			cleanup()
 			return nil, fmt.Errorf("set retained artifact permissions: %w", err)
 		}
-		if _, err := temp.Write(items[index].data); err != nil {
+		if err := writePendingArtifact(temp, items[index]); err != nil {
 			_ = temp.Close()
 			cleanup()
 			return nil, fmt.Errorf("write retained artifact %s: %w", items[index].relative, err)
@@ -356,9 +364,12 @@ func (s State) PublishMany(repo string, artifacts []Artifact) ([]string, error) 
 			continue
 		}
 		if err := os.Link(items[index].temp, items[index].dest); err != nil {
-			if errors.Is(err, os.ErrExist) && identicalRegularFile(items[index].dest, items[index].data) {
-				items[index].reused = true
-				continue
+			if errors.Is(err, os.ErrExist) {
+				equal, compareErr := identicalRegularArtifact(items[index].dest, items[index])
+				if compareErr == nil && equal {
+					items[index].reused = true
+					continue
+				}
 			}
 			cleanup()
 			return nil, fmt.Errorf("publish retained artifact %s: %w", items[index].relative, err)
@@ -378,6 +389,142 @@ func (s State) PublishMany(repo string, artifacts []Artifact) ([]string, error) 
 		paths[index] = items[index].relative
 	}
 	return paths, nil
+}
+
+func preparePendingArtifact(artifact Artifact, extension string) (pendingArtifact, error) {
+	if artifact.Source != "" && len(artifact.Data) != 0 {
+		return pendingArtifact{}, fmt.Errorf("retained %s artifact must use data or source, not both", artifact.Class)
+	}
+	if artifact.Source == "" {
+		if len(artifact.Data) == 0 {
+			return pendingArtifact{}, fmt.Errorf("retained %s artifact must not be empty", artifact.Class)
+		}
+		digest := sha256.Sum256(artifact.Data)
+		digestHex := hex.EncodeToString(digest[:])
+		return pendingArtifact{
+			relative: filepath.ToSlash(filepath.Join(ManagedRoot, artifact.Class, "sha256-"+digestHex+extension)),
+			data:     artifact.Data,
+			digest:   digestHex,
+			size:     int64(len(artifact.Data)),
+		}, nil
+	}
+	f, err := os.Open(artifact.Source)
+	if err != nil {
+		return pendingArtifact{}, fmt.Errorf("open retained %s source: %w", artifact.Class, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return pendingArtifact{}, fmt.Errorf("inspect retained %s source: %w", artifact.Class, err)
+	}
+	if !info.Mode().IsRegular() {
+		return pendingArtifact{}, fmt.Errorf("retained %s source must be a regular file", artifact.Class)
+	}
+	if info.Size() == 0 {
+		return pendingArtifact{}, fmt.Errorf("retained %s artifact must not be empty", artifact.Class)
+	}
+	h := sha256.New()
+	n, err := io.Copy(h, f)
+	if err != nil {
+		return pendingArtifact{}, fmt.Errorf("hash retained %s source: %w", artifact.Class, err)
+	}
+	if n != info.Size() {
+		return pendingArtifact{}, fmt.Errorf("retained %s source changed while hashing", artifact.Class)
+	}
+	digestHex := hex.EncodeToString(h.Sum(nil))
+	return pendingArtifact{
+		relative: filepath.ToSlash(filepath.Join(ManagedRoot, artifact.Class, "sha256-"+digestHex+extension)),
+		source:   artifact.Source,
+		digest:   digestHex,
+		size:     n,
+	}, nil
+}
+
+func samePendingArtifact(left, right pendingArtifact) (bool, error) {
+	if left.size != right.size || left.digest != right.digest {
+		return false, nil
+	}
+	leftReader, err := openPendingArtifact(left)
+	if err != nil {
+		return false, err
+	}
+	defer leftReader.Close()
+	rightReader, err := openPendingArtifact(right)
+	if err != nil {
+		return false, err
+	}
+	defer rightReader.Close()
+	return readersEqual(leftReader, rightReader)
+}
+
+func openPendingArtifact(item pendingArtifact) (io.ReadCloser, error) {
+	if item.source == "" {
+		return io.NopCloser(bytes.NewReader(item.data)), nil
+	}
+	return os.Open(item.source)
+}
+
+func readersEqual(left, right io.Reader) (bool, error) {
+	leftBuffer := make([]byte, 32<<10)
+	rightBuffer := make([]byte, 32<<10)
+	for {
+		leftN, leftErr := io.ReadFull(left, leftBuffer)
+		rightN, rightErr := io.ReadFull(right, rightBuffer)
+		if leftN != rightN || !bytes.Equal(leftBuffer[:leftN], rightBuffer[:rightN]) {
+			return false, nil
+		}
+		if errors.Is(leftErr, io.EOF) || errors.Is(leftErr, io.ErrUnexpectedEOF) || errors.Is(rightErr, io.EOF) || errors.Is(rightErr, io.ErrUnexpectedEOF) {
+			return leftN == rightN && (errors.Is(leftErr, io.EOF) || errors.Is(leftErr, io.ErrUnexpectedEOF)) && (errors.Is(rightErr, io.EOF) || errors.Is(rightErr, io.ErrUnexpectedEOF)), nil
+		}
+		if leftErr != nil {
+			return false, leftErr
+		}
+		if rightErr != nil {
+			return false, rightErr
+		}
+	}
+}
+
+func writePendingArtifact(w io.Writer, item pendingArtifact) error {
+	if item.source == "" {
+		_, err := w.Write(item.data)
+		return err
+	}
+	f, err := os.Open(item.source)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(w, h), f)
+	if err != nil {
+		return err
+	}
+	if n != item.size || hex.EncodeToString(h.Sum(nil)) != item.digest {
+		return errors.New("source changed while retaining artifact")
+	}
+	return nil
+}
+
+func identicalRegularArtifact(filename string, want pendingArtifact) (bool, error) {
+	info, err := os.Lstat(filename)
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() != want.size {
+		return false, nil
+	}
+	f, err := os.Open(filename)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	wantReader, err := openPendingArtifact(want)
+	if err != nil {
+		return false, err
+	}
+	defer wantReader.Close()
+	return readersEqual(f, wantReader)
 }
 
 func extensionForClass(class string) (string, error) {
@@ -493,15 +640,6 @@ func ensureDirectory(path string, create bool) error {
 		return errors.New("path is not a directory")
 	}
 	return nil
-}
-
-func identicalRegularFile(filename string, want []byte) bool {
-	info, err := os.Lstat(filename)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return false
-	}
-	got, err := os.ReadFile(filename)
-	return err == nil && bytes.Equal(got, want)
 }
 
 // ReadInput permits a producer input from an external path or from the exact

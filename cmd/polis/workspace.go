@@ -11,6 +11,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/fileutil"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
+	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -42,12 +43,17 @@ func runWorkspaceValidate(args []string, out, errOut io.Writer) int {
 	regressionPatch := fs.String("regression-patch", "", "required captured Red proof for Red-to-Green contracts")
 	implementationPlan := fs.String("implementation-plan", "", "optional contract-bound Implementation Plan JSON")
 	outReport := fs.String("out-report", "", "new external workspace validation report; never overwritten")
+	jobs := fs.Int("jobs", 1, "maximum concurrent parallel-safe gates (1..16)")
 	format := fs.String("format", "text", outputFormatHelp)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
+	if err := policyexec.ValidateJobs(*jobs); err != nil {
+		fmt.Fprintln(errOut, err)
+		return exitUsage
+	}
 	if fs.NArg() != 0 || !validFormat(*format) || *contract == "" {
-		fmt.Fprintln(errOut, "usage: polis workspace validate --repo <path> [--policy <policy-v3.json>] --contract <locked-v4-or-v6.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--out-report <new-external.json>] [--format text|json]")
+		fmt.Fprintln(errOut, "usage: polis workspace validate --repo <path> [--policy <policy-v3.json>] --contract <locked-v4-or-v6.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--out-report <new-external.json>] [--jobs <1..16>] [--format text|json]")
 		return exitUsage
 	}
 	ctx := context.Background()
@@ -59,7 +65,7 @@ func runWorkspaceValidate(args []string, out, errOut io.Writer) int {
 	writeProgress(errOut, *format, "validate the current workspace against the locked contract", "the current source tree and producer gates must match the contract without creating a delivery artifact")
 	result, err := packagebuild.ValidateWorkspace(ctx, packagebuild.WorkspaceOptions{
 		Repo: root, Policy: *policy, Contract: *contract,
-		RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlan, OnGateStart: gateStartProgress(errOut, *format),
+		RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlan, Jobs: *jobs, OnGateStart: gateStartProgress(errOut, *format),
 	})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS WORKSPACE VALIDATE", exitValidationFailed, err)

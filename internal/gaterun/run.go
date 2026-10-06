@@ -147,41 +147,41 @@ func Run(ctx context.Context, repo string, plan policyplan.Plan, opts Options) (
 			manifest.SelectedGates = append(manifest.SelectedGates, gate.ID)
 		}
 	}
-	reuse := func(gate spec.GatePolicy, result policyexec.Result) (policyexec.Outcome, bool) {
-		record := records[gate.ID]
-		head, source, err := snapshot(ctx, repo)
-		if err != nil || head != in.Head || source != in.SourceSHA256 {
-			manifest.Current = false
-			return policyexec.Outcome{Status: spec.StatusBlocked, Action: "blocked", Reason: "source changed during validation; evidence is stale"}, true
+	var reuse func(spec.GatePolicy, policyexec.Result) (policyexec.Outcome, bool)
+	if previous != nil && opts.Replay == "" {
+		reuse = func(gate spec.GatePolicy, result policyexec.Result) (policyexec.Outcome, bool) {
+			record := records[gate.ID]
+			head, source, err := snapshot(ctx, repo)
+			if err != nil || head != in.Head || source != in.SourceSHA256 {
+				manifest.Current = false
+				return policyexec.Outcome{Status: spec.StatusBlocked, Action: "blocked", Reason: "source changed during validation; evidence is stale"}, true
+			}
+			dependencies := map[string]string{}
+			for _, dep := range gate.DependsOn {
+				dependencies[dep] = resultIdentity(records[dep].Identity, result.Outcomes[dep])
+			}
+			record.Identity = identity(in, gate, dependencies)
+			old := priorGate(previous, gate.ID)
+			if old == nil {
+				record.StaleCategories = []string{"identity_missing_or_invalid"}
+				return policyexec.Outcome{}, false
+			}
+			record.StaleCategories = differences(old.Identity, record.Identity)
+			if !previous.Current {
+				record.StaleCategories = append(record.StaleCategories, "source_changed_during_run")
+			}
+			if opts.EnvironmentID == "" {
+				record.StaleCategories = append(record.StaleCategories, "environment_unversioned")
+			}
+			if len(record.StaleCategories) != 0 || old.Status != spec.StatusPass || (old.Action != "executed" && old.Action != "reused") || old.Observation == nil || old.Observation.ExitCode != 0 {
+				return policyexec.Outcome{}, false
+			}
+			record.ReusedFrom = previous.RunID
+			o := old.Observation
+			return policyexec.Outcome{Status: spec.StatusPass, Action: "reused", Reason: "matching input identity and caller-versioned environment",
+				Command: &policyexec.CommandExecution{Argv: append([]string{}, gate.Command.Argv...), Cwd: gate.Command.Cwd,
+					Observation: commandexec.Observation{Status: spec.StatusPass, ExitCode: o.ExitCode, DurationMS: o.DurationMS, StdoutSHA256: o.StdoutSHA256, StderrSHA256: o.StderrSHA256}}}, true
 		}
-		dependencies := map[string]string{}
-		for _, dep := range gate.DependsOn {
-			dependencies[dep] = resultIdentity(records[dep].Identity, result.Outcomes[dep])
-		}
-		record.Identity = identity(in, gate, dependencies)
-		if previous == nil || opts.Replay != "" {
-			return policyexec.Outcome{}, false
-		}
-		old := priorGate(previous, gate.ID)
-		if old == nil {
-			record.StaleCategories = []string{"identity_missing_or_invalid"}
-			return policyexec.Outcome{}, false
-		}
-		record.StaleCategories = differences(old.Identity, record.Identity)
-		if !previous.Current {
-			record.StaleCategories = append(record.StaleCategories, "source_changed_during_run")
-		}
-		if opts.EnvironmentID == "" {
-			record.StaleCategories = append(record.StaleCategories, "environment_unversioned")
-		}
-		if len(record.StaleCategories) != 0 || old.Status != spec.StatusPass || (old.Action != "executed" && old.Action != "reused") || old.Observation == nil || old.Observation.ExitCode != 0 {
-			return policyexec.Outcome{}, false
-		}
-		record.ReusedFrom = previous.RunID
-		o := old.Observation
-		return policyexec.Outcome{Status: spec.StatusPass, Action: "reused", Reason: "matching input identity and caller-versioned environment",
-			Command: &policyexec.CommandExecution{Argv: append([]string{}, gate.Command.Argv...), Cwd: gate.Command.Cwd,
-				Observation: commandexec.Observation{Status: spec.StatusPass, ExitCode: o.ExitCode, DurationMS: o.DurationMS, StdoutSHA256: o.StdoutSHA256, StderrSHA256: o.StderrSHA256}}}, true
 	}
 	result := policyexec.ExecutePlanWithOptions(plan, repo, io.Discard, policyexec.Options{Jobs: opts.Jobs, Selected: selected, Reuse: reuse, OnGateStart: opts.OnGateStart})
 	for _, gate := range plan.GatePolicies() {

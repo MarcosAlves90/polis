@@ -8,10 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 - Add intermediate command progress that always reports the current action and its reason, including per-gate start events and structured JSON Lines progress for `--format json`.
+- Add `--jobs <1..16>` to `polis build` and `polis workspace validate`, reusing the deterministic `parallel_safe` gate scheduler while keeping serial execution as the default.
 - Add portability validation for shell command-string wrappers and host-incompatible Project Policy commands before gate execution.
 - Add a cross-platform Python multi-tool runner example that uses `sys.executable`, direct subprocess argv, explicit working directories, and fail-closed prerequisite checks.
 
 ### Changed
+- Reduce baseline-proof subprocess overhead by batching Git object inspection/materialization and avoid redundant per-gate source snapshots when reuse is not active.
+- Reduce large-baseline verification memory by comparing canonical TAR bytes without constructing a second full archive, and avoid copying package payloads when callers only request verification.
+- Stream offline executable packaging, bundle verification, and output hashing so export no longer keeps or rereads whole executable/member payloads in memory.
 - Reduce release distribution size by stripping Go debug/symbol data from release binaries and Deflate-compressing deterministic offline ZIP members.
 - Compose `environment.mode=clean` from an empty POLIS base, present Windows structural bootstrap variables, and the explicit policy allowlist, with case-insensitive Windows matching and deterministic deduplication.
 - Reject selected Windows environment-name collisions with conflicting values; continue omitting absent structural variables and all unapproved ambient variables.

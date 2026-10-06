@@ -12,6 +12,7 @@ import (
 	"hash"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -141,11 +142,36 @@ func baselineObjectIDs(ctx context.Context, repo, baseCommit, baseTree string) (
 func describeBaselineObjects(ctx context.Context, repo, baseCommit string, ids []string) ([]objectDescriptor, uint64, error) {
 	projected := uint64(1024) // POSIX tar end-of-archive blocks.
 	descriptors := make([]objectDescriptor, 0, len(ids))
+	var input strings.Builder
 	for _, oid := range ids {
-		descriptor, err := describeBaselineObject(ctx, repo, baseCommit, oid)
-		if err != nil {
+		input.WriteString(oid)
+		input.WriteByte('\n')
+	}
+	raw, err := gitutil.Bytes(ctx, repo, nil, strings.NewReader(input.String()), gitCatFile, "--batch-check=%(objectname) %(objecttype) %(objectsize)")
+	if err != nil {
+		return nil, 0, fmt.Errorf("describe baseline objects: %w", err)
+	}
+	lines := bytes.Split(bytes.TrimSuffix(raw, []byte{'\n'}), []byte{'\n'})
+	if len(lines) != len(ids) {
+		return nil, 0, fmt.Errorf("describe baseline objects returned %d records, want %d", len(lines), len(ids))
+	}
+	for index, line := range lines {
+		fields := strings.Fields(string(line))
+		if len(fields) != 3 {
+			return nil, 0, fmt.Errorf("describe baseline object %s returned invalid metadata", ids[index])
+		}
+		oid, typ := fields[0], fields[1]
+		if oid != ids[index] {
+			return nil, 0, fmt.Errorf("describe baseline object mismatch: got %s want %s", oid, ids[index])
+		}
+		if err := validateBaselineObjectType(oid, baseCommit, typ); err != nil {
 			return nil, 0, err
 		}
+		size, err := strconv.ParseUint(fields[2], 10, 64)
+		if err != nil {
+			return nil, 0, fmt.Errorf("parse baseline object size %s: %w", oid, err)
+		}
+		descriptor := objectDescriptor{Type: typ, OID: oid, Size: size}
 		projected, err = addTarEntrySize(projected, descriptor.Size, ^uint64(0))
 		if err != nil {
 			return nil, 0, err
@@ -206,25 +232,6 @@ func baselineContributors(descriptors []objectDescriptor, pathsByObject map[stri
 	return contributors, total
 }
 
-func describeBaselineObject(ctx context.Context, repo, baseCommit, oid string) (objectDescriptor, error) {
-	typ, err := gitutil.Output(ctx, repo, nil, nil, gitCatFile, "-t", oid)
-	if err != nil {
-		return objectDescriptor{}, fmt.Errorf("read baseline object type %s: %w", oid, err)
-	}
-	if err := validateBaselineObjectType(oid, baseCommit, typ); err != nil {
-		return objectDescriptor{}, err
-	}
-	sizeText, err := gitutil.Output(ctx, repo, nil, nil, gitCatFile, "-s", oid)
-	if err != nil {
-		return objectDescriptor{}, fmt.Errorf("read baseline object size %s: %w", oid, err)
-	}
-	size, err := strconv.ParseUint(sizeText, 10, 64)
-	if err != nil {
-		return objectDescriptor{}, fmt.Errorf("parse baseline object size %s: %w", oid, err)
-	}
-	return objectDescriptor{Type: typ, OID: oid, Size: size}, nil
-}
-
 func validateBaselineObjectType(oid, baseCommit, typ string) error {
 	if oid == baseCommit {
 		if typ != "commit" {
@@ -239,16 +246,56 @@ func validateBaselineObjectType(oid, baseCommit, typ string) error {
 }
 
 func readBaselineObjects(ctx context.Context, repo string, descriptors []objectDescriptor) ([]object, error) {
-	objects := make([]object, 0, len(descriptors))
+	if len(descriptors) == 0 {
+		return nil, nil
+	}
+	var input strings.Builder
 	for _, descriptor := range descriptors {
-		data, err := gitutil.Bytes(ctx, repo, nil, nil, gitCatFile, descriptor.Type, descriptor.OID)
+		input.WriteString(descriptor.OID)
+		input.WriteByte('\n')
+	}
+	raw, err := gitutil.Bytes(ctx, repo, nil, strings.NewReader(input.String()), gitCatFile, "--batch")
+	if err != nil {
+		return nil, fmt.Errorf("read baseline objects: %w", err)
+	}
+	objects := make([]object, 0, len(descriptors))
+	offset := 0
+	for _, descriptor := range descriptors {
+		if offset >= len(raw) {
+			return nil, fmt.Errorf("read baseline object %s: missing batch record", descriptor.OID)
+		}
+		relativeEnd := bytes.IndexByte(raw[offset:], '\n')
+		if relativeEnd < 0 {
+			return nil, fmt.Errorf("read baseline object %s: unterminated batch header", descriptor.OID)
+		}
+		headerEnd := offset + relativeEnd
+		fields := strings.Fields(string(raw[offset:headerEnd]))
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("read baseline object %s: invalid batch header", descriptor.OID)
+		}
+		if fields[0] != descriptor.OID || fields[1] != descriptor.Type {
+			return nil, fmt.Errorf("read baseline object mismatch: got %s %s want %s %s", fields[0], fields[1], descriptor.OID, descriptor.Type)
+		}
+		size, err := strconv.ParseUint(fields[2], 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("read baseline object %s: %w", descriptor.OID, err)
+			return nil, fmt.Errorf("parse baseline object size %s: %w", descriptor.OID, err)
 		}
-		if uint64(len(data)) != descriptor.Size {
-			return nil, fmt.Errorf("baseline object %s size changed during snapshot: got %d want %d", descriptor.OID, len(data), descriptor.Size)
+		if size != descriptor.Size {
+			return nil, fmt.Errorf("baseline object %s size changed during snapshot: got %d want %d", descriptor.OID, size, descriptor.Size)
 		}
-		objects = append(objects, object{Type: descriptor.Type, OID: descriptor.OID, Data: data})
+		dataStart := headerEnd + 1
+		if descriptor.Size > uint64(len(raw)-dataStart) {
+			return nil, fmt.Errorf("read baseline object %s: truncated batch payload", descriptor.OID)
+		}
+		dataEnd := dataStart + int(descriptor.Size)
+		if dataEnd >= len(raw) || raw[dataEnd] != '\n' {
+			return nil, fmt.Errorf("read baseline object %s: invalid batch payload terminator", descriptor.OID)
+		}
+		objects = append(objects, object{Type: descriptor.Type, OID: descriptor.OID, Data: raw[dataStart:dataEnd]})
+		offset = dataEnd + 1
+	}
+	if offset != len(raw) {
+		return nil, fmt.Errorf("read baseline objects returned %d unexpected trailing bytes", len(raw)-offset)
 	}
 	return objects, nil
 }
@@ -301,14 +348,33 @@ func validateSnapshot(raw []byte, objectFormat, baseCommit, baseTree string) (ma
 	if err := validateClosure(objects, objectFormat, baseCommit, baseTree); err != nil {
 		return nil, err
 	}
-	canonical, err := encode(mapValues(objects))
-	if err != nil {
+	comparison := exactBytesWriter{expected: raw, matching: true}
+	if err := encodeTo(&comparison, mapValues(objects)); err != nil {
 		return nil, err
 	}
-	if !bytes.Equal(raw, canonical) {
+	if !comparison.matches() {
 		return nil, errors.New("baseline snapshot is not canonical")
 	}
 	return objects, nil
+}
+
+type exactBytesWriter struct {
+	expected []byte
+	offset   int
+	matching bool
+}
+
+func (w *exactBytesWriter) Write(p []byte) (int, error) {
+	end := w.offset + len(p)
+	if end > len(w.expected) || !bytes.Equal(p, w.expected[w.offset:min(end, len(w.expected))]) {
+		w.matching = false
+	}
+	w.offset = end
+	return len(p), nil
+}
+
+func (w *exactBytesWriter) matches() bool {
+	return w.matching && w.offset == len(w.expected)
 }
 
 func materializeObjects(ctx context.Context, objects map[string]object, objectFormat, baseCommit, baseTree string) (string, func(), error) {
@@ -328,16 +394,45 @@ func materializeObjects(ctx context.Context, objects map[string]object, objectFo
 		}
 		return ordered[i].OID < ordered[j].OID
 	})
-	for _, obj := range ordered {
-		got, err := gitutil.Output(ctx, repo, nil, bytes.NewReader(obj.Data), "hash-object", "-t", obj.Type, "-w", "--stdin")
+	staging, err := os.MkdirTemp("", "polis-baseline-objects-*")
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("stage baseline objects: %w", err)
+	}
+	defer os.RemoveAll(staging)
+	for start := 0; start < len(ordered); {
+		end := start + 1
+		for end < len(ordered) && ordered[end].Type == ordered[start].Type {
+			end++
+		}
+		var paths strings.Builder
+		for index := start; index < end; index++ {
+			filename := filepath.Join(staging, strconv.Itoa(index))
+			if err := os.WriteFile(filename, ordered[index].Data, 0o600); err != nil {
+				cleanup()
+				return "", nil, fmt.Errorf("stage baseline object %s: %w", ordered[index].OID, err)
+			}
+			paths.WriteString(filename)
+			paths.WriteByte('\n')
+		}
+		raw, err := gitutil.Bytes(ctx, repo, nil, strings.NewReader(paths.String()), "hash-object", "-t", ordered[start].Type, "-w", "--stdin-paths")
 		if err != nil {
 			cleanup()
-			return "", nil, fmt.Errorf("materialize baseline object %s: %w", obj.OID, err)
+			return "", nil, fmt.Errorf("materialize baseline %s objects: %w", ordered[start].Type, err)
 		}
-		if got != obj.OID {
+		got := strings.Fields(string(raw))
+		if len(got) != end-start {
 			cleanup()
-			return "", nil, fmt.Errorf("materialized baseline object mismatch: got %s want %s", got, obj.OID)
+			return "", nil, fmt.Errorf("materialize baseline %s objects returned %d ids, want %d", ordered[start].Type, len(got), end-start)
 		}
+		for index := start; index < end; index++ {
+			if got[index-start] != ordered[index].OID {
+				cleanup()
+				return "", nil, fmt.Errorf("materialized baseline object mismatch: got %s want %s", got[index-start], ordered[index].OID)
+			}
+			_ = os.Remove(filepath.Join(staging, strconv.Itoa(index)))
+		}
+		start = end
 	}
 	gotTree, err := gitutil.Output(ctx, repo, nil, nil, gitRevParse, baseCommit+"^{tree}")
 	if err != nil {
@@ -352,26 +447,33 @@ func materializeObjects(ctx context.Context, objects map[string]object, objectFo
 }
 
 func encode(objects []object) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := encodeTo(&buf, objects); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func encodeTo(w io.Writer, objects []object) error {
 	ordered := append([]object(nil), objects...)
 	sort.Slice(ordered, func(i, j int) bool { return objectName(ordered[i]) < objectName(ordered[j]) })
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
+	tw := tar.NewWriter(w)
 	for _, obj := range ordered {
 		hdr := &tar.Header{
 			Name: objectName(obj), Mode: 0o644, Size: int64(len(obj.Data)), Typeflag: tar.TypeReg,
 			ModTime: time.Unix(0, 0).UTC(), AccessTime: time.Time{}, ChangeTime: time.Time{}, Format: tar.FormatUSTAR,
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
-			return nil, fmt.Errorf("write baseline tar header: %w", err)
+			return fmt.Errorf("write baseline tar header: %w", err)
 		}
 		if _, err := tw.Write(obj.Data); err != nil {
-			return nil, fmt.Errorf("write baseline tar object: %w", err)
+			return fmt.Errorf("write baseline tar object: %w", err)
 		}
 	}
 	if err := tw.Close(); err != nil {
-		return nil, fmt.Errorf("finalize baseline tar: %w", err)
+		return fmt.Errorf("finalize baseline tar: %w", err)
 	}
-	return buf.Bytes(), nil
+	return nil
 }
 
 func objectName(obj object) string {

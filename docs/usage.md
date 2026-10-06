@@ -17,13 +17,13 @@ polis doctor [--format text|json]
 polis init --repo /path/to/repo [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]
 polis plan --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
 polis gates [--repo /path/to/repo] [--policy /outside/policy-v3.json] [--contract /outside/locked-v6.json] [--gate <id> ... | --affected] [--jobs <1..16>] [--environment-id <nonsecret-version>] [--reuse /outside/run.json | --replay /outside/run.json | --inspect-run /outside/run.json] [--out-run /outside/new-run.json] [--format text|json]
-polis workspace validate --repo /path/to/repo --contract /outside/locked-v6.json [--policy /outside/policy-v3.json] [--regression-patch /outside/regression.patch] [--implementation-plan /outside/plan.json] [--out-report /outside/workspace-validation.json] [--format text|json]
+polis workspace validate --repo /path/to/repo --contract /outside/locked-v6.json [--policy /outside/policy-v3.json] [--regression-patch /outside/regression.patch] [--implementation-plan /outside/plan.json] [--out-report /outside/workspace-validation.json] [--jobs <1..16>] [--format text|json]
 polis start --repo /path/to/repo --policy /outside/policy-v3.json --contract /outside/draft-v5.json --out /outside/locked-v6.json
 polis status [--repo /path/to/repo] [--contract /outside/retained-locked-contract.json] [--format text|json]
 polis implementation-plan --repo /path/to/repo [--policy /outside/policy-v3.json] --contract /outside/locked-v6.json --out /outside/implementation-plan.json
 polis check-red-scope --repo /path/to/repo --contract /outside/locked-v6.json --path tests/new_test.go [--path tests/another_test.go ...] [--format text|json]
 polis capture-red --repo /path/to/repo --contract /outside/locked-v6.json [--implementation-plan /outside/implementation-plan.json] --out /outside/regression.patch [--format text|json]
-polis build --repo /path/to/repo --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/locked-v6.json --regression-patch /outside/regression.patch [--implementation-plan /outside/implementation-plan.json] --out /outside/output
+polis build --repo /path/to/repo --policy /outside/policy-v3.json --project project-slug --change change-slug --contract /outside/locked-v6.json --regression-patch /outside/regression.patch [--implementation-plan /outside/implementation-plan.json] [--jobs <1..16>] --out /outside/output
 polis verify [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
 polis inspect [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
 polis preflight --repo /path/to/repo [--baseline-mode strict|compatible|permissive] [--allow-missing-baseline-proof] [--format text|json] [--signature artifact.polis.sig --trusted-key public.pem] artifact.polis
@@ -652,7 +652,7 @@ Do not use:
 <!-- command-help: workspace -->
 ```text
 Usage:
-  polis workspace validate --repo <path> --contract <locked-v4-or-v6.json> [--policy <policy-v3.json>] [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--out-report <new-external.json>] [--format text|json]
+  polis workspace validate --repo <path> --contract <locked-v4-or-v6.json> [--policy <policy-v3.json>] [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--out-report <new-external.json>] [--jobs <1..16>] [--format text|json]
   polis workspace status --repo <path> --contract <external-locked-v4-or-v6.json> --report <external-workspace-validation-v1.json> [--policy <policy-v3.json>] [--format text|json]
 Purpose:
   validate a locked change without a package, or compare an unsigned checkpoint's source identity
@@ -678,7 +678,9 @@ Reads/writes:
 Options/defaults:
   --repo defaults to .; --policy defaults to committed .polis/policy.json. Validate requires
   --contract; Red-to-Green requires --regression-patch. Status requires external --contract and --report.
-  Reports must be regular non-symlink files outside the resolved worktree. --format defaults to text.
+  Reports must be regular non-symlink files outside the resolved worktree. --jobs defaults to 1
+  and accepts 1 through 16; only gates explicitly marked parallel_safe may overlap.
+  --format defaults to text.
 Outcomes:
   Validate success (0) means the exact target passed locked proof and enabled non-deferred gates;
   JSON says workspace_validated=true and delivery_artifact_built/verified=false. Status success (0)
@@ -887,7 +889,7 @@ Do not use:
 <!-- command-help: build -->
 ```text
 Usage:
-  polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--defer-gate <id> ...] [--format text|json] --out <directory>
+  polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--defer-gate <id> ...] [--jobs <1..16>] [--format text|json] --out <directory>
 Purpose:
   build a .polis delivery package
 When to use:
@@ -916,6 +918,8 @@ Options/defaults:
   --implementation-plan defaults absent (format v5); supplied same plan bytes as capture-red
   produce format v6. --defer-gate repeats enabled gate IDs (default none); deferral cannot
   break producer dependencies and transfers required execution to consumer preflight/apply.
+  --jobs defaults to 1 and accepts 1 through 16; only gates explicitly marked parallel_safe
+  may overlap, and coverage remains exclusive.
 Outcomes:
   Success (0): verify/inspect the exact output; deferred gates remain a consumer obligation.
   Failure (2): inspect diagnostics for scope/proof/baseline/gate/output errors. BLOCKED

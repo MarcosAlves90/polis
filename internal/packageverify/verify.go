@@ -115,12 +115,24 @@ type decodedContracts struct {
 	change   spec.ChangeContract
 }
 
+type validatedPackage struct {
+	contracts             decodedContracts
+	regressionPatch       []byte
+	deferredGates         []string
+	implementationPlan    *spec.ImplementationPlan
+	implementationPlanRaw []byte
+}
+
 func Verify(filename string) (Result, error) {
-	pkg, err := Load(filename)
+	contents, err := loadArchiveContents(filename)
 	if err != nil {
 		return Result{}, err
 	}
-	return pkg.Result, nil
+	validated, err := validatePackage(contents)
+	if err != nil {
+		return Result{}, err
+	}
+	return packageResult(validated.contracts, validated.deferredGates), nil
 }
 
 func Inspect(filename string) (Inspection, error) {
@@ -248,35 +260,56 @@ func LoadBytes(raw []byte) (Package, error) {
 }
 
 func loadPackage(contents map[string][]byte) (Package, error) {
-	contracts, err := decodeContracts(contents)
+	validated, err := validatePackage(contents)
 	if err != nil {
 		return Package{}, err
 	}
+	return packageFromContents(
+		contents,
+		validated.contracts,
+		validated.regressionPatch,
+		validated.deferredGates,
+		validated.implementationPlan,
+		validated.implementationPlanRaw,
+	), nil
+}
+
+func validatePackage(contents map[string][]byte) (validatedPackage, error) {
+	contracts, err := decodeContracts(contents)
+	if err != nil {
+		return validatedPackage{}, err
+	}
 	if err := validateChangeContractFormatCompatibility(contracts.manifest.FormatVersion, contracts.change.SchemaVersion); err != nil {
-		return Package{}, err
+		return validatedPackage{}, err
 	}
 	if err := validateInventory(contents, contracts.manifest.FormatVersion); err != nil {
-		return Package{}, err
+		return validatedPackage{}, err
 	}
 	regressionPatch := contents[memberRegression]
 	if err := validateRegressionPatch(contracts.change, regressionPatch); err != nil {
-		return Package{}, err
+		return validatedPackage{}, err
 	}
 	deferredGates, err := validateEvidenceAndIntegrity(contents, contracts)
 	if err != nil {
-		return Package{}, err
+		return validatedPackage{}, err
 	}
 	implementationPlan, implementationPlanRaw, err := validateImplementationPlan(contents, contracts)
 	if err != nil {
-		return Package{}, err
+		return validatedPackage{}, err
 	}
 	if err := verifyLockedDevelopmentBaseline(contracts.manifest, contracts.change, contents); err != nil {
-		return Package{}, err
+		return validatedPackage{}, err
 	}
 	if err := verifyEmbeddedBaseline(contracts.manifest, contracts.change, contents); err != nil {
-		return Package{}, err
+		return validatedPackage{}, err
 	}
-	return packageFromContents(contents, contracts, regressionPatch, deferredGates, implementationPlan, implementationPlanRaw), nil
+	return validatedPackage{
+		contracts:             contracts,
+		regressionPatch:       regressionPatch,
+		deferredGates:         deferredGates,
+		implementationPlan:    implementationPlan,
+		implementationPlanRaw: implementationPlanRaw,
+	}, nil
 }
 
 func validateChangeContractFormatCompatibility(formatVersion, changeSchemaVersion int) error {
@@ -468,15 +501,9 @@ func validateEvidenceAndIntegrity(contents map[string][]byte, contracts decodedC
 }
 
 func packageFromContents(contents map[string][]byte, contracts decodedContracts, regressionPatch []byte, deferredGates []string, implementationPlan *spec.ImplementationPlan, implementationPlanRaw []byte) Package {
-	manifest := contracts.manifest
-	summary := contracts.policy.ValidationSummary()
-	result := Result{
-		Project: manifest.Project, Change: manifest.Change, BaseCommit: manifest.BaseCommit, TargetTree: manifest.TargetTree,
-		ValidationLevel: summary.Level, EnabledGates: append([]string{}, summary.EnabledGates...), DisabledGates: append([]string{}, summary.DisabledGates...),
-		DeferredGates: append([]string{}, deferredGates...), ConsumerValidationRequired: len(deferredGates) > 0,
-	}
+	result := packageResult(contracts, deferredGates)
 	return Package{
-		Result: result, Manifest: manifest, Policy: contracts.policy, Change: contracts.change,
+		Result: result, Manifest: contracts.manifest, Policy: contracts.policy, Change: contracts.change,
 		ChangeRaw:             append([]byte(nil), contents[memberChange]...),
 		Patch:                 append([]byte(nil), contents[memberPayload]...),
 		RegressionPatch:       append([]byte(nil), regressionPatch...),
@@ -484,6 +511,16 @@ func packageFromContents(contents map[string][]byte, contracts decodedContracts,
 		Baseline:              append([]byte(nil), contents[memberBaseline]...),
 		ImplementationPlan:    implementationPlan,
 		ImplementationPlanRaw: append([]byte(nil), implementationPlanRaw...),
+	}
+}
+
+func packageResult(contracts decodedContracts, deferredGates []string) Result {
+	manifest := contracts.manifest
+	summary := contracts.policy.ValidationSummary()
+	return Result{
+		Project: manifest.Project, Change: manifest.Change, BaseCommit: manifest.BaseCommit, TargetTree: manifest.TargetTree,
+		ValidationLevel: summary.Level, EnabledGates: append([]string{}, summary.EnabledGates...), DisabledGates: append([]string{}, summary.DisabledGates...),
+		DeferredGates: append([]string{}, deferredGates...), ConsumerValidationRequired: len(deferredGates) > 0,
 	}
 }
 
@@ -510,7 +547,7 @@ func validateImplementationPlan(contents map[string][]byte, contracts decodedCon
 	if err := plan.ValidateProjectGates(gateOrder); err != nil {
 		return nil, nil, fmt.Errorf("invalid packaged implementation plan: %w", err)
 	}
-	return &plan, append([]byte(nil), raw...), nil
+	return &plan, raw, nil
 }
 
 func validateMemberPath(name string) error {

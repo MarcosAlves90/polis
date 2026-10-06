@@ -251,6 +251,70 @@ func TestPublishManyPreflightsAndPublishesExactArtifacts(t *testing.T) {
 	}
 }
 
+func TestPublishManyStreamsFileBackedArtifact(t *testing.T) {
+	repo := newRetentionRepo(t, manifestBytes(ModeRepository))
+	state, err := Load(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := bytes.Repeat([]byte("package-bytes-"), 4096)
+	source := filepath.Join(t.TempDir(), "artifact.polis")
+	if err := os.WriteFile(source, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := state.PublishMany(repo, []Artifact{{Class: "packages", Source: source}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || !strings.Contains(paths[0], "/packages/") {
+		t.Fatalf("paths=%v", paths)
+	}
+	got, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(paths[0])))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("retained package bytes differ from source")
+	}
+	if _, err := state.PublishMany(repo, []Artifact{{Class: "packages", Source: source}}); err != nil {
+		t.Fatalf("file-backed publish should be idempotent: %v", err)
+	}
+	if _, err := state.PublishMany(repo, []Artifact{{Class: "packages", Data: data, Source: source}}); err == nil || !strings.Contains(err.Error(), "data or source") {
+		t.Fatalf("ambiguous file-backed artifact error=%v", err)
+	}
+}
+
+func TestPublishManyRejectsInvalidFileBackedArtifacts(t *testing.T) {
+	repo := newRetentionRepo(t, manifestBytes(ModeRepository))
+	state, err := Load(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	directory := t.TempDir()
+	empty := filepath.Join(t.TempDir(), "empty.polis")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{name: "missing", source: filepath.Join(t.TempDir(), "missing.polis"), want: "open retained packages source"},
+		{name: "directory", source: directory, want: "source must be a regular file"},
+		{name: "empty", source: empty, want: "artifact must not be empty"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := state.PublishMany(repo, []Artifact{{Class: "packages", Source: tc.source}})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("PublishMany() error=%v want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestPublishManyValidatesBeforeWritingAndDeduplicatesPaths(t *testing.T) {
 	repo := newRetentionRepo(t, manifestBytes(ModeRepository))
 	state, err := Load(context.Background(), repo)

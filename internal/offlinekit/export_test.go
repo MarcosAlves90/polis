@@ -192,6 +192,25 @@ func TestExportRequiresExecutableAndVersion(t *testing.T) {
 	if _, err := Export(Options{Out: filepath.Join(t.TempDir(), "bundle.zip"), Executable: source, Version: testVersion}); err == nil || !strings.Contains(err.Error(), "executable") {
 		t.Fatalf("missing executable error=%v", err)
 	}
+	directory := t.TempDir()
+	if _, err := Export(Options{Out: filepath.Join(t.TempDir(), "bundle.zip"), Executable: directory, Version: testVersion}); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("directory executable error=%v", err)
+	}
+	oversized := filepath.Join(t.TempDir(), "oversized-polis")
+	f, err := os.Create(oversized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxExecutableBytes + 1); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Export(Options{Out: filepath.Join(t.TempDir(), "bundle.zip"), Executable: oversized, Version: testVersion}); err == nil || !strings.Contains(err.Error(), "exceeds offline bundle limit") {
+		t.Fatalf("oversized executable error=%v", err)
+	}
 }
 
 func writeExecutableFixture(t *testing.T, data []byte) string {

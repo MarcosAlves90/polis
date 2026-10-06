@@ -40,6 +40,7 @@ type Options struct {
 	RegressionPatch    string
 	ImplementationPlan string
 	DeferredGates      []string
+	Jobs               int
 	OnGateStart        func(spec.GatePolicy)
 }
 
@@ -49,6 +50,7 @@ type WorkspaceOptions struct {
 	Contract           string
 	RegressionPatch    string
 	ImplementationPlan string
+	Jobs               int
 	OnGateStart        func(spec.GatePolicy)
 }
 
@@ -97,7 +99,7 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 func ValidateWorkspace(ctx context.Context, opts WorkspaceOptions) (Result, error) {
 	return executeBuild(ctx, Options{
 		Repo: opts.Repo, Policy: opts.Policy, Contract: opts.Contract,
-		RegressionPatch: opts.RegressionPatch, ImplementationPlan: opts.ImplementationPlan, OnGateStart: opts.OnGateStart,
+		RegressionPatch: opts.RegressionPatch, ImplementationPlan: opts.ImplementationPlan, Jobs: opts.Jobs, OnGateStart: opts.OnGateStart,
 	}, true)
 }
 
@@ -234,6 +236,7 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 		PolicyFailureLabel:    "project policy validation",
 		PolicyFailureStage:    "project gate validation",
 		PolicyFailureNotRun:   notRun,
+		Jobs:                  opts.Jobs,
 		OnGateStart:           opts.OnGateStart,
 	}
 	if err := isolation.Validate(ctx, validation); err != nil {
@@ -274,14 +277,10 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 	if err != nil || !retention.RepositoryEnabled() {
 		return result, err
 	}
-	packageBytes, err := os.ReadFile(result.Path)
-	if err != nil {
-		return Result{}, fmt.Errorf("read generated package for retention: %w", err)
-	}
 	retained := []artifactretention.Artifact{
 		{Class: "contracts", Data: artifact.changeRaw},
 		{Class: "evidence", Data: artifact.evidence},
-		{Class: "packages", Data: packageBytes},
+		{Class: "packages", Source: result.Path},
 	}
 	if len(artifact.implementationPlanRaw) > 0 {
 		retained = append(retained, artifactretention.Artifact{Class: "plans", Data: artifact.implementationPlanRaw})

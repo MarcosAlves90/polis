@@ -37,6 +37,7 @@ type Validation struct {
 	PolicyFailureLabel    string
 	PolicyFailureStage    string
 	PolicyFailureNotRun   []string
+	Jobs                  int
 	OnGateStart           func(spec.GatePolicy)
 }
 
@@ -161,11 +162,15 @@ func validateTarget(ctx context.Context, validation Validation, redProof map[str
 	if err := changeexec.ExecuteTarget(validation.Change, worktree, validation.Evidence); err != nil {
 		return err
 	}
+	jobs := validation.Jobs
+	if jobs == 0 {
+		jobs = 1
+	}
 	var result policyexec.Result
 	if validation.ExecutionPlan != nil {
-		result = policyexec.ExecutePlanWithOptions(*validation.ExecutionPlan, worktree, validation.Evidence, policyexec.Options{Jobs: 1, OnGateStart: validation.OnGateStart})
+		result = policyexec.ExecutePlanWithOptions(*validation.ExecutionPlan, worktree, validation.Evidence, policyexec.Options{Jobs: jobs, OnGateStart: validation.OnGateStart})
 	} else {
-		result = policyexec.ExecuteWithOptions(validation.Policy, worktree, validation.Evidence, policyexec.Options{Jobs: 1, OnGateStart: validation.OnGateStart})
+		result = policyexec.ExecuteWithOptions(validation.Policy, worktree, validation.Evidence, policyexec.Options{Jobs: jobs, OnGateStart: validation.OnGateStart})
 	}
 	if validation.PolicyResult != nil {
 		*validation.PolicyResult = result

@@ -829,19 +829,24 @@ func runBuild(args []string, out, errOut io.Writer) int {
 	contract := fs.String("contract", "", "delivery Change Contract JSON outside the worktree or retained by repository mode")
 	regressionPatch := fs.String("regression-patch", "", "validated Red-state patch outside the worktree or retained by repository mode")
 	implementationPlanPath := fs.String("implementation-plan", "", "optional contract-bound Implementation Plan JSON outside the worktree or retained by repository mode")
+	jobs := fs.Int("jobs", 1, "maximum concurrent parallel-safe gates (1..16)")
 	format := fs.String("format", "text", outputFormatHelp)
 	var deferredGates argvFlag
 	fs.Var(&deferredGates, "defer-gate", "defer enabled gate validation to the consumer; repeat for each gate")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
+	if err := policyexec.ValidateJobs(*jobs); err != nil {
+		fmt.Fprintln(errOut, err)
+		return exitUsage
+	}
 	if fs.NArg() != 0 || !validFormat(*format) || *repo == "" || *project == "" || *change == "" || *outDir == "" || *contract == "" {
-		fmt.Fprintln(errOut, "usage: polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--defer-gate <id> ...] [--format text|json] --out <directory>")
+		fmt.Fprintln(errOut, "usage: polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--defer-gate <id> ...] [--jobs <1..16>] [--format text|json] --out <directory>")
 		return exitUsage
 	}
 	writeProgress(errOut, *format, "validate the locked change and assemble the delivery package", "producer gates and package integrity must pass before a .polis artifact is emitted")
 	result, err := packagebuild.Build(context.Background(), packagebuild.Options{
-		Repo: *repo, Policy: *policy, Project: *project, Change: *change, Out: *outDir, Contract: *contract, RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlanPath, DeferredGates: deferredGates,
+		Repo: *repo, Policy: *policy, Project: *project, Change: *change, Out: *outDir, Contract: *contract, RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlanPath, DeferredGates: deferredGates, Jobs: *jobs,
 		OnGateStart: gateStartProgress(errOut, *format),
 	})
 	if err != nil {

@@ -2,7 +2,6 @@ package offlinekit
 
 import (
 	"archive/zip"
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -45,9 +44,12 @@ type Result struct {
 }
 
 type bundleFile struct {
-	Path string
-	Data []byte
-	Mode os.FileMode
+	Path   string
+	Data   []byte
+	Source string
+	Mode   os.FileMode
+	Bytes  int64
+	SHA256 string
 }
 
 type manifest struct {
@@ -91,7 +93,7 @@ func Export(opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	executable, err := readExecutable(source)
+	executable, err := executableFile(source)
 	if err != nil {
 		return Result{}, err
 	}
@@ -110,13 +112,15 @@ func Export(opts Options) (Result, error) {
 	if targetOS == "windows" {
 		executableMember += ".exe"
 	}
-	files := []bundleFile{{Path: executableMember, Data: executable, Mode: 0o755}}
+	executable.Path = executableMember
+	executable.Mode = 0o755
+	files := []bundleFile{executable}
 	for _, resource := range spec.OfflineResources() {
 		resourceMember := bundlePrefix + "spec/" + resource.Path
 		if resource.Path == "POLIS-OFFLINE.md" {
 			resourceMember = bundlePrefix + resource.Path
 		}
-		files = append(files, bundleFile{Path: resourceMember, Data: resource.Data, Mode: 0o644})
+		files = append(files, inMemoryBundleFile(resourceMember, resource.Data, 0o644))
 	}
 
 	resources := digestResources(files)
@@ -124,9 +128,9 @@ func Export(opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	files = append(files, bundleFile{Path: manifestMember, Data: manifestRaw, Mode: 0o644})
+	files = append(files, inMemoryBundleFile(manifestMember, manifestRaw, 0o644))
 	checksumsRaw := encodeChecksums(files)
-	files = append(files, bundleFile{Path: checksumsMember, Data: checksumsRaw, Mode: 0o644})
+	files = append(files, inMemoryBundleFile(checksumsMember, checksumsRaw, 0o644))
 	files, err = sortedFiles(files)
 	if err != nil {
 		return Result{}, err
@@ -140,10 +144,7 @@ func Export(opts Options) (Result, error) {
 	if err := verifyArchive(candidate, files); err != nil {
 		return Result{}, err
 	}
-	if err := copyExclusive(candidate, out); err != nil {
-		return Result{}, err
-	}
-	digest, err := fileSHA256(out)
+	digest, err := copyExclusive(candidate, out)
 	if err != nil {
 		return Result{}, err
 	}
@@ -202,22 +203,31 @@ func resolveExecutable(filename string) (string, error) {
 	return absolute, nil
 }
 
-func readExecutable(filename string) ([]byte, error) {
+func executableFile(filename string) (bundleFile, error) {
 	info, err := os.Stat(filename)
 	if err != nil {
-		return nil, fmt.Errorf("stat POLIS executable: %w", err)
+		return bundleFile{}, fmt.Errorf("stat POLIS executable: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, errors.New("POLIS executable must be a regular file")
+		return bundleFile{}, errors.New("POLIS executable must be a regular file")
 	}
 	if info.Size() > maxExecutableBytes {
-		return nil, errors.New("POLIS executable exceeds offline bundle limit")
+		return bundleFile{}, errors.New("POLIS executable exceeds offline bundle limit")
 	}
-	data, err := os.ReadFile(filename)
+	f, err := os.Open(filename)
 	if err != nil {
-		return nil, fmt.Errorf("read POLIS executable: %w", err)
+		return bundleFile{}, fmt.Errorf("open POLIS executable: %w", err)
 	}
-	return data, nil
+	defer f.Close()
+	h := sha256.New()
+	n, err := io.Copy(h, f)
+	if err != nil {
+		return bundleFile{}, fmt.Errorf("hash POLIS executable: %w", err)
+	}
+	if n != info.Size() {
+		return bundleFile{}, errors.New("POLIS executable changed while hashing")
+	}
+	return bundleFile{Source: filename, Bytes: n, SHA256: hex.EncodeToString(h.Sum(nil))}, nil
 }
 
 func ensureOutputAbsent(filename string) error {
@@ -232,11 +242,15 @@ func ensureOutputAbsent(filename string) error {
 func digestResources(files []bundleFile) []resourceDigest {
 	resources := make([]resourceDigest, 0, len(files))
 	for _, file := range files {
-		sum := sha256.Sum256(file.Data)
-		resources = append(resources, resourceDigest{Path: file.Path, Bytes: len(file.Data), SHA256: hex.EncodeToString(sum[:])})
+		resources = append(resources, resourceDigest{Path: file.Path, Bytes: int(file.Bytes), SHA256: file.SHA256})
 	}
 	sort.Slice(resources, func(i, j int) bool { return resources[i].Path < resources[j].Path })
 	return resources
+}
+
+func inMemoryBundleFile(path string, data []byte, mode os.FileMode) bundleFile {
+	sum := sha256.Sum256(data)
+	return bundleFile{Path: path, Data: data, Mode: mode, Bytes: int64(len(data)), SHA256: hex.EncodeToString(sum[:])}
 }
 
 func encodeManifest(version, executable, targetOS, targetArch string, resources []resourceDigest) ([]byte, error) {
@@ -270,8 +284,7 @@ func encodeChecksums(files []bundleFile) []byte {
 	filesWithoutChecksums, _ = sortedFiles(filesWithoutChecksums)
 	var checksums strings.Builder
 	for _, file := range filesWithoutChecksums {
-		sum := sha256.Sum256(file.Data)
-		checksums.WriteString(hex.EncodeToString(sum[:]))
+		checksums.WriteString(file.SHA256)
 		checksums.WriteString("  ")
 		checksums.WriteString(file.Path)
 		checksums.WriteByte('\n')
@@ -307,7 +320,7 @@ func writeArchive(directory string, files []bundleFile) (string, error) {
 			_ = os.Remove(candidate)
 			return "", fmt.Errorf("create offline bundle member %s: %w", file.Path, err)
 		}
-		if _, err := w.Write(file.Data); err != nil {
+		if err := writeBundleFile(w, file); err != nil {
 			_ = zw.Close()
 			_ = f.Close()
 			_ = os.Remove(candidate)
@@ -326,6 +339,26 @@ func writeArchive(directory string, files []bundleFile) (string, error) {
 	return candidate, nil
 }
 
+func writeBundleFile(w io.Writer, file bundleFile) error {
+	if file.Source == "" {
+		_, err := w.Write(file.Data)
+		return err
+	}
+	in, err := os.Open(file.Source)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	written, err := io.Copy(w, in)
+	if err != nil {
+		return err
+	}
+	if written != file.Bytes {
+		return fmt.Errorf("source changed while writing: wrote %d bytes want %d", written, file.Bytes)
+	}
+	return nil
+}
+
 func verifyArchive(filename string, expected []bundleFile) error {
 	archive, err := zip.OpenReader(filename)
 	if err != nil {
@@ -335,9 +368,9 @@ func verifyArchive(filename string, expected []bundleFile) error {
 	if len(archive.File) != len(expected) {
 		return fmt.Errorf("offline bundle member count=%d want=%d", len(archive.File), len(expected))
 	}
-	byPath := make(map[string][]byte, len(expected))
+	byPath := make(map[string]bundleFile, len(expected))
 	for _, file := range expected {
-		byPath[file.Path] = file.Data
+		byPath[file.Path] = file
 	}
 	seen := make(map[string]bool, len(expected))
 	for _, member := range archive.File {
@@ -349,11 +382,15 @@ func verifyArchive(filename string, expected []bundleFile) error {
 			return fmt.Errorf("duplicate offline bundle member %q", member.Name)
 		}
 		seen[member.Name] = true
+		if member.UncompressedSize64 != uint64(want.Bytes) {
+			return fmt.Errorf("offline bundle member %s size=%d want=%d", member.Name, member.UncompressedSize64, want.Bytes)
+		}
 		reader, err := member.Open()
 		if err != nil {
 			return fmt.Errorf("open offline bundle member %s: %w", member.Name, err)
 		}
-		got, readErr := io.ReadAll(reader)
+		h := sha256.New()
+		n, readErr := io.Copy(h, reader)
 		closeErr := reader.Close()
 		if readErr != nil {
 			return fmt.Errorf("read offline bundle member %s: %w", member.Name, readErr)
@@ -361,7 +398,7 @@ func verifyArchive(filename string, expected []bundleFile) error {
 		if closeErr != nil {
 			return fmt.Errorf("close offline bundle member %s: %w", member.Name, closeErr)
 		}
-		if !bytes.Equal(got, want) {
+		if n != want.Bytes || hex.EncodeToString(h.Sum(nil)) != want.SHA256 {
 			return fmt.Errorf("offline bundle member %s changed while writing", member.Name)
 		}
 	}
@@ -371,18 +408,18 @@ func verifyArchive(filename string, expected []bundleFile) error {
 	return nil
 }
 
-func copyExclusive(source, target string) error {
+func copyExclusive(source, target string) (string, error) {
 	in, err := os.Open(source)
 	if err != nil {
-		return fmt.Errorf("open verified offline bundle: %w", err)
+		return "", fmt.Errorf("open verified offline bundle: %w", err)
 	}
 	defer in.Close()
 	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("offline bundle output already exists: %s", target)
+			return "", fmt.Errorf("offline bundle output already exists: %s", target)
 		}
-		return fmt.Errorf("create offline bundle output: %w", err)
+		return "", fmt.Errorf("create offline bundle output: %w", err)
 	}
 	ok := false
 	defer func() {
@@ -391,25 +428,13 @@ func copyExclusive(source, target string) error {
 			_ = os.Remove(target)
 		}
 	}()
-	if _, err := io.Copy(out, in); err != nil {
-		return fmt.Errorf("copy offline bundle: %w", err)
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(out, h), in); err != nil {
+		return "", fmt.Errorf("copy offline bundle: %w", err)
 	}
 	if err := out.Close(); err != nil {
-		return fmt.Errorf("close offline bundle output: %w", err)
+		return "", fmt.Errorf("close offline bundle output: %w", err)
 	}
 	ok = true
-	return nil
-}
-
-func fileSHA256(filename string) (string, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return "", fmt.Errorf("open offline bundle for hashing: %w", err)
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", fmt.Errorf("hash offline bundle: %w", err)
-	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

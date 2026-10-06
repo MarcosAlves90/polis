@@ -219,6 +219,36 @@ func TestBuildCreatesVerifiedPackageWithoutMutatingSourceState(t *testing.T) {
 	}
 }
 
+func TestBuildPropagatesJobsToPolicyExecution(t *testing.T) {
+	repo := newV6Repo(t, false)
+	contract := lockedCharacterizationContract(t, repo, ".")
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Build(context.Background(), Options{Repo: repo, Project: "gitrex", Change: "jobs-valid", Out: t.TempDir(), Contract: contract, Jobs: 1}); err != nil {
+		t.Fatalf("Build() with Jobs=1 error = %v", err)
+	}
+	if _, err := Build(context.Background(), Options{Repo: repo, Project: "gitrex", Change: "jobs-invalid", Out: t.TempDir(), Contract: contract, Jobs: 17}); err == nil {
+		t.Fatal("Build() with Jobs=17 succeeded; jobs was not propagated to policy execution")
+	}
+}
+
+func TestValidateWorkspacePropagatesJobsToPolicyExecution(t *testing.T) {
+	repo := newV6Repo(t, false)
+	contract := lockedCharacterizationContract(t, repo, ".")
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ValidateWorkspace(context.Background(), WorkspaceOptions{Repo: repo, Contract: contract, Jobs: 1}); err != nil {
+		t.Fatalf("ValidateWorkspace() with Jobs=1 error = %v", err)
+	}
+	if _, err := ValidateWorkspace(context.Background(), WorkspaceOptions{Repo: repo, Contract: contract, Jobs: 17}); err == nil {
+		t.Fatal("ValidateWorkspace() with Jobs=17 succeeded; jobs was not propagated to policy execution")
+	}
+}
+
 func TestBuildRetainsReusableContractEvidenceAndVerifiedPackage(t *testing.T) {
 	repo := newV6Repo(t, false, true)
 	contract := lockedCharacterizationContract(t, repo, ".")

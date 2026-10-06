@@ -20,7 +20,7 @@ func TestRunWorkspaceValidate(t *testing.T) {
 	beforeIndex := cliGit(t, repo, "write-tree")
 	beforeStatus := cliGit(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
 
-	args := []string{"workspace", "validate", "--repo", repo, "--contract", contract, "--format", "json"}
+	args := []string{"workspace", "validate", "--repo", repo, "--contract", contract, "--jobs", "2", "--format", "json"}
 	var out, errOut bytes.Buffer
 	if code := run(args, &out, &errOut); code != exitPass {
 		t.Fatalf("workspace validate command should pass: code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
@@ -99,5 +99,15 @@ func TestRunWorkspaceValidate(t *testing.T) {
 	}
 	if got := cliGit(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); got != beforeStatus {
 		t.Errorf("workspace validation changed source worktree status: got %q want %q", got, beforeStatus)
+	}
+}
+
+func TestRunWorkspaceValidateRejectsInvalidJobs(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := run([]string{"workspace", "validate", "--jobs", "0"}, &out, &errOut); code != exitUsage {
+		t.Fatalf("invalid jobs code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "jobs must be between 1 and 16") {
+		t.Fatalf("invalid jobs diagnostic missing: %q", errOut.String())
 	}
 }
