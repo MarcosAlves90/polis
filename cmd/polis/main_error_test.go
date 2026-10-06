@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,9 +33,9 @@ func TestV5ArtifactCommandsFailClosedOnInvalidArtifacts(t *testing.T) {
 				t.Fatalf("code=%d want=%d stdout=%s stderr=%s", got, tc.code, out.String(), errOut.String())
 			}
 			if strings.Contains(tc.name, "json") {
-				var payload map[string]any
-				if err := json.Unmarshal(errOut.Bytes(), &payload); err != nil || payload["status"] != "FAIL" {
-					t.Fatalf("payload=%v err=%v raw=%s", payload, err, errOut.String())
+				payload := finalJSONRecordAfterProgress(t, errOut.String())
+				if payload["status"] != "FAIL" {
+					t.Fatalf("payload=%v raw=%s", payload, errOut.String())
 				}
 			} else if !strings.Contains(errOut.String(), "FAIL") {
 				t.Fatalf("stderr=%q", errOut.String())

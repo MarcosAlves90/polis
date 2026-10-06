@@ -24,6 +24,24 @@ The Go module path is:
 github.com/MarcosAlves90/polis/v6
 ```
 
+### 2.1 CLI execution progress
+
+Every recognized command that executes operational work MUST emit progress
+before that work starts, and multi-stage commands MUST emit additional
+progress before material stages. Every progress event MUST state both the
+current action and why the action is required. Help and help aliases are
+documentation-only and MUST NOT be treated as command execution.
+
+Text-mode progress MUST be written to stderr without changing the command's
+stdout result. For `--format json`, progress MUST be emitted as one JSON object
+per stderr line with `type` equal to `progress` and non-empty `action` and
+`why` fields. Successful structured results remain on stdout. Structured
+failures remain on stderr as the final JSON record after any progress records.
+Configured gate execution MUST emit a progress record naming the gate
+immediately before the executable gate is launched. Progress MUST NOT disclose
+environment values, captured command output, secrets, or other data outside
+the command's existing public result contracts.
+
 ## 3. Required producer state machine
 
 The canonical V6 delivery state sequence is:

@@ -120,6 +120,7 @@ func ApplyWithOptions(ctx context.Context, artifact, repoPath string, opts Optio
 		PolicyFailureLabel:    "consumer policy validation",
 		PolicyFailureStage:    "consumer gate validation",
 		PolicyFailureNotRun:   []string{"real repository apply"},
+		OnGateStart:           opts.OnGateStart,
 	}); err != nil {
 		cleanupErr := discardTemporaryEvidence(evidenceFile, evidencePath, false)
 		if cleanupErr != nil {
@@ -246,6 +247,7 @@ func PreflightWithOptions(ctx context.Context, artifact, repoPath string, opts O
 		PolicyFailureLabel:    "preflight policy validation",
 		PolicyFailureStage:    "preflight gate validation",
 		PolicyFailureNotRun:   []string{"final preflight checks"},
+		OnGateStart:           opts.OnGateStart,
 	}); err != nil {
 		return Result{}, fmt.Errorf("%w: %w", ErrValidationFailed, err)
 	}

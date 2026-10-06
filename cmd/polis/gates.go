@@ -75,16 +75,19 @@ func runRecordedGates(args []string, out, errOut io.Writer) int {
 		return writeFailure(errOut, *format, "POLIS GATES", exitUsage, errors.New("replay uses the recorded jobs bound; omit --jobs"))
 	}
 	ctx := context.Background()
+	writeProgress(errOut, *format, "resolve the target Git worktree", "gate inputs and path boundaries must be evaluated against the canonical repository root")
 	root, err := gitutil.ResolveRoot(ctx, *repo, gitutil.ResolveRootOptions{EmptyAsDot: true, GitError: "not a Git worktree"})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS GATES", exitValidationFailed, err)
 	}
+	writeProgress(errOut, *format, "compile the effective gate plan", "selection, dependencies, reuse, and execution order come from the current Project Policy")
 	plan, err := policyplan.Load(ctx, policyplan.Options{Repo: root, Policy: *policy})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS GATES", exitValidationFailed, err)
 	}
+	writeProgress(errOut, *format, "execute the selected gate plan", "each runnable gate must produce a current validation result for the selected source and environment")
 	manifest, result, err := gaterun.Run(ctx, root, plan, gaterun.Options{Version: version, Contract: *contract,
-		EnvironmentID: *environmentID, Jobs: *jobs, Selected: selected, Affected: *affected, Reuse: *reuse, Replay: *replay, Out: *outRun})
+		EnvironmentID: *environmentID, Jobs: *jobs, Selected: selected, Affected: *affected, Reuse: *reuse, Replay: *replay, Out: *outRun, OnGateStart: gateStartProgress(errOut, *format)})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS GATES", exitValidationFailed, err)
 	}

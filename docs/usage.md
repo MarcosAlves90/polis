@@ -40,6 +40,26 @@ The [agent command instructions](#agent-command-instructions) below are the
 canonical source embedded in the CLI, including its command index and syntax.
 No repository checkout or network access is needed to read installed help.
 
+### Command progress
+
+Every executing POLIS command reports intermediate progress before material
+work starts. Each progress event names the current `action` and explains
+`why` that action is required. Help is documentation-only and does not emit
+execution progress.
+
+With text output, progress is written to stderr as `POLIS PROGRESS` lines so
+the command result on stdout remains unchanged. With `--format json`, progress
+is written to stderr as newline-delimited JSON objects with
+`"type":"progress"`, `"action"`, and `"why"`. Successful JSON results remain
+one JSON object on stdout. If a JSON command fails, its existing structured
+failure object is the final JSON record on stderr after the progress records.
+Consumers that capture JSON failures must therefore read stderr as JSON Lines
+and use the final non-progress record as the command result.
+
+Gate-running commands also emit a progress event immediately before each
+configured gate starts. Progress never includes captured command output,
+environment values, secrets, or terminal-only rendering state.
+
 ### Incremental gate runs and replay
 
 `polis gates` now includes a versioned run manifest in JSON output. Use

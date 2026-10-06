@@ -41,6 +41,7 @@ type Options struct {
 	AllowMissingBaselineProof bool
 	CommitMode                CommitMode
 	ConfirmCommit             CommitConfirmation
+	OnGateStart               func(spec.GatePolicy)
 }
 
 type baselineAssessment struct {

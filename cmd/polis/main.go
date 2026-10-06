@@ -108,6 +108,7 @@ func run(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, rootUsageLine())
 		return exitUsage
 	}
+	writeCommandStartProgress(errOut, args)
 	// Resolve standalone help before parsing required inputs or executing commands.
 	if len(args) == 2 && (args[1] == "-h" || args[1] == "--help") {
 		for _, command := range commandHelpEntries {
@@ -172,6 +173,7 @@ func runStatus(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "usage: polis status [--repo <path>] [--contract <retained-locked-contract.json>] [--format text|json]")
 		return exitUsage
 	}
+	writeProgress(errOut, *format, "reconcile retained workflow evidence", "the status result must reflect the current contract, baseline, plans, proofs, packages, and gates")
 	result, err := changestatus.Derive(context.Background(), changestatus.Options{Repo: *repo, Contract: *contract})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS STATUS", exitValidationFailed, err)
@@ -247,9 +249,11 @@ func runVerify(args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 	artifact := fs.Arg(0)
+	writeProgress(errOut, *format, "verify the detached artifact signature when configured", "a supplied signature must authenticate the exact artifact bytes before package verification")
 	if err := verifyDetached(artifact, *signaturePath, *trustedKey); err != nil {
 		return writeFailure(errOut, *format, "POLIS VERIFY", exitInvalidArtifact, err)
 	}
+	writeProgress(errOut, *format, "verify artifact structure and evidence", "POLIS must reject malformed, tampered, or internally inconsistent delivery packages")
 	r, err := packageverify.Verify(artifact)
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS VERIFY", exitInvalidArtifact, err)
@@ -275,9 +279,11 @@ func runInspect(args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 	artifact := fs.Arg(0)
+	writeProgress(errOut, *format, "verify the detached artifact signature when configured", "inspection must not trust metadata from an artifact whose configured signature fails")
 	if err := verifyDetached(artifact, *signaturePath, *trustedKey); err != nil {
 		return writeFailure(errOut, *format, "POLIS INSPECT", exitInvalidArtifact, err)
 	}
+	writeProgress(errOut, *format, "validate and decode artifact metadata", "traceability is meaningful only after package integrity and schema validation succeed")
 	inspection, err := packageverify.Inspect(artifact)
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS INSPECT", exitInvalidArtifact, err)
@@ -340,13 +346,16 @@ func runPreflight(args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 	artifact := fs.Arg(0)
+	writeProgress(errOut, *format, "verify the detached artifact signature when configured", "consumer preflight must authenticate the artifact before evaluating it against the target repository")
 	if err := verifyDetached(artifact, *signaturePath, *trustedKey); err != nil {
 		return writeFailure(errOut, *format, preflightLabel, exitInvalidArtifact, err)
 	}
+	writeProgress(errOut, *format, "verify the delivery artifact", "preflight must start from a structurally valid package with trustworthy producer evidence")
 	if _, err := packageverify.Verify(artifact); err != nil {
 		return writeFailure(errOut, *format, preflightLabel, exitInvalidArtifact, err)
 	}
-	result, err := packageapply.PreflightWithOptions(context.Background(), artifact, *repo, packageapply.Options{BaselineMode: baselineMode, AllowMissingBaselineProof: *allowMissingBaselineProof})
+	writeProgress(errOut, *format, "validate the artifact against the target repository", "consumer baseline compatibility, change scope, and required gates must pass before apply is allowed")
+	result, err := packageapply.PreflightWithOptions(context.Background(), artifact, *repo, packageapply.Options{BaselineMode: baselineMode, AllowMissingBaselineProof: *allowMissingBaselineProof, OnGateStart: gateStartProgress(errOut, *format)})
 	if err != nil {
 		code := exitValidationFailed
 		if errors.Is(err, packageapply.ErrBaselineMismatch) {
@@ -403,6 +412,7 @@ func runInit(args []string, out, errOut io.Writer) int {
 			threshold = coverageThreshold
 		}
 	})
+	writeProgress(errOut, "text", "resolve and validate the requested Project Policy", "the generated or previewed policy must be canonical and valid before it is reported")
 	result, err := policyinit.Init(context.Background(), policyinit.Options{
 		Repo: *repo, Profile: *profile, ValidationLevel: *validationLevel, DisabledGates: []string(disabledGates), TestArgv: []string(testArgv), CoverageArgv: []string(coverageArgv),
 		CoverageAdapter: *coverageAdapter, CoverageReport: *coverageReport, CoverageThreshold: threshold, DryRun: *dryRun,
@@ -434,6 +444,7 @@ func runPlan(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "usage: polis plan [--repo <path>] [--policy <policy-v3.json>] [--defer-gate <id> ...] [--format text|json]")
 		return exitUsage
 	}
+	writeProgress(errOut, *format, "load and compile the effective Project Policy", "the plan must resolve gate modes, dependencies, deferrals, and validation guarantees deterministically")
 	plan, err := policyplan.Load(context.Background(), policyplan.Options{Repo: *repo, Policy: *policy, DeferredGates: deferredGates})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS PLAN", exitValidationFailed, err)
@@ -657,6 +668,7 @@ func runStart(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "usage: polis start --repo <path> [--policy <policy-v3.json>] --contract <draft-v3-or-v5.json> --out <locked-v4-or-v6.json>")
 		return exitUsage
 	}
+	writeProgress(errOut, "text", "validate the draft contract and lock the repository baseline", "later Red and Green evidence must be bound to an exact source and policy state")
 	result, err := devstart.Start(context.Background(), devstart.Options{Repo: *repo, Policy: *policy, Contract: *contract, Out: *outPath})
 	if err != nil {
 		fmt.Fprintf(errOut, "POLIS START: FAIL: %v\n", err)
@@ -684,6 +696,7 @@ func runImplementationPlan(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "usage: polis implementation-plan --repo <path> [--policy <policy-v3.json>] --contract <locked-v4-or-v6.json> --out <external-plan.json> [--format text|json]")
 		return exitUsage
 	}
+	writeProgress(errOut, *format, "derive the implementation plan from the locked contract", "each plan step must remain bound to approved scope, acceptance criteria, and baseline identity")
 	result, err := implementationplan.Create(context.Background(), implementationplan.Options{Repo: *repo, Policy: *policy, Contract: *contract, Out: *outPath})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS IMPLEMENTATION-PLAN", exitValidationFailed, err)
@@ -739,6 +752,7 @@ func runCheckRedScope(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "usage: polis check-red-scope [--repo <path>] --contract <locked-v4-or-v6.json> --path <file> [--path <file> ...] [--format text|json]")
 		return exitUsage
 	}
+	writeProgress(errOut, *format, "compare proposed Red paths with the locked change scope", "regression proof must not authorize files outside the Change Contract")
 	result, err := redcapture.CheckScope(context.Background(), redcapture.ScopeOptions{Repo: *repo, Contract: *contract, Paths: paths})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS CHECK-RED-SCOPE", exitValidationFailed, err)
@@ -784,6 +798,7 @@ func runCaptureRed(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "usage: polis capture-red --repo <path> --contract <change.json> [--implementation-plan <plan.json>] [--format text|json] --out <regression.patch>")
 		return exitUsage
 	}
+	writeProgress(errOut, *format, "snapshot the failing source state as Red proof", "strict development requires reproducible pre-implementation evidence tied to the locked baseline")
 	result, err := redcapture.Capture(context.Background(), redcapture.Options{Repo: *repo, Contract: *contract, ImplementationPlan: *implementationPlanPath, Out: *outPath})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS CAPTURE-RED", exitUsage, err)
@@ -824,8 +839,10 @@ func runBuild(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "usage: polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--defer-gate <id> ...] [--format text|json] --out <directory>")
 		return exitUsage
 	}
+	writeProgress(errOut, *format, "validate the locked change and assemble the delivery package", "producer gates and package integrity must pass before a .polis artifact is emitted")
 	result, err := packagebuild.Build(context.Background(), packagebuild.Options{
 		Repo: *repo, Policy: *policy, Project: *project, Change: *change, Out: *outDir, Contract: *contract, RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlanPath, DeferredGates: deferredGates,
+		OnGateStart: gateStartProgress(errOut, *format),
 	})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS BUILD", exitUsage, err)
@@ -861,12 +878,15 @@ func runApply(args []string, out, errOut io.Writer) int {
 	if !ok {
 		return exitUsage
 	}
+	writeProgress(errOut, opts.format, "verify the detached artifact signature when configured", "apply must authenticate the exact artifact bytes before any consumer validation or repository mutation")
 	if err := verifyDetached(opts.artifact, opts.signaturePath, opts.trustedKey); err != nil {
 		return writeFailure(errOut, opts.format, applyLabel, exitInvalidArtifact, err)
 	}
+	writeProgress(errOut, opts.format, "verify the delivery artifact", "apply must reject an invalid package before checking or changing the target repository")
 	if _, err := packageverify.Verify(opts.artifact); err != nil {
 		return writeFailure(errOut, opts.format, applyLabel, exitInvalidArtifact, err)
 	}
+	writeProgress(errOut, opts.format, "validate and apply the artifact transactionally", "the target tree may be changed only after baseline, scope, and consumer gate checks succeed")
 	result, err := packageapply.ApplyWithOptions(context.Background(), opts.artifact, opts.repo, packageapply.Options{
 		BaselineMode:              opts.baselineMode,
 		AllowMissingBaselineProof: opts.allowMissingBaselineProof,
@@ -874,6 +894,7 @@ func runApply(args []string, out, errOut io.Writer) int {
 		ConfirmCommit: func(message, targetTree string) (bool, error) {
 			return confirmArtifactCommit(os.Stdin, errOut, message, targetTree, stdinIsTerminal(os.Stdin))
 		},
+		OnGateStart: gateStartProgress(errOut, opts.format),
 	})
 	if err != nil {
 		return writeFailure(errOut, opts.format, applyLabel, applyExitCode(err), err)
@@ -1066,6 +1087,7 @@ func runSign(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "usage: polis sign --key <private.pem> --out <artifact.polis.sig> [--format text|json] <artifact.polis>")
 		return exitUsage
 	}
+	writeProgress(errOut, *format, "create the detached artifact signature", "the signature must cover the exact artifact bytes without modifying the package")
 	result, err := artifactsig.SignFile(fs.Arg(0), *key, *outPath)
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS SIGN", exitValidationFailed, err)
@@ -1092,6 +1114,7 @@ func runExport(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "usage: polis export --out <polis-offline.zip> [--format text|json] [--executable <file>] [--runtime <GOOS/GOARCH>]")
 		return exitUsage
 	}
+	writeProgress(errOut, *format, "assemble and verify the offline runtime bundle", "the exported bundle must contain a runnable POLIS binary and its required embedded resources")
 	result, err := offlinekit.Export(offlinekit.Options{Out: *outPath, Executable: *executable, TargetRuntime: *targetRuntime, Version: version})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS EXPORT", exitValidationFailed, err)
@@ -1124,6 +1147,7 @@ func runDoctor(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "usage: polis doctor [--format text|json]")
 		return exitUsage
 	}
+	writeProgress(errOut, *format, "locate the Git executable", "POLIS repository operations require a working Git installation")
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		if *format == "json" {
@@ -1134,6 +1158,7 @@ func runDoctor(args []string, out, errOut io.Writer) int {
 		}
 		return exitBlocked
 	}
+	writeProgress(errOut, *format, "query the Git runtime version", "the doctor result should identify the concrete Git runtime available to POLIS")
 	b, err := exec.Command(gitPath, "--version").CombinedOutput()
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS DOCTOR", exitBlocked, err)

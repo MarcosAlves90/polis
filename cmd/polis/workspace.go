@@ -51,13 +51,15 @@ func runWorkspaceValidate(args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 	ctx := context.Background()
+	writeProgress(errOut, *format, "resolve the workspace Git root", "workspace evidence and external inputs must be checked against the canonical repository boundary")
 	root, err := gitutil.ResolveRoot(ctx, *repo, gitutil.ResolveRootOptions{PathError: "resolve repo path", GitError: "not a Git worktree", RootError: "resolve Git root"})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS WORKSPACE VALIDATE", exitValidationFailed, err)
 	}
+	writeProgress(errOut, *format, "validate the current workspace against the locked contract", "the current source tree and producer gates must match the contract without creating a delivery artifact")
 	result, err := packagebuild.ValidateWorkspace(ctx, packagebuild.WorkspaceOptions{
 		Repo: root, Policy: *policy, Contract: *contract,
-		RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlan,
+		RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlan, OnGateStart: gateStartProgress(errOut, *format),
 	})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS WORKSPACE VALIDATE", exitValidationFailed, err)

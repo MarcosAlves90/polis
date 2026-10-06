@@ -26,6 +26,7 @@ type Options struct {
 	Reuse         string
 	Replay        string
 	Out           string
+	OnGateStart   func(spec.GatePolicy)
 }
 
 func Run(ctx context.Context, repo string, plan policyplan.Plan, opts Options) (Manifest, policyexec.Result, error) {
@@ -182,7 +183,7 @@ func Run(ctx context.Context, repo string, plan policyplan.Plan, opts Options) (
 			Command: &policyexec.CommandExecution{Argv: append([]string{}, gate.Command.Argv...), Cwd: gate.Command.Cwd,
 				Observation: commandexec.Observation{Status: spec.StatusPass, ExitCode: o.ExitCode, DurationMS: o.DurationMS, StdoutSHA256: o.StdoutSHA256, StderrSHA256: o.StderrSHA256}}}, true
 	}
-	result := policyexec.ExecutePlanWithOptions(plan, repo, io.Discard, policyexec.Options{Jobs: opts.Jobs, Selected: selected, Reuse: reuse})
+	result := policyexec.ExecutePlanWithOptions(plan, repo, io.Discard, policyexec.Options{Jobs: opts.Jobs, Selected: selected, Reuse: reuse, OnGateStart: opts.OnGateStart})
 	for _, gate := range plan.GatePolicies() {
 		record := records[gate.ID]
 		o := result.Outcomes[gate.ID]

@@ -2230,10 +2230,7 @@ func TestIssue12BuildFailureHasEquivalentTextAndJSONGateDiagnostics(t *testing.T
 	}
 
 	jsonOutput := runBuild("json")
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(jsonOutput), &payload); err != nil {
-		t.Fatalf("ISSUE12-RED: JSON failure output is invalid: %v: %s", err, jsonOutput)
-	}
+	payload := finalJSONRecordAfterProgress(t, jsonOutput)
 	diagnostic, ok := payload["diagnostic"].(map[string]any)
 	if !ok {
 		t.Fatalf("ISSUE12-RED: JSON failure output has no diagnostic object: %s", jsonOutput)
@@ -2282,10 +2279,7 @@ func TestIssue12CaptureRedScopeHasEquivalentTextAndJSONDiagnostics(t *testing.T)
 		}
 	}
 	jsonOutput := runCapture("json")
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(jsonOutput), &payload); err != nil {
-		t.Fatalf("ISSUE12-RED: capture-red JSON failure output is invalid: %v: %s", err, jsonOutput)
-	}
+	payload := finalJSONRecordAfterProgress(t, jsonOutput)
 	diagnostic, ok := payload["diagnostic"].(map[string]any)
 	if !ok || diagnostic["stage"] != "Red probe scope validation" {
 		t.Fatalf("ISSUE12-RED: capture-red JSON lacks scope stage: %s", jsonOutput)
@@ -2463,9 +2457,10 @@ func TestIssue13ScopePreflightReportsValidAndRejectedPaths(t *testing.T) {
 		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: rejected report=%+v", failed)
 	}
 	textCode, textOutput, textErr := runScope("text", "docs/readme.md", "calc_test.go", "app.txt")
-	if textCode != exitValidationFailed || textErr != "" {
+	if textCode != exitValidationFailed {
 		t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: text code=%d stdout=%s stderr=%s", textCode, textOutput, textErr)
 	}
+	assertOnlyTextProgress(t, textErr)
 	for _, fragment := range []string{"POLIS CHECK-RED-SCOPE: FAIL", "app.txt", "docs/readme.md", "test_scope.allowed_paths", "calc_test.go", "tests/"} {
 		if !strings.Contains(textOutput, fragment) {
 			t.Fatalf("ISSUE13-SCOPE-PREFLIGHT: text report missing %q: %s", fragment, textOutput)

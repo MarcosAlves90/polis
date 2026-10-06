@@ -58,6 +58,7 @@ func runWorkspaceStatus(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "usage: polis workspace status --repo <path> [--policy <policy-v3.json>] --contract <external-locked-v4-or-v6.json> --report <external-workspace-validation-v1.json> [--format text|json]")
 		return exitUsage
 	}
+	writeProgress(errOut, *format, "compare the saved workspace report with current repository state", "checkpoint status must detect source, policy, contract, or report drift before recommending the next action")
 	result, err := inspectWorkspaceCheckpoint(context.Background(), *repo, *policyPath, *contractPath, *reportPath)
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS WORKSPACE STATUS", exitValidationFailed, err)

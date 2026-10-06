@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- Add intermediate command progress that always reports the current action and its reason, including per-gate start events and structured JSON Lines progress for `--format json`.
 - Add portability validation for shell command-string wrappers and host-incompatible Project Policy commands before gate execution.
 - Add a cross-platform Python multi-tool runner example that uses `sys.executable`, direct subprocess argv, explicit working directories, and fail-closed prerequisite checks.
 

@@ -30,11 +30,15 @@ type Result struct {
 }
 
 func Execute(policy spec.Policy, repoRoot string, evidence io.Writer) Result {
+	return ExecuteWithOptions(policy, repoRoot, evidence, Options{Jobs: 1})
+}
+
+func ExecuteWithOptions(policy spec.Policy, repoRoot string, evidence io.Writer, opts Options) Result {
 	plan, err := policyplan.Compile(policy)
 	if err != nil {
 		return Result{Overall: spec.StatusBlocked, Gates: make(map[string]spec.Status, len(policy.Gates))}
 	}
-	return ExecutePlan(plan, repoRoot, evidence)
+	return ExecutePlanWithOptions(plan, repoRoot, evidence, opts)
 }
 
 func ExecutePlan(plan policyplan.Plan, repoRoot string, evidence io.Writer) Result {

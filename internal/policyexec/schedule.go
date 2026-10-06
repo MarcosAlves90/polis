@@ -28,6 +28,9 @@ type Options struct {
 	// Reuse is called serially, only after all prerequisites pass. Delivery
 	// callers leave it nil: incremental evidence is never artifact proof.
 	Reuse func(spec.GatePolicy, Result) (Outcome, bool)
+	// OnGateStart is called serially immediately before an executable gate is
+	// launched. It is presentation-only and must not affect gate semantics.
+	OnGateStart func(spec.GatePolicy)
 }
 
 type completion struct {
@@ -111,6 +114,9 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 			delete(pending, gate.ID)
 			running[gate.ID] = true
 			progress = true
+			if opts.OnGateStart != nil {
+				opts.OnGateStart(gate)
+			}
 			go func(gate spec.GatePolicy) {
 				var buf bytes.Buffer
 				outcome := executeGate(gate, repo, &buf)

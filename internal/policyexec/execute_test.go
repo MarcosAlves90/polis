@@ -3,8 +3,10 @@ package policyexec
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +66,20 @@ func TestExecuteMarksMissingDependencyBlockedWithoutChangingGateFailure(t *testi
 				t.Fatalf("missing prerequisite not reported: %s", evidence.String())
 			}
 		})
+	}
+}
+
+func TestExecuteReportsEachExecutableGateBeforeItRuns(t *testing.T) {
+	policy := testPolicy(t, "pass")
+	started := []string{}
+	result := ExecuteWithOptions(policy, t.TempDir(), io.Discard, Options{Jobs: 1, OnGateStart: func(gate spec.GatePolicy) {
+		started = append(started, gate.ID)
+	}})
+	if result.Overall != spec.StatusPass {
+		t.Fatalf("result=%+v", result)
+	}
+	if !slices.Contains(started, "test.complete") || !slices.Contains(started, "coverage") {
+		t.Fatalf("gate starts=%v", started)
 	}
 }
 
