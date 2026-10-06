@@ -94,11 +94,14 @@ func TestGitHubReleaseScriptPreflightBuildsOfflineVariants(t *testing.T) {
 		"GOOS=darwin|GOARCH=arm64",
 		"GOOS=linux|GOARCH=amd64",
 		"GOOS=windows|GOARCH=amd64",
-		"build -trimpath -o",
+		"build -trimpath -ldflags=-s -w -o",
 	} {
 		if !strings.Contains(goLog, fragment) {
 			t.Fatalf("offline variants did not invoke Go with %q:\n%s", fragment, goLog)
 		}
+	}
+	if got := strings.Count(goLog, "build -trimpath -ldflags=-s -w -o"); got != 3 {
+		t.Fatalf("expected all three release builds to strip debug symbols, got %d:\n%s", got, goLog)
 	}
 	execLog := fixture.readExecLog()
 	if got := strings.Count(execLog, "darwin/arm64"); got != 3 {

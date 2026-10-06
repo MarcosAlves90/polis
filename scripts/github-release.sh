@@ -135,7 +135,7 @@ prepare_offline_assets() {
     OFFLINE_EXPORTER+='.exe'
   fi
 
-  if ! GOOS="$go_host_os" GOARCH="$go_host_arch" "$GO" build -trimpath -o "$OFFLINE_EXPORTER" ./cmd/polis; then
+  if ! GOOS="$go_host_os" GOARCH="$go_host_arch" "$GO" build -trimpath -ldflags="-s -w" -o "$OFFLINE_EXPORTER" ./cmd/polis; then
     fail "cannot build POLIS release exporter for host runtime $GO_HOST_RUNTIME"
   fi
 
@@ -159,7 +159,7 @@ prepare_offline_assets() {
       if [[ "$target_os" == "windows" ]]; then
         offline_binary+='.exe'
       fi
-      if ! GOOS="$target_os" GOARCH="$target_arch" "$GO" build -trimpath -o "$offline_binary" ./cmd/polis; then
+      if ! GOOS="$target_os" GOARCH="$target_arch" "$GO" build -trimpath -ldflags="-s -w" -o "$offline_binary" ./cmd/polis; then
         fail "cannot build POLIS offline runtime for $target"
       fi
     fi

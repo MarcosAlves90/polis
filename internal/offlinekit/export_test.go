@@ -92,6 +92,9 @@ func TestExportCreatesVerifiableOfflineBundle(t *testing.T) {
 		t.Fatalf("result sha256=%s want=%s", got, want)
 	}
 	for name, member := range openArchiveMembers(t, bundle) {
+		if member.Method != zip.Deflate {
+			t.Fatalf("member %s compression method=%d want=%d", name, member.Method, zip.Deflate)
+		}
 		if name == document.Executable && member.Mode().Perm() != 0o755 {
 			t.Fatalf("executable mode=%o want=755", member.Mode().Perm())
 		}

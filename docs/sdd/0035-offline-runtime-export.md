@@ -16,7 +16,8 @@ regular file as executable bytes, together with the minimum V6 documentation and
 machine-readable schemas required to create, validate, and understand POLIS
 inputs and outputs. It never executes a selected executable.
 
-The export is a deterministic ZIP runtime bundle with this layout:
+The export is a deterministic Deflate-compressed ZIP runtime bundle with this
+layout:
 
 ```text
 polis-offline/
@@ -43,6 +44,11 @@ before publishing it.
 ## Rationale
 
 A compiled Go executable removes the need for Go, Python, Node.js, Ruby, or another language runtime at the consumer. Embedding the V6 specification and schemas preserves the contract needed by an AI to construct and inspect policy, Change Contract, package, evidence, and signature data. The bundle itself performs no network access, although a project command configured in a policy may have its own network dependency. Git remains outside the bundle because it is a repository-native executable rather than a language runtime and bundling it would be platform-specific and substantially enlarge the artifact.
+
+ZIP members use Deflate rather than uncompressed storage. Compression changes
+only the archive representation: the manifest and checksums continue to bind
+the exact extracted member bytes, and fixed metadata plus deterministic input
+ordering preserve byte-for-byte reproducibility for identical exporter inputs.
 
 The bundle is portable across hosts with the same operating system and CPU architecture. It is intentionally not a universal multi-platform binary; the manifest makes a mismatch explicit before use.
 

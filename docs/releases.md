@@ -156,7 +156,10 @@ specification and schemas, manifest, and internal checksums. The release-level
 `SHA256SUMS` covers every offline bundle and every additional `--asset` file.
 The host exporter is built for the Go host runtime, while target binaries are
 cross-compiled with explicit `GOOS` and `GOARCH` values and are never executed
-by the release script.
+by the release script. Release binaries use `-trimpath -ldflags="-s -w"` to
+remove debug and symbol data that is not required at runtime. Offline ZIP
+members use deterministic Deflate compression to reduce transfer and storage
+size without changing the extracted bytes covered by bundle checksums.
 The exporter receives each target binary through `--executable` and records its
 declared `--runtime GOOS/GOARCH` in the bundle manifest.
 

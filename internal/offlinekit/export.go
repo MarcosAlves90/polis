@@ -298,7 +298,7 @@ func writeArchive(directory string, files []bundleFile) (string, error) {
 	candidate := f.Name()
 	zw := zip.NewWriter(f)
 	for _, file := range files {
-		header := &zip.FileHeader{Name: file.Path, Method: zip.Store, Modified: time.Unix(0, 0).UTC()}
+		header := &zip.FileHeader{Name: file.Path, Method: zip.Deflate, Modified: time.Unix(0, 0).UTC()}
 		header.SetMode(file.Mode)
 		w, err := zw.CreateHeader(header)
 		if err != nil {
