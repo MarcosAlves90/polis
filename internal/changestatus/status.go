@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -40,25 +41,47 @@ const (
 )
 
 type Options struct {
-	Repo     string
-	Contract string
+	Repo               string
+	Policy             string
+	Contract           string
+	ImplementationPlan string
+	RegressionPatch    string
+	Package            string
 }
 
 type Result struct {
-	Status             string           `json:"status"`
-	State              string           `json:"state"`
-	RetentionMode      string           `json:"retention_mode"`
-	Consistent         bool             `json:"consistent"`
-	Contract           *ContractSummary `json:"contract,omitempty"`
-	Baseline           *BaselineSummary `json:"baseline,omitempty"`
-	ImplementationPlan StageSummary     `json:"implementation_plan"`
-	RedProof           StageSummary     `json:"red_proof"`
-	Package            PackageSummary   `json:"package"`
-	Evidence           StageSummary     `json:"evidence"`
-	Gates              []GateSummary    `json:"gates"`
-	NextAction         *NextAction      `json:"next_action,omitempty"`
-	CandidateContracts []string         `json:"candidate_contracts,omitempty"`
-	Problems           []string         `json:"problems,omitempty"`
+	Status              string            `json:"status"`
+	State               string            `json:"state"`
+	RetentionMode       string            `json:"retention_mode"`
+	Consistent          bool              `json:"consistent"`
+	Contract            *ContractSummary  `json:"contract,omitempty"`
+	Baseline            *BaselineSummary  `json:"baseline,omitempty"`
+	ImplementationPlan  StageSummary      `json:"implementation_plan"`
+	RedProof            StageSummary      `json:"red_proof"`
+	Package             PackageSummary    `json:"package"`
+	Evidence            StageSummary      `json:"evidence"`
+	Gates               []GateSummary     `json:"gates"`
+	Workspace           *WorkspaceSummary `json:"workspace,omitempty"`
+	Proven              []string          `json:"proven"`
+	StaleOrUnproven     []string          `json:"stale_or_unproven"`
+	Missing             []string          `json:"missing"`
+	NextAction          *NextAction       `json:"next_action,omitempty"`
+	CandidateContracts  []string          `json:"candidate_contracts,omitempty"`
+	Problems            []string          `json:"problems,omitempty"`
+	selectedContractRaw []byte
+}
+
+type WorkspaceSummary struct {
+	Path                         string   `json:"path"`
+	CheckpointState              string   `json:"checkpoint_state"`
+	RecordedValidationStatus     string   `json:"recorded_validation_status"`
+	ReportAuthenticated          bool     `json:"report_authenticated"`
+	CurrentValidationEstablished bool     `json:"current_validation_established"`
+	ProofInputDigestsBound       bool     `json:"proof_input_digests_bound"`
+	DeliveryArtifactVerified     bool     `json:"delivery_artifact_verified"`
+	RecordedTargetTree           string   `json:"recorded_target_tree"`
+	CurrentTargetTree            *string  `json:"current_target_tree"`
+	Differences                  []string `json:"differences"`
 }
 
 type ContractSummary struct {
@@ -143,23 +166,47 @@ func Derive(ctx context.Context, opts Options) (Result, error) {
 		Package:            PackageSummary{Status: StageMissing},
 		Evidence:           StageSummary{Status: StageMissing},
 		Gates:              []GateSummary{},
-	}
-	if !retention.RepositoryEnabled() {
-		result.Problems = []string{"repository artifact retention is disabled; no persisted workflow state is available"}
-		return result, nil
+		Proven:             []string{},
+		StaleOrUnproven:    []string{},
+		Missing:            []string{},
 	}
 
-	contracts, contractProblems := loadContracts(retention, root)
-	result.Problems = append(result.Problems, contractProblems...)
-	for _, candidate := range contracts {
-		result.CandidateContracts = append(result.CandidateContracts, candidate.path)
+	var explicitPackage *packageCandidate
+	if opts.Package != "" {
+		candidate, err := loadPackageInput(retention, root, opts.Package)
+		if err != nil {
+			return Result{}, fmt.Errorf("load explicit package: %w", err)
+		}
+		explicitPackage = &candidate
 	}
-	selected, selectionProblem := selectContract(root, opts.Contract, contracts)
-	if selectionProblem != "" {
-		result.Problems = append(result.Problems, selectionProblem)
-		result.State = StateAmbiguous
-		result.Consistent = false
-		result.Status = "FAIL"
+
+	var selected *contractCandidate
+	if opts.Contract != "" {
+		candidate, err := loadContractInput(retention, root, opts.Contract)
+		if err != nil {
+			return Result{}, fmt.Errorf("load explicit locked Change Contract: %w", err)
+		}
+		selected = &candidate
+	} else if explicitPackage != nil {
+		candidate := contractCandidateFromPackage(*explicitPackage)
+		selected = &candidate
+	} else if retention.RepositoryEnabled() {
+		contracts, contractProblems := loadContracts(retention, root)
+		result.Problems = append(result.Problems, contractProblems...)
+		for _, candidate := range contracts {
+			result.CandidateContracts = append(result.CandidateContracts, candidate.path)
+		}
+		var selectionProblem string
+		selected, selectionProblem = selectContract(root, "", contracts)
+		if selectionProblem != "" {
+			result.Problems = append(result.Problems, selectionProblem)
+			result.State = StateAmbiguous
+			result.Consistent = false
+			result.Status = "FAIL"
+			return result, nil
+		}
+	} else {
+		result.Problems = []string{"external artifact retention has no discoverable workflow state; pass --contract or --package to reconstruct it explicitly"}
 		return result, nil
 	}
 	if selected == nil {
@@ -174,9 +221,23 @@ func Derive(ctx context.Context, opts Options) (Result, error) {
 		Path: selected.path, SHA256: selected.digest, SchemaVersion: selected.contract.SchemaVersion,
 		Kind: selected.contract.Kind, RegressionMode: selected.contract.Regression.Mode,
 	}
+	result.selectedContractRaw = append([]byte(nil), selected.raw...)
 	result.Baseline = deriveBaseline(ctx, root, selected.contract)
+	if opts.Policy != "" {
+		policyRaw, policy, err := policyload.LoadExternal(root, opts.Policy)
+		if err != nil {
+			return Result{}, fmt.Errorf("load explicit Project Policy: %w", err)
+		}
+		if err := devlock.ValidatePolicy(selected.contract, policyRaw); err != nil {
+			result.Baseline.PolicyStatus = "mismatch"
+			result.Problems = append(result.Problems, "explicit Project Policy does not match the locked baseline policy")
+		} else {
+			result.Baseline.PolicyStatus = "match"
+			result.Gates = missingGateSummaries(policy)
+		}
+	}
 
-	plans, planProblems := loadArtifacts(retention, root, "plans", int64(spec.MaxImplementationPlanBytes), "implementation plan exceeds maximum size")
+	plans, planProblems := workflowArtifacts(retention, root, "plans", opts.ImplementationPlan, int64(spec.MaxImplementationPlanBytes), "implementation plan exceeds maximum size")
 	result.Problems = append(result.Problems, planProblems...)
 	linkedPlans, incompletePlans := linkedPlanPaths(plans, *selected)
 	if len(linkedPlans) == 1 {
@@ -192,15 +253,23 @@ func Derive(ctx context.Context, opts Options) (Result, error) {
 			Status: StageIncomplete, IncompletePaths: incompletePlans,
 			Detail: "retained plan candidates bound to this contract do not validate",
 		}
+	} else if opts.ImplementationPlan != "" && len(plans) == 1 {
+		result.ImplementationPlan = StageSummary{
+			Status: StageIncomplete, IncompletePaths: []string{plans[0].path},
+			Detail: "explicit implementation plan is not bound to the selected contract",
+		}
 	}
 
-	packages, packageProblems := loadPackages(retention, root)
+	packages, packageProblems := loadWorkflowPackages(retention, root, explicitPackage)
 	result.Problems = append(result.Problems, packageProblems...)
 	linkedPackages := make([]packageCandidate, 0)
 	for _, candidate := range packages {
 		if bytes.Equal(candidate.pkg.ChangeRaw, selected.raw) {
 			linkedPackages = append(linkedPackages, candidate)
 		}
+	}
+	if explicitPackage != nil && len(linkedPackages) == 0 {
+		result.Problems = append(result.Problems, "explicit package is not bound to the selected Change Contract")
 	}
 	if len(linkedPackages) > 1 {
 		for _, candidate := range linkedPackages {
@@ -211,7 +280,7 @@ func Derive(ctx context.Context, opts Options) (Result, error) {
 		return inconsistent(result), nil
 	}
 
-	proofs, proofProblems := loadArtifacts(retention, root, "proofs", int64(spec.MaxPatchMemberBytes), "input exceeds maximum size")
+	proofs, proofProblems := workflowArtifacts(retention, root, "proofs", opts.RegressionPatch, int64(spec.MaxPatchMemberBytes), "input exceeds maximum size")
 	result.Problems = append(result.Problems, proofProblems...)
 	validProofs, incompleteProofs := validProofPaths(ctx, root, proofs, selected.contract)
 	if selected.contract.RequiresRedGreen() {
@@ -224,6 +293,11 @@ func Derive(ctx context.Context, opts Options) (Result, error) {
 			result.RedProof = StageSummary{
 				Status: StageIncomplete, IncompletePaths: incompleteProofs,
 				Detail: "retained proofs apply within the locked test scope but fail the Red oracle",
+			}
+		} else if opts.RegressionPatch != "" && len(proofs) == 1 {
+			result.RedProof = StageSummary{
+				Status: StageIncomplete, IncompletePaths: []string{proofs[0].path},
+				Detail: "explicit regression patch is not a valid Red proof for the selected contract",
 			}
 		}
 	} else {
@@ -246,16 +320,18 @@ func Derive(ctx context.Context, opts Options) (Result, error) {
 		return result, nil
 	}
 
-	policyRaw, policy, policyErr := policyload.LoadCommitted(ctx, root)
-	if policyErr == nil {
-		if err := devlock.ValidatePolicy(selected.contract, policyRaw); err != nil {
-			result.Baseline.PolicyStatus = "mismatch"
+	if opts.Policy == "" {
+		policyRaw, policy, policyErr := policyload.LoadCommitted(ctx, root)
+		if policyErr == nil {
+			if err := devlock.ValidatePolicy(selected.contract, policyRaw); err != nil {
+				result.Baseline.PolicyStatus = "mismatch"
+			} else {
+				result.Baseline.PolicyStatus = "match"
+				result.Gates = missingGateSummaries(policy)
+			}
 		} else {
-			result.Baseline.PolicyStatus = "match"
-			result.Gates = missingGateSummaries(policy)
+			result.Baseline.PolicyStatus = "unavailable"
 		}
-	} else {
-		result.Baseline.PolicyStatus = "unavailable"
 	}
 
 	if !result.Baseline.Resolvable {
@@ -288,6 +364,13 @@ func Derive(ctx context.Context, opts Options) (Result, error) {
 	return result, nil
 }
 
+// SelectedContractRaw returns the exact validated locked Change Contract bytes
+// used to derive this result. Callers can reuse those bytes for read-only
+// projections without reopening a weaker or different artifact path.
+func (result Result) SelectedContractRaw() []byte {
+	return append([]byte(nil), result.selectedContractRaw...)
+}
+
 func loadContracts(retention artifactretention.State, repo string) ([]contractCandidate, []string) {
 	artifacts, problems := loadArtifacts(retention, repo, "contracts", int64(spec.MaxContractMemberBytes), "Change Contract exceeds maximum size")
 	candidates := make([]contractCandidate, 0, len(artifacts))
@@ -306,6 +389,74 @@ func loadContracts(retention artifactretention.State, repo string) ([]contractCa
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].path < candidates[j].path })
 	return candidates, problems
+}
+
+func loadContractInput(retention artifactretention.State, repo, filename string) (contractCandidate, error) {
+	input := resolveWorkflowInputPath(repo, filename)
+	raw, err := retention.ReadInput(repo, input, "contracts", int64(spec.MaxContractMemberBytes), "Change Contract exceeds maximum size")
+	if err != nil {
+		return contractCandidate{}, err
+	}
+	contract, err := spec.DecodeChangeContract(raw)
+	if err != nil {
+		return contractCandidate{}, err
+	}
+	if !contract.IsLockedStrictDevelopment() || contract.BaselineLock == nil || contract.DevelopmentMethod != spec.DevelopmentMethodStrictSDDTDDV2 {
+		return contractCandidate{}, errors.New("Change Contract is not a locked strict-development contract")
+	}
+	sum := sha256.Sum256(raw)
+	return contractCandidate{path: artifactPathLabel(repo, input), raw: raw, contract: contract, digest: hex.EncodeToString(sum[:])}, nil
+}
+
+func contractCandidateFromPackage(candidate packageCandidate) contractCandidate {
+	raw := candidate.pkg.ChangeRaw
+	sum := sha256.Sum256(raw)
+	return contractCandidate{
+		path:     candidate.path + "#change",
+		raw:      raw,
+		contract: candidate.pkg.Change,
+		digest:   hex.EncodeToString(sum[:]),
+	}
+}
+
+func artifactPathLabel(repo, filename string) string {
+	abs, err := filepath.Abs(filename)
+	if err != nil {
+		return filename
+	}
+	root, err := filepath.Abs(repo)
+	if err == nil {
+		if relative, relErr := filepath.Rel(root, abs); relErr == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return filepath.ToSlash(relative)
+		}
+	}
+	return abs
+}
+
+func resolveWorkflowInputPath(repo, filename string) string {
+	if filepath.IsAbs(filename) {
+		return filename
+	}
+	slash := filepath.ToSlash(filename)
+	if slash == artifactretention.ManagedRoot || strings.HasPrefix(slash, artifactretention.ManagedRoot+"/") {
+		return filepath.Join(repo, filepath.FromSlash(slash))
+	}
+	return filename
+}
+
+func workflowArtifacts(retention artifactretention.State, repo, class, explicit string, maximum int64, oversize string) ([]retainedArtifact, []string) {
+	if explicit == "" {
+		if !retention.RepositoryEnabled() {
+			return nil, nil
+		}
+		return loadArtifacts(retention, repo, class, maximum, oversize)
+	}
+	input := resolveWorkflowInputPath(repo, explicit)
+	raw, err := retention.ReadInput(repo, input, class, maximum, oversize)
+	if err != nil {
+		return nil, []string{fmt.Sprintf("invalid explicit %s artifact %s: %v", class, explicit, err)}
+	}
+	return []retainedArtifact{{path: artifactPathLabel(repo, input), raw: raw}}, nil
 }
 
 func selectContract(repo, requested string, candidates []contractCandidate) (*contractCandidate, string) {
@@ -366,6 +517,29 @@ func loadPackages(retention artifactretention.State, repo string) ([]packageCand
 		packages = append(packages, packageCandidate{path: artifact.path, pkg: pkg})
 	}
 	return packages, problems
+}
+
+func loadPackageInput(retention artifactretention.State, repo, filename string) (packageCandidate, error) {
+	input := resolveWorkflowInputPath(repo, filename)
+	raw, err := retention.ReadInput(repo, input, "packages", packageverify.MaxArchiveBytes, "POLIS archive exceeds maximum size")
+	if err != nil {
+		return packageCandidate{}, err
+	}
+	pkg, err := packageverify.LoadBytes(raw)
+	if err != nil {
+		return packageCandidate{}, err
+	}
+	return packageCandidate{path: artifactPathLabel(repo, input), pkg: pkg}, nil
+}
+
+func loadWorkflowPackages(retention artifactretention.State, repo string, explicit *packageCandidate) ([]packageCandidate, []string) {
+	if explicit != nil {
+		return []packageCandidate{*explicit}, nil
+	}
+	if !retention.RepositoryEnabled() {
+		return nil, nil
+	}
+	return loadPackages(retention, repo)
 }
 
 func linkedPlanPaths(plans []retainedArtifact, selected contractCandidate) ([]string, []string) {
@@ -498,5 +672,116 @@ func inconsistent(result Result) Result {
 	result.State = StateInconsistent
 	result.Consistent = false
 	result.NextAction = nil
+	return result
+}
+
+// Project adds an agent-oriented explanation layer over the authoritative
+// workflow fields without changing their status or next-action semantics.
+func Project(result Result) Result {
+	result.Proven = []string{}
+	result.StaleOrUnproven = []string{}
+	result.Missing = []string{}
+
+	if result.Contract == nil {
+		result.Missing = append(result.Missing, "locked Change Contract")
+	} else {
+		result.Proven = append(result.Proven, "locked Change Contract validated and selected")
+	}
+	if result.Baseline != nil {
+		if result.Baseline.Resolvable {
+			result.Proven = append(result.Proven, "locked baseline resolves in the current repository")
+		} else {
+			result.StaleOrUnproven = append(result.StaleOrUnproven, "locked baseline is not currently resolvable")
+			result.Missing = append(result.Missing, "resolvable locked baseline")
+		}
+		switch result.Baseline.PolicyStatus {
+		case "match":
+			result.Proven = append(result.Proven, "effective Project Policy matches the locked contract")
+		case "mismatch":
+			result.StaleOrUnproven = append(result.StaleOrUnproven, "effective Project Policy does not match the locked contract")
+			result.Missing = append(result.Missing, "matching Project Policy")
+		case "unavailable":
+			result.StaleOrUnproven = append(result.StaleOrUnproven, "effective Project Policy is unavailable")
+			result.Missing = append(result.Missing, "effective Project Policy")
+		}
+	}
+
+	switch result.ImplementationPlan.Status {
+	case StageComplete:
+		result.Proven = append(result.Proven, "Implementation Plan validates against the selected contract")
+	case StageIncomplete, StageAmbiguous:
+		result.StaleOrUnproven = append(result.StaleOrUnproven, "Implementation Plan is present but not usable as current contract-bound evidence")
+	}
+	switch result.RedProof.Status {
+	case StageComplete:
+		result.Proven = append(result.Proven, "Red proof validates against the locked contract")
+	case StageMissing:
+		if result.Contract != nil {
+			result.Missing = append(result.Missing, "validated Red proof")
+		}
+	case StageIncomplete, StageAmbiguous:
+		result.StaleOrUnproven = append(result.StaleOrUnproven, "Red proof is present but does not validate")
+		result.Missing = append(result.Missing, "validated Red proof")
+	}
+
+	if result.Package.Status == StageComplete {
+		result.Proven = append(result.Proven, "POLIS package verified and bound to the selected contract")
+	} else if result.Contract != nil {
+		result.Missing = append(result.Missing, "verified POLIS package")
+	}
+	if result.Evidence.Status == StageComplete {
+		result.Proven = append(result.Proven, "package validation evidence verified")
+	}
+
+	for _, gate := range result.Gates {
+		switch gate.Status {
+		case StageComplete:
+			result.Proven = append(result.Proven, "project gate "+gate.ID+" complete")
+		case StageMissing:
+			result.Missing = append(result.Missing, "project gate "+gate.ID)
+		case "deferred":
+			result.StaleOrUnproven = append(result.StaleOrUnproven, "project gate "+gate.ID+" is deferred to consumer validation")
+		}
+	}
+
+	if result.Workspace != nil {
+		switch result.Workspace.CheckpointState {
+		case "source_snapshot_matches":
+			result.StaleOrUnproven = append(result.StaleOrUnproven,
+				"workspace checkpoint matches current source identities but is unsigned historical evidence and does not establish current validation")
+		case "source_snapshot_differs":
+			detail := "workspace checkpoint is stale"
+			if len(result.Workspace.Differences) != 0 {
+				detail += ": " + strings.Join(result.Workspace.Differences, ", ")
+			}
+			result.StaleOrUnproven = append(result.StaleOrUnproven, detail)
+		case "checkpoint_unavailable":
+			result.StaleOrUnproven = append(result.StaleOrUnproven, "workspace checkpoint cannot be safely compared with the current source snapshot")
+		}
+	}
+
+	for _, problem := range result.Problems {
+		result.StaleOrUnproven = appendUnique(result.StaleOrUnproven, problem)
+	}
+	result.Proven = uniqueStrings(result.Proven)
+	result.StaleOrUnproven = uniqueStrings(result.StaleOrUnproven)
+	result.Missing = uniqueStrings(result.Missing)
+	return result
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func uniqueStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		result = appendUnique(result, value)
+	}
 	return result
 }

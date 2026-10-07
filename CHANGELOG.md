@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- Extend `polis status` into a unified workflow projection that accepts explicit external Policy, Change Contract, Implementation Plan, Red proof, workspace checkpoint, and package inputs while preserving automatic repository-retention discovery.
+- Add agent-oriented `proven`, `stale_or_unproven`, and `missing` status projections so resumed workflows distinguish verified evidence from historical or incomplete state.
 - Add intermediate command progress that always reports the current action and its reason, including per-gate start events and structured JSON Lines progress for `--format json`.
 - Add `--jobs <1..16>` to `polis build` and `polis workspace validate`, reusing the deterministic `parallel_safe` gate scheduler while keeping serial execution as the default.
 - Add portability validation for shell command-string wrappers and host-incompatible Project Policy commands before gate execution.

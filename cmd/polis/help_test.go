@@ -86,7 +86,7 @@ func TestAgentHelpSafetyAndOptions(t *testing.T) {
 		"workspace":           {"validate", "status", "--contract", "--out-report", "--jobs", "--report", "external-locked", "source_snapshot_matches", "report_authenticated=false", "current_validation_established=false", "proof_input_digests_bound=false", "delivery_artifact_built/verified=false", "without a package"},
 		"start":               {"--repo", "--policy", "--contract", "--out", "clean", "schema-v3", "schema-v5", "no --format"},
 		"implementation-plan": {"--repo", "--policy", "--contract", "--out", "--format", "same plan bytes", "optional"},
-		"status":              {"--repo", "--contract", "--format", "unavailable", "not implementation completion"},
+		"status":              {"--repo", "--policy", "--contract", "--implementation-plan", "--regression-patch", "--report", "--package", "--format", "proven", "stale_or_unproven", "missing", "unsigned workspace checkpoint", "not implementation completion"},
 		"check-red-scope":     {"--repo", "--contract", "--path", "--format", "actual patch", "no regression command"},
 		"capture-red":         {"--repo", "--contract", "--implementation-plan", "--out", "--format", "immutable", "BLOCKED", "behavior_preserving"},
 		"build":               {"--repo", "--policy", "--project", "--change", "--contract", "--regression-patch", "--implementation-plan", "--defer-gate", "--jobs", "--format", "--out", "consumer", "polis verify"},

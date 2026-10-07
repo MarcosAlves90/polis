@@ -70,6 +70,62 @@ func lockedCLIContract(t *testing.T, repo string, externalPolicy ...string) stri
 	return locked
 }
 
+func externalCLIPolicy(t *testing.T, repo string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(repo, ".polis", "policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := spec.DecodePolicy(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical = append(canonical, '\n')
+	path := filepath.Join(t.TempDir(), "policy-v3.json")
+	if err := os.WriteFile(path, canonical, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func mismatchedCLIPolicy(t *testing.T, repo string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(repo, ".polis", "policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := spec.DecodePolicy(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := false
+	for index := range policy.Gates {
+		if policy.Gates[index].Command == nil {
+			continue
+		}
+		policy.Gates[index].Command.TimeoutSeconds++
+		changed = true
+		break
+	}
+	if !changed {
+		t.Fatal("canonical test policy needs at least one command gate")
+	}
+	canonical, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical = append(canonical, '\n')
+	path := filepath.Join(t.TempDir(), "mismatched-policy-v3.json")
+	if err := os.WriteFile(path, canonical, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func enableCLIRetention(t *testing.T, repo string) {
 	t.Helper()
 	manifest := []byte("{\"schema_version\":1,\"mode\":\"repository\"}\n")
@@ -242,6 +298,109 @@ func TestRunStatusReportsPersistedPartialAndCompleteWorkflow(t *testing.T) {
 	}
 	assertStatusGate(t, complete, "test.complete", changestatus.StageComplete)
 	assertCLITextContains(t, []string{"status", "--repo", repo}, "POLIS STATUS: complete", "Contract:", "Baseline commit:", "Evidence: complete", "Next action: none")
+}
+
+func TestRunStatusReconstructsExternalWorkflowArtifacts(t *testing.T) {
+	repo := makeBuildRepo(t)
+	policyPath := externalCLIPolicy(t, repo)
+	contract := lockedCLIContract(t, repo, policyPath)
+	planPath := filepath.Join(t.TempDir(), "plan.json")
+	planResult := runCLIJSON(t, "implementation-plan", "--repo", repo, "--policy", policyPath, "--contract", contract, "--out", planPath, "--format", "json")
+	if planResult["status"] != "PASS" {
+		t.Fatalf("implementation-plan result=%v", planResult)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("implemented checkpoint\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reportPath := filepath.Join(t.TempDir(), "workspace.json")
+	report := runCLIJSON(t, "workspace", "validate", "--repo", repo, "--policy", policyPath, "--contract", contract, "--implementation-plan", planPath, "--out-report", reportPath, "--format", "json")
+	if report["status"] != "PASS" {
+		t.Fatalf("workspace report=%v", report)
+	}
+
+	status := runCLIJSON(t, "status", "--repo", repo, "--policy", policyPath, "--contract", contract, "--implementation-plan", planPath, "--report", reportPath, "--format", "json")
+	if status["retention_mode"] != "external" || status["state"] != changestatus.StateImplementationPending {
+		t.Fatalf("external status=%v", status)
+	}
+	plan := status["implementation_plan"].(map[string]any)
+	if plan["status"] != changestatus.StageComplete {
+		t.Fatalf("external plan status=%v", plan)
+	}
+	workspace := status["workspace"].(map[string]any)
+	if workspace["checkpoint_state"] != "source_snapshot_matches" || workspace["report_authenticated"] != false || workspace["current_validation_established"] != false {
+		t.Fatalf("workspace projection=%v", workspace)
+	}
+	if !statusStringSliceContains(status["proven"], "Implementation Plan validates") {
+		t.Fatalf("external status did not report validated plan: %v", status["proven"])
+	}
+	if !statusStringSliceContains(status["stale_or_unproven"], "unsigned historical evidence") {
+		t.Fatalf("external status overclaimed workspace checkpoint: %v", status["stale_or_unproven"])
+	}
+	if !statusStringSliceContains(status["missing"], "verified POLIS package") {
+		t.Fatalf("external status omitted missing package: %v", status["missing"])
+	}
+
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("implemented package\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	built, err := packagebuild.Build(context.Background(), packagebuild.Options{
+		Repo: repo, Policy: policyPath, Project: "polis", Change: "external-status", Out: t.TempDir(),
+		Contract: contract, ImplementationPlan: planPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete := runCLIJSON(t, "status", "--repo", repo, "--policy", policyPath, "--contract", contract, "--implementation-plan", planPath, "--report", reportPath, "--package", built.Path, "--format", "json")
+	if complete["state"] != changestatus.StateComplete || complete["consistent"] != true {
+		t.Fatalf("complete external status=%v", complete)
+	}
+	if !statusStringSliceContains(complete["proven"], "POLIS package verified") {
+		t.Fatalf("verified package not projected as proven: %v", complete["proven"])
+	}
+	if !statusStringSliceContains(complete["stale_or_unproven"], "workspace checkpoint is stale") {
+		t.Fatalf("stale workspace checkpoint not projected: %v", complete["stale_or_unproven"])
+	}
+	if missing, ok := complete["missing"].([]any); !ok || len(missing) != 0 {
+		t.Fatalf("complete external workflow still reports missing proof: %v", complete["missing"])
+	}
+
+	packageOnly := runCLIJSON(t, "status", "--repo", repo, "--package", built.Path, "--format", "json")
+	if packageOnly["state"] != changestatus.StateComplete {
+		t.Fatalf("package-only status=%v", packageOnly)
+	}
+	packageWithReport := runCLIJSON(t, "status", "--repo", repo, "--policy", policyPath, "--report", reportPath, "--package", built.Path, "--format", "json")
+	if packageWithReport["state"] != changestatus.StateComplete {
+		t.Fatalf("package/report status=%v", packageWithReport)
+	}
+	packageWorkspace := packageWithReport["workspace"].(map[string]any)
+	if packageWorkspace["checkpoint_state"] != "source_snapshot_differs" {
+		t.Fatalf("package/report checkpoint=%v", packageWorkspace)
+	}
+	mismatchedPolicy := mismatchedCLIPolicy(t, repo)
+	mismatched, code := runCLIJSONCode(t, []string{"status", "--repo", repo, "--policy", mismatchedPolicy, "--package", built.Path, "--format", "json"})
+	if code != exitValidationFailed || mismatched["state"] != changestatus.StateInconsistent {
+		t.Fatalf("package/mismatched-policy status=%v code=%d", mismatched, code)
+	}
+	if !statusStringSliceContains(mismatched["stale_or_unproven"], "explicit Project Policy does not match") {
+		t.Fatalf("mismatched explicit policy was not projected: %v", mismatched["stale_or_unproven"])
+	}
+	assertCLITextContains(t,
+		[]string{"status", "--repo", repo, "--policy", policyPath, "--contract", contract, "--implementation-plan", planPath, "--report", reportPath, "--package", built.Path},
+		"Where: complete", "Proven:", "POLIS package verified", "Stale/unproven:", "workspace checkpoint is stale", "Missing: none", "Next action: none")
+}
+
+func statusStringSliceContains(value any, fragment string) bool {
+	items, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range items {
+		text, ok := item.(string)
+		if ok && strings.Contains(text, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRunStatusMarksInvalidContractBoundPlanIncompleteAndIgnoresUnrelatedPlan(t *testing.T) {
@@ -1649,6 +1808,11 @@ func TestRunCaptureRedCreatesPatch(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Retained artifacts: .polis/artifacts/proofs/") {
 		t.Fatalf("capture-red did not report retained proof: %s", out.String())
+	}
+	explicitAfterRed := runCLIJSON(t, "status", "--repo", repo, "--contract", locked, "--regression-patch", outPath, "--format", "json")
+	explicitRedStage, ok := explicitAfterRed["red_proof"].(map[string]any)
+	if !ok || explicitRedStage["status"] != changestatus.StageComplete || !statusStringSliceContains(explicitAfterRed["proven"], "Red proof validates") {
+		t.Fatalf("explicit Red proof was not projected as valid: %v", explicitAfterRed)
 	}
 	afterRed := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
 	if afterRed["state"] != changestatus.StateImplementationPending {

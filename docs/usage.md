@@ -19,7 +19,7 @@ polis plan --repo /path/to/repo [--policy /outside/policy-v3.json] [--format tex
 polis gates [--repo /path/to/repo] [--policy /outside/policy-v3.json] [--contract /outside/locked-v6.json] [--gate <id> ... | --affected] [--jobs <1..16>] [--environment-id <nonsecret-version>] [--reuse /outside/run.json | --replay /outside/run.json | --inspect-run /outside/run.json] [--out-run /outside/new-run.json] [--format text|json]
 polis workspace validate --repo /path/to/repo --contract /outside/locked-v6.json [--policy /outside/policy-v3.json] [--regression-patch /outside/regression.patch] [--implementation-plan /outside/plan.json] [--out-report /outside/workspace-validation.json] [--jobs <1..16>] [--format text|json]
 polis start --repo /path/to/repo --policy /outside/policy-v3.json --contract /outside/draft-v5.json --out /outside/locked-v6.json
-polis status [--repo /path/to/repo] [--contract /outside/retained-locked-contract.json] [--format text|json]
+polis status [--repo /path/to/repo] [--policy /outside/policy-v3.json] [--contract /outside/locked-contract.json] [--implementation-plan /outside/plan.json] [--regression-patch /outside/red.patch] [--report /outside/workspace-validation.json] [--package /outside/artifact.polis] [--format text|json]
 polis implementation-plan --repo /path/to/repo [--policy /outside/policy-v3.json] --contract /outside/locked-v6.json --out /outside/implementation-plan.json
 polis check-red-scope --repo /path/to/repo --contract /outside/locked-v6.json --path tests/new_test.go [--path tests/another_test.go ...] [--format text|json]
 polis capture-red --repo /path/to/repo --contract /outside/locked-v6.json [--implementation-plan /outside/implementation-plan.json] --out /outside/regression.patch [--format text|json]
@@ -216,18 +216,20 @@ Use `polis capture-red` for Red-to-Green work. Use the locked contract with
 `polis build`; the resulting package can be inspected, verified, and applied by
 the consumer workflow.
 
-Run `polis status --repo <path>` when resuming a repository-retained workflow.
-It summarizes the selected locked contract, baseline, retained evidence, gates,
-and next action. If more than one contract is retained, select one with
-`--contract`. With external artifact retention, status reports that no persisted
-workflow state is available. Before a verified package exists, status directs
-the developer to continue implementation; source changes and a generated plan
-alone do not prove that implementation is complete. A linked retained plan or
-Red proof that fails validation is shown as incomplete, while artifacts bound
-to another contract are excluded from the selected change summary. In JSON,
-`next_action.action` names a workflow step and `next_action.command` is present
-only when that step has a POLIS command, such as `polis start` or
-`polis capture-red`.
+Run `polis status --repo <path>` when resuming any POLIS workflow. Repository
+retention still discovers `.polis/artifacts/` automatically. In the default
+external-retention workflow, pass the external Policy, locked Change Contract,
+Implementation Plan, Red proof, workspace report, and package files that exist
+for the task. A verified package can reconstruct its embedded locked contract
+even when `--contract` is omitted. Status projects the selected contract,
+baseline, evidence, gates, optional workspace checkpoint, and next action into
+explicit `proven`, `stale_or_unproven`, and `missing` lists. A matching workspace
+report remains unsigned historical data: it can show that source identities
+still match the saved checkpoint, but it does not establish current validation
+or implementation completion. Before a verified package exists, source changes,
+a plan, or a checkpoint do not by themselves prove that implementation is
+complete. In JSON, `next_action.action` names a workflow step and
+`next_action.command` is present only when that step has a POLIS command.
 
 ## Repository artifact retention
 
@@ -777,36 +779,42 @@ Do not use:
 <!-- command-help: status -->
 ```text
 Usage:
-  polis status [--repo <path>] [--contract <retained-locked-contract.json>] [--format text|json]
+  polis status [--repo <path>] [--policy <policy-v3.json>] [--contract <locked-contract.json>] [--implementation-plan <plan.json>] [--regression-patch <red.patch>] [--report <workspace-validation-v1.json>] [--package <artifact.polis>] [--format text|json]
 Purpose:
-  summarize persisted strict-development state and the next valid action
+  project the current strict-development workflow state and the next valid action
 When to use:
-  Resume a repository-retained change and inspect the next valid action/evidence gaps.
+  Resume a repository-retained or external-artifact change after context loss.
 Prerequisites:
-  Git worktree and valid committed retention preference if present. Persisted state
-  requires repository retention; external mode deliberately reports unavailable.
+  Git worktree; valid committed retention preference if present; every explicit
+  external input must satisfy its existing bounded non-symlink trust boundary.
 Required inputs:
-  Select --contract from managed retained contracts if multiple candidates exist.
+  Repository retention can autodiscover retained artifacts. External workflows need
+  --contract or --package. A workspace --report is compared against whichever validated
+  locked contract status selected, including a retained or package-embedded contract.
 Workflow:
-  Follow next_action when present; validate retained evidence rather than infer progress.
-  A plan or source delta is not implementation completion. A complete package may still
-  require consumer validation for deferred gates; no consumer application is inferred.
+  Supply the artifacts already produced by the task. Read state/proven/stale_or_unproven/
+  missing, then follow next_action. A plan, source delta, or unsigned workspace checkpoint
+  is not implementation completion. A verified package remains the delivery authority.
 Reads/writes:
-  Reads Git, retention, retained contracts/plans/proofs/packages/evidence; writes a
-  summary only. Does not run proof/project commands or alter workflow artifacts.
+  Reads Git, retention, explicit/retained contracts/plans/proofs/packages, optional
+  Policy and workspace report; writes a summary only. Does not run project gates,
+  create artifacts, or mutate Git state intentionally.
 Options/defaults:
-  --repo defaults to .; --contract defaults to the sole retained candidate (no arbitrary
-  choice if ambiguous). --format defaults to text; json includes state and next_action.
+  --repo defaults to .; repository mode autodiscovers artifacts. --policy, --contract,
+  --implementation-plan, --regression-patch, --report, and --package select explicit
+  artifacts; --format defaults to text. A verified --package can supply its contract.
 Outcomes:
   Success (0): summary is consistent, not necessarily complete; unavailable or blocked
-  state can also exit 0. Read state/problems and next_action before taking any action.
+  state can also exit 0. Read state, proven, stale_or_unproven, missing, and next_action.
   Failure (6): ambiguous/inconsistent state or derivation error; select the retained
-  contract or resolve invalid evidence. Missing prerequisites require repair, not
-  invented progress. Invalid syntax/format returns 2.
+  contract or resolve invalid explicit evidence. Missing prerequisites require repair,
+  not invented progress. Invalid syntax/format returns 2.
 Examples:
   polis status --repo /path/to/repo --format json
+  polis status --repo /path/to/repo --policy /outside/policy.json --contract /outside/locked.json --implementation-plan /outside/plan.json --regression-patch /outside/red.patch --report /outside/workspace.json --package /outside/change.polis --format json
 Do not use:
-  To discover arbitrary external outputs or treat an exit code of 0 as completed delivery.
+  To authenticate a workspace report, infer implementation completion from source edits,
+  or treat an exit code of 0 as completed delivery.
 ```
 <!-- /command-help -->
 

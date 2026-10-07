@@ -164,20 +164,51 @@ func runStatus(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	repo := fs.String("repo", ".", repoHelp)
-	contract := fs.String("contract", "", "retained locked Change Contract to select when more than one is persisted")
+	policy := fs.String("policy", "", externalPolicyHelp)
+	contract := fs.String("contract", "", "locked Change Contract; external or retained")
+	implementationPlan := fs.String("implementation-plan", "", "external or retained contract-bound Implementation Plan JSON")
+	regressionPatch := fs.String("regression-patch", "", "external or retained captured Red proof patch")
+	report := fs.String("report", "", "external workspace-validation-v1 checkpoint report")
+	packagePath := fs.String("package", "", "external or retained verified POLIS package")
 	format := fs.String("format", "text", outputFormatHelp)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if fs.NArg() != 0 || !validFormat(*format) {
-		fmt.Fprintln(errOut, "usage: polis status [--repo <path>] [--contract <retained-locked-contract.json>] [--format text|json]")
+		fmt.Fprintln(errOut, "usage: polis status [--repo <path>] [--policy <policy-v3.json>] [--contract <locked-contract.json>] [--implementation-plan <plan.json>] [--regression-patch <red.patch>] [--report <workspace-validation-v1.json>] [--package <artifact.polis>] [--format text|json]")
 		return exitUsage
 	}
-	writeProgress(errOut, *format, "reconcile retained workflow evidence", "the status result must reflect the current contract, baseline, plans, proofs, packages, and gates")
-	result, err := changestatus.Derive(context.Background(), changestatus.Options{Repo: *repo, Contract: *contract})
+	writeProgress(errOut, *format, "reconcile workflow evidence", "status must project retained or explicit contract, baseline, plan, proof, checkpoint, package, and gate evidence into one resumable workflow state")
+	ctx := context.Background()
+	result, err := changestatus.Derive(ctx, changestatus.Options{
+		Repo: *repo, Policy: *policy, Contract: *contract, ImplementationPlan: *implementationPlan,
+		RegressionPatch: *regressionPatch, Package: *packagePath,
+	})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS STATUS", exitValidationFailed, err)
 	}
+	if *report != "" {
+		contractRaw := result.SelectedContractRaw()
+		if len(contractRaw) == 0 {
+			return writeFailure(errOut, *format, "POLIS STATUS", exitValidationFailed, fmt.Errorf("inspect workspace checkpoint: a workspace report requires a selected locked Change Contract or verified package"))
+		}
+		checkpoint, err := inspectWorkspaceCheckpointWithContract(ctx, *repo, *policy, *report, contractRaw)
+		if err != nil {
+			return writeFailure(errOut, *format, "POLIS STATUS", exitValidationFailed, fmt.Errorf("inspect workspace checkpoint: %w", err))
+		}
+		result.Workspace = &changestatus.WorkspaceSummary{
+			Path: *report, CheckpointState: checkpoint.CheckpointState,
+			RecordedValidationStatus:     checkpoint.RecordedValidationStatus,
+			ReportAuthenticated:          checkpoint.ReportAuthenticated,
+			CurrentValidationEstablished: checkpoint.CurrentValidationEstablished,
+			ProofInputDigestsBound:       checkpoint.ProofInputDigestsBound,
+			DeliveryArtifactVerified:     checkpoint.DeliveryArtifactVerified,
+			RecordedTargetTree:           checkpoint.RecordedTargetTree,
+			CurrentTargetTree:            checkpoint.CurrentTargetTree,
+			Differences:                  append([]string(nil), checkpoint.Differences...),
+		}
+	}
+	result = changestatus.Project(result)
 	if *format == "json" {
 		writeJSON(out, result)
 	} else {
@@ -190,7 +221,7 @@ func runStatus(args []string, out, errOut io.Writer) int {
 }
 
 func writeStatusText(out io.Writer, result changestatus.Result) {
-	fmt.Fprintf(out, "POLIS STATUS: %s\nRetention: %s\nConsistent: %t\n", result.State, result.RetentionMode, result.Consistent)
+	fmt.Fprintf(out, "POLIS STATUS: %s\nWhere: %s\nRetention: %s\nConsistent: %t\n", result.State, result.State, result.RetentionMode, result.Consistent)
 	if result.Contract == nil {
 		fmt.Fprintln(out, "Contract: none")
 	} else {
@@ -208,6 +239,12 @@ func writeStatusText(out io.Writer, result changestatus.Result) {
 	for _, gate := range result.Gates {
 		fmt.Fprintf(out, "Gate %s: %s\n", gate.ID, gate.Status)
 	}
+	if result.Workspace != nil {
+		fmt.Fprintf(out, "Workspace checkpoint: %s\nWorkspace report: %s\n", result.Workspace.CheckpointState, result.Workspace.Path)
+	}
+	writeStatusFacts(out, "Proven", result.Proven)
+	writeStatusFacts(out, "Stale/unproven", result.StaleOrUnproven)
+	writeStatusFacts(out, "Missing", result.Missing)
 	if result.NextAction != nil {
 		fmt.Fprintf(out, "Next action: %s", result.NextAction.Action)
 		if result.NextAction.Command != "" {
@@ -219,6 +256,17 @@ func writeStatusText(out io.Writer, result changestatus.Result) {
 	}
 	for _, problem := range result.Problems {
 		fmt.Fprintf(out, "Problem: %s\n", problem)
+	}
+}
+
+func writeStatusFacts(out io.Writer, label string, values []string) {
+	if len(values) == 0 {
+		fmt.Fprintf(out, "%s: none\n", label)
+		return
+	}
+	fmt.Fprintf(out, "%s:\n", label)
+	for _, value := range values {
+		fmt.Fprintf(out, "  - %s\n", value)
 	}
 }
 

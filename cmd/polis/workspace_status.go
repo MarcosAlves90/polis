@@ -76,6 +76,18 @@ func inspectWorkspaceCheckpoint(ctx context.Context, repo, policyPath, contractP
 	if err != nil {
 		return workspaceStatusResult{}, err
 	}
+	contractRaw, err := readWorkspaceExternalInput(root, contractPath, int64(spec.MaxContractMemberBytes))
+	if err != nil {
+		return workspaceStatusResult{}, fmt.Errorf("load external locked Change Contract: %w", err)
+	}
+	return inspectWorkspaceCheckpointWithContract(ctx, root, policyPath, reportPath, contractRaw)
+}
+
+func inspectWorkspaceCheckpointWithContract(ctx context.Context, repo, policyPath, reportPath string, contractRaw []byte) (workspaceStatusResult, error) {
+	root, err := gitutil.ResolveRoot(ctx, repo, gitutil.ResolveRootOptions{PathError: "resolve repo path", GitError: "not a Git worktree", RootError: "resolve Git root"})
+	if err != nil {
+		return workspaceStatusResult{}, err
+	}
 	reportRaw, err := readWorkspaceValidationReport(root, reportPath)
 	if err != nil {
 		return workspaceStatusResult{}, fmt.Errorf("read workspace report: %w", err)
@@ -85,10 +97,6 @@ func inspectWorkspaceCheckpoint(ctx context.Context, repo, policyPath, contractP
 		return workspaceStatusResult{}, err
 	}
 
-	contractRaw, err := readWorkspaceExternalInput(root, contractPath, int64(spec.MaxContractMemberBytes))
-	if err != nil {
-		return workspaceStatusResult{}, fmt.Errorf("load external locked Change Contract: %w", err)
-	}
 	contract, err := spec.DecodeChangeContract(contractRaw)
 	if err != nil {
 		return workspaceStatusResult{}, fmt.Errorf("decode locked Change Contract: %w", err)
