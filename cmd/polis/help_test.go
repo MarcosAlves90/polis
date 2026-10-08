@@ -79,7 +79,7 @@ func TestAgentHelpCanonicalUsage(t *testing.T) {
 func TestAgentHelpSafetyAndOptions(t *testing.T) {
 	fragments := map[string][]string{
 		"help":                {"-h", "--help", "does not execute"},
-		"doctor":              {"--format", "project dependencies", "4"},
+		"doctor":              {"--format", "--repo", "--policy", "project", "4", "without gates"},
 		"init":                {"--repo", "--profile", "--validation-level", "--disable-gate", "--test-argv", "--coverage-argv", "--coverage-adapter", "--coverage-report", "--coverage-threshold", "80", "--dry-run", "no --format"},
 		"plan":                {"--repo", "--policy", "--defer-gate", "--format", "does not execute"},
 		"gates":               {"--repo", "--policy", "--contract", "--gate", "--affected", "--jobs", "--environment-id", "--reuse", "--replay", "--inspect-run", "--out-run", "--format", "not built or verified", "BLOCKED", "parallel_safe"},

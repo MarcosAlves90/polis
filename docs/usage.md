@@ -13,7 +13,7 @@ rules live in the [POLIS Specification V6](../spec/POLIS-SPEC-v6.md).
 
 ```bash
 polis help [command]
-polis doctor [--format text|json]
+polis doctor [--repo /path/to/repo [--policy /outside/policy-v3.json]] [--format text|json]
 polis init --repo /path/to/repo [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--dry-run]
 polis plan --repo /path/to/repo [--policy /outside/policy-v3.json] [--format text|json]
 polis gates [--repo /path/to/repo] [--policy /outside/policy-v3.json] [--contract /outside/locked-v6.json] [--gate <id> ... | --affected] [--jobs <1..16>] [--environment-id <nonsecret-version>] [--reuse /outside/run.json | --replay /outside/run.json | --inspect-run /outside/run.json] [--out-run /outside/new-run.json] [--format text|json]
@@ -530,30 +530,40 @@ Do not use:
 <!-- command-help: doctor -->
 ```text
 Usage:
-  polis doctor [--format text|json]
+  polis doctor [--repo <path> [--policy <policy-v3.json>]] [--format text|json]
 Purpose:
-  check Git and runtime prerequisites
+  check Git/runtime prerequisites and optionally statically inspect project readiness
 When to use:
-  Before starting a workflow or diagnosing a missing Git executable.
+  Before starting a workflow; add --repo to identify known project blockers early.
 Prerequisites:
-  A runnable POLIS binary; Git must be on PATH and able to report its version.
+  A runnable POLIS binary; Git on PATH; --repo must resolve to a Git worktree.
 Required inputs:
-  None; no repository or policy is read.
+  None by default. --repo opts in to the effective committed Project Policy;
+  --policy selects an external schema-v3 policy and requires --repo.
 Workflow:
-  After help, check the runtime, then inspect the repository and effective policy.
+  Check Git/runtime; with --repo, validate policy schema, command portability,
+  dependency plan/order, configured command workdirs/executables, and coverage
+  report path containment without gates.
 Reads/writes:
-  Reads runtime information and PATH; executes git --version; writes a report only.
+  Reads runtime and PATH; executes Git inspection/version commands. With --repo,
+  reads policy and filesystem metadata. No project gate commands are executed.
 Options/defaults:
-  --format defaults to text; json reports the same version and runtime observations.
+  --format defaults to text. --repo and --policy opt in to static repository checks.
+  JSON includes a repository.checks list, effective plan and gates_executed=false.
 Outcomes:
-  Success (0): Git responds; inspect project dependencies separately before start.
-  BLOCKED (4): Git missing or cannot run; repair PATH/environment and retry.
-  Failure (2): invalid arguments/format; correct syntax. This is not a gate run.
+  Success (0): Git responds and, if --repo, checked static prerequisites pass.
+  BLOCKED (4): Git/repository prerequisite or executable/workdir unavailable.
+  Validation failed (6): invalid Project Policy or execution plan.
+  Failure (2): invalid arguments/format; correct syntax.
 Examples:
   polis doctor
   polis doctor --format json
+  polis doctor --repo .
+  polis doctor --repo . --policy /outside/policy-v3.json --format json
 Do not use:
-  Doctor PASS as proof that project dependencies, tests, or consumer validation work.
+  Doctor PASS as proof that gates, transitive dependencies, tests, builds or
+  consumer validation work. Executable lookup uses the doctor's environment;
+  generated coverage reports are not required to exist before their gates run.
 ```
 <!-- /command-help -->
 
