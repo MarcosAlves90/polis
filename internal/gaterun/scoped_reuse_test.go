@@ -107,15 +107,27 @@ func TestScopedReuseInputMetadataAndEntries(t *testing.T) {
 	opts.Reuse = prior
 	assertions := []struct {
 		name   string
-		change func()
+		change func(t *testing.T)
 	}{
-		{"chmod", func() {
-			if err := os.Chmod(filepath.Join(repo, "backend", "a.txt"), 0700); err != nil {
+		{"chmod", func(t *testing.T) {
+			path := filepath.Join(repo, "backend", "a.txt")
+			before, err := os.Stat(path)
+			if err != nil {
 				t.Fatal(err)
 			}
+			if err := os.Chmod(path, 0700); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if before.Mode()&0111 == after.Mode()&0111 {
+				t.Skip("filesystem does not expose executable-bit changes")
+			}
 		}},
-		{"new file", func() { mustWrite(t, filepath.Join(repo, "backend", "new.txt"), "new") }},
-		{"staged", func() {
+		{"new file", func(t *testing.T) { mustWrite(t, filepath.Join(repo, "backend", "new.txt"), "new") }},
+		{"staged", func(t *testing.T) {
 			mustWrite(t, filepath.Join(repo, "backend", "a.txt"), "staged bytes")
 			git(t, repo, "add", "backend/a.txt")
 			mustWrite(t, filepath.Join(repo, "backend", "a.txt"), "same")
@@ -126,7 +138,7 @@ func TestScopedReuseInputMetadataAndEntries(t *testing.T) {
 			// Every scenario starts from original Git state, but not from a new baseline.
 			git(t, repo, "reset", "-q", "--hard", "HEAD")
 			_ = os.Remove(filepath.Join(repo, "backend", "new.txt"))
-			tc.change()
+			tc.change(t)
 			next := runOK(t, repo, plan, opts)
 			got := priorGate(&next, "lint")
 			if got.Action != "executed" || !slices.Contains(got.StaleCategories, "source") {
