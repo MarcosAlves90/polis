@@ -363,6 +363,13 @@ policy author MUST declare every file dependency and version external inputs
 through `environment-id`; where this cannot be established, global invalidation
 remains mandatory. Existing policies remain accepted without alteration; policy
 files exercising this additive extension require an updated decoder.
+For gate-run records with an explicit `environment-id`, the manifest and JSON
+reports MUST expose `inputs.environment_assurance: "caller_asserted"`.
+This identifier is an executor declaration and MUST NOT be presented as proof
+that POLIS verified the external environment or enforced hermetic execution.
+The same limitation applies to reuse, replay and inspection. Historical
+checksum-valid records without this additive field remain accepted with the
+same caller-asserted interpretation.
 
 ## 12. Unchanged contracts
 

@@ -17,7 +17,9 @@ regular-file symlink targets. Commands receive
 only the existing declared environment; manifests store names/modes, never
 values. External toolchain, ignored resources and environment changes require
 a caller-supplied nonsecret environment version. Unversioned results execute
-but are not reusable or replayable. This is not hermetic execution.
+but are not reusable or replayable. The identifier is an executor assertion:
+POLIS does not inspect the complete external environment or attest its identity.
+This is not hermetic execution.
 
 A source mutation detected before scheduling or after validation makes the run
 noncurrent and invalidates passing outcomes. Concurrent source edits are not
@@ -53,6 +55,11 @@ and contract independently and compares all declared categories before running;
 it never executes commands solely supplied by a record. Replay always executes
 the recorded selection afresh, preserves the recorded jobs bound and records
 `replay_of`. Inspection describes history, not current gate validity.
+Records with a nonempty environment ID include
+`inputs.environment_assurance: "caller_asserted"`, also exposed by reuse and
+replay reports. Historical schema-v1 manifests without this additive field
+remain readable and retain their original checksums; they convey the same
+executor-declared environment semantics. Unknown assurance values are rejected.
 
 ## Scheduling
 

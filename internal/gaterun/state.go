@@ -33,7 +33,12 @@ type Inputs struct {
 	POLISVersion   string             `json:"polis_version"`
 	Runtime        string             `json:"runtime"`
 	EnvironmentID  string             `json:"environment_id"`
+	// An environment ID is provided by the executor, not verified by POLIS.
+	// Omit this additive field when reading legacy checksummed manifests.
+	EnvironmentAssurance string `json:"environment_assurance,omitempty"`
 }
+
+const EnvironmentAssuranceCallerAsserted = "caller_asserted"
 
 func digest(v any) string {
 	raw, _ := json.Marshal(v)
@@ -143,6 +148,9 @@ func snapshot(ctx context.Context, repo string) (string, string, error) {
 func loadInputs(ctx context.Context, repo string, plan policyplan.Plan, opts Options) (Inputs, string, error) {
 	in := Inputs{Repository: repo, PolicySHA256: plan.PolicySHA256, POLISVersion: opts.Version,
 		Runtime: runtime.GOOS + "/" + runtime.GOARCH + "/" + runtime.Version(), EnvironmentID: opts.EnvironmentID}
+	if opts.EnvironmentID != "" {
+		in.EnvironmentAssurance = EnvironmentAssuranceCallerAsserted
+	}
 	var err error
 	in.Head, in.SourceSHA256, err = snapshot(ctx, repo)
 	if err != nil {

@@ -23,7 +23,7 @@ func runRecordedGates(args []string, out, errOut io.Writer) int {
 	format := fs.String("format", "text", outputFormatHelp)
 	contract := fs.String("contract", "", "optional external locked Change Contract")
 	jobs := fs.Int("jobs", 1, "maximum concurrent gates (1..16); only parallel-safe gates overlap")
-	environmentID := fs.String("environment-id", "", "nonsecret version of external resources and environment; required for reuse/replay")
+	environmentID := fs.String("environment-id", "", "caller-asserted nonsecret version of external resources and environment; required for reuse/replay, not verified or hermetic")
 	reuse := fs.String("reuse", "", "prior gate-run manifest to consider for reuse")
 	replay := fs.String("replay", "", "reexecute a matching recorded run without reuse")
 	inspect := fs.String("inspect-run", "", "inspect a recorded run without executing commands")
@@ -118,9 +118,20 @@ func runRecordedGates(args []string, out, errOut io.Writer) int {
 
 func writeGateRunText(out io.Writer, m gaterun.Manifest) {
 	fmt.Fprintf(out, "POLIS GATE RUN: %q\nRun: %q\nRecorded current: %t (not a check against this worktree)\nSource: %q\nPolicy: %q\nSelected gates: %q\nJobs: %d\n", m.Status, m.RunID, m.Current, m.Inputs.SourceSHA256, m.Inputs.PolicySHA256, displayGateList(m.SelectedGates), m.Jobs)
+	writeGateEnvironmentText(out, m.Inputs)
 	for _, gate := range m.Gates {
 		fmt.Fprintf(out, "- Gate %q: %q (%q); reason=%q; stale inputs=%q\n", gate.ID, gate.Status, gate.Action, gate.Reason, strings.Join(gate.StaleCategories, ", "))
 	}
 	fmt.Fprintln(out, "Replay with: polis gates --replay <this-run.json> --repo <same-repo> [--policy <same-policy>] [--contract <same-contract>] --environment-id <same-nonsecret-version> --out-run <new-external.json>")
 	fmt.Fprintln(out, deliveryArtifactNotice)
+}
+
+func writeGateEnvironmentText(out io.Writer, in gaterun.Inputs) {
+	fmt.Fprintf(out, "Environment ID: %q\n", in.EnvironmentID)
+	if in.EnvironmentID == "" {
+		fmt.Fprintln(out, "Environment assurance: none (unversioned; reuse/replay unavailable)")
+		return
+	}
+	// Legacy records omit environment_assurance; their IDs were caller-provided too.
+	fmt.Fprintf(out, "Environment assurance: %q (executor declaration; POLIS does not verify the environment or guarantee hermetic execution)\n", gaterun.EnvironmentAssuranceCallerAsserted)
 }

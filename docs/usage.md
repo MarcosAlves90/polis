@@ -84,6 +84,21 @@ per-gate outcomes, exit status, duration and output digests. It never stores
 environment values or command output text. The content-derived run ID is
 stable for that record; a fresh nonce distinguishes every new execution.
 
+When `--environment-id` is provided, `run.inputs` in the JSON report and
+`inputs` in a saved or inspected manifest include, for example:
+
+```json
+{"environment_id":"toolchain-v1","environment_assurance":"caller_asserted"}
+```
+
+The executor (user or agent) declares this identifier. POLIS does **not**
+verify that the real toolchain, external resources, or runtime environment
+match it, and the declaration does **not** establish hermetic execution.
+Text reports for runs, reuse, replay and inspection state the same limitation.
+Older manifests without `environment_assurance` still load and retain their
+original checksums; their environment identifiers have the same caller-asserted
+meaning. An empty `--environment-id` records no environment assertion.
+
 ```bash
 polis gates --repo /repo --gate coverage --gate lint --jobs 2 --environment-id toolchain-v1 --out-run /outside/first.json
 polis gates --repo /repo --gate coverage --gate lint --environment-id toolchain-v1 --reuse /outside/first.json --out-run /outside/second.json
@@ -125,8 +140,10 @@ closed file-input claim. Input-path claims do **not** prove completeness:
 if a command reads undeclared paths or external state, scoped reuse may be stale.
 Use global fallback for opaque commands. `--environment-id` versions external
 resources, Git configuration, toolchains and environment; it must change when
-any can affect results. Without it, no reuse is permitted. Gate-run manifests
-are checksummed, not authenticated delivery proof. The new field is additive
+any can affect results. Without it, no reuse is permitted. Matching identifiers
+are evidence of matching **declarations**, not proof that conditions matched.
+Gate-run manifests are checksummed, not authenticated delivery proof. The
+policy `input_paths_complete` field is additive
 but older strict policy decoders will reject policies that use it.
 
 Replay requires the same available source/configuration and an explicit
@@ -636,6 +653,7 @@ When to use:
 Prerequisites:
   Git worktree and a valid effective policy. Reuse/replay also requires matching
   recorded inputs and an explicit nonsecret --environment-id for external inputs.
+  The ID is asserted by the executor; POLIS does not verify the environment.
 Required inputs:
   Optional external schema-v3 --policy and locked --contract; repeat --gate for
   selection, or use --affected. Inspect/replay/reuse take a prior run manifest.
@@ -646,6 +664,8 @@ Reads/writes:
   Reads policy/source/manifest and executes commands in the real worktree. Commands
   are not sandboxed. Optional --out-run writes a new external manifest without
   environment values or command output; a delivery artifact is not built or verified.
+  JSON records environment_assurance=caller_asserted for nonempty --environment-id;
+  this declaration does not establish hermetic execution.
 Options/defaults:
   --repo defaults to .; --policy defaults to committed .polis/policy.json; --format
   defaults to text; --jobs defaults to 1 (range 1..16). --gate and --affected are

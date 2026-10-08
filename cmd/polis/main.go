@@ -665,6 +665,7 @@ func writeGatesText(out io.Writer, report gatesCLIResult) {
 	fmt.Fprintf(out, "%s\n", report.DeliveryArtifactNotice)
 	if report.Run != nil {
 		fmt.Fprintf(out, "Run: %s (current=%t, jobs=%d)\nSelection: %s\n", report.Run.RunID, report.Run.Current, report.Run.Jobs, report.Run.SelectionReason)
+		writeGateEnvironmentText(out, report.Run.Inputs)
 	}
 }
 

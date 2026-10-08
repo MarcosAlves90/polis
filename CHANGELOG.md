@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Add a cross-platform Python multi-tool runner example that uses `sys.executable`, direct subprocess argv, explicit working directories, and fail-closed prerequisite checks.
 
 ### Changed
+- Label nonempty `--environment-id` values as `environment_assurance: "caller_asserted"` in gate-run evidence and reuse/replay reports, clarify that environment identity is not verified or hermetic, and preserve compatibility with older checksummed records.
 - Reduce baseline-proof subprocess overhead by batching Git object inspection/materialization and avoid redundant per-gate source snapshots when reuse is not active.
 - Reduce large-baseline verification memory by comparing canonical TAR bytes without constructing a second full archive, and avoid copying package payloads when callers only request verification.
 - Stream offline executable packaging, bundle verification, and output hashing so export no longer keeps or rereads whole executable/member payloads in memory.

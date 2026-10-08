@@ -151,6 +151,23 @@ func TestIdentityCoversCategoriesWithoutSecretValues(t *testing.T) {
 	if err != nil || loaded.RunID != m.RunID {
 		t.Fatalf("load=%+v err=%v", loaded, err)
 	}
+	if loaded.Inputs.EnvironmentAssurance != EnvironmentAssuranceCallerAsserted {
+		t.Fatalf("assurance missing from saved run: %+v", loaded.Inputs)
+	}
+	for _, assurance := range []string{"verified", "hermetic"} {
+		invalid := loaded
+		invalid.Inputs.EnvironmentAssurance = assurance
+		if err := invalid.seal(); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "unsupported.json")
+		if err := Write(repo, path, invalid); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "environment assurance") {
+			t.Fatalf("unsupported assurance %q accepted: %v", assurance, err)
+		}
+	}
 }
 
 func TestSelectionIncludesDependenciesAndConservativeFallback(t *testing.T) {
@@ -197,6 +214,27 @@ func TestRunReusesOnlyValidEvidenceAndNeverOnReplay(t *testing.T) {
 	plan := compiled(t, policy)
 	opts := Options{Version: "test", EnvironmentID: "env-v1", Selected: []string{"lint"}, Out: filepath.Join(t.TempDir(), "run.json")}
 	first := runOK(t, repo, plan, opts)
+	legacy := first
+	legacy.Inputs.EnvironmentAssurance = ""
+	if err := legacy.seal(); err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(t.TempDir(), "legacy-run.json")
+	if err := Write(repo, legacyPath, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err := Load(legacyPath); err != nil || loaded.Inputs.EnvironmentAssurance != "" {
+		t.Fatalf("legacy manifest changed during load: %+v %v", loaded.Inputs, err)
+	}
+	legacyOpts := opts
+	legacyOpts.Out, legacyOpts.Reuse = "", legacyPath
+	if reused := runOK(t, repo, plan, legacyOpts); priorGate(&reused, "lint").Action != "reused" {
+		t.Fatal("legacy caller-asserted identity should be reusable")
+	}
+	legacyOpts.Reuse, legacyOpts.Replay, legacyOpts.Selected = "", legacyPath, nil
+	if replayed := runOK(t, repo, plan, legacyOpts); priorGate(&replayed, "lint").Action != "executed" || replayed.Inputs.EnvironmentAssurance != EnvironmentAssuranceCallerAsserted {
+		t.Fatal("legacy replay must execute with explicit current assurance")
+	}
 	opts.Reuse, opts.Out = opts.Out, ""
 	second := runOK(t, repo, plan, opts)
 	if priorGate(&second, "lint").Action != "reused" || priorGate(&second, "test.complete").Action != "reused" {
