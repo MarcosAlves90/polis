@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -116,7 +117,7 @@ func inspectDoctorRepository(repo, policy string) (doctorRepositoryReport, int) 
 			if !filepath.IsAbs(program) && strings.ContainsAny(program, `/\`) {
 				lookup = filepath.Join(cwd, filepath.FromSlash(program))
 			}
-			path, err := exec.LookPath(lookup)
+			path, err := doctorLookPath(lookup, cwd, index > 0 && usesPATH)
 			if err != nil {
 				block("executable", gate.ID, fmt.Sprintf("executable %q is unavailable: %v", program, err))
 				blocked = true
@@ -132,6 +133,33 @@ func inspectDoctorRepository(repo, policy string) (doctorRepositoryReport, int) 
 		return report, exitBlocked
 	}
 	return report, exitPass
+}
+
+// An env wrapper searches PATH after its process starts in the gate's CWD.
+// Go's LookPath instead uses the doctor's CWD and rejects relative PATH
+// matches with ErrDot. Search each entry without executing any command.
+func doctorLookPath(program, cwd string, delegatedPATH bool) (string, error) {
+	if !delegatedPATH || runtime.GOOS == "windows" {
+		return exec.LookPath(program)
+	}
+
+	var firstError error
+	for _, directory := range filepath.SplitList(os.Getenv("PATH")) {
+		if !filepath.IsAbs(directory) {
+			directory = filepath.Join(cwd, directory)
+		}
+		path, err := exec.LookPath(filepath.Join(directory, program))
+		if err == nil {
+			return path, nil
+		}
+		if firstError == nil && !errors.Is(err, exec.ErrNotFound) && !errors.Is(err, os.ErrNotExist) {
+			firstError = err
+		}
+	}
+	if firstError != nil {
+		return "", firstError
+	}
+	return "", &exec.Error{Name: program, Err: exec.ErrNotFound}
 }
 
 func containsPathPass(names []string) bool {

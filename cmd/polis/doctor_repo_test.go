@@ -334,6 +334,51 @@ func TestDoctorRepositoryChecksEnvDelegatedRelativeExecutableWithoutExecuting(t 
 	}
 }
 
+func TestDoctorRepositoryResolvesEnvDelegateFromRelativePATHAtGateWorkingDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX relative PATH lookup")
+	}
+	env, err := exec.LookPath("env")
+	if err != nil {
+		t.Skip("env is not on PATH")
+	}
+	repo := makeBuildRepo(t)
+	workdir := filepath.Join(repo, "tools")
+	if err := os.Mkdir(workdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	program := "doctor-cwd-env-runner"
+	runner := filepath.Join(workdir, program)
+	marker := filepath.Join(workdir, "gate-executed")
+	if err := os.WriteFile(runner, []byte("#!/bin/sh\ntouch gate-executed\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policy := doctorExternalPolicy(t, repo, func(p *spec.Policy) {
+		p.Gates[0].Command.Cwd = "tools"
+		p.Gates[0].Command.Argv = []string{env, program}
+	})
+	// The env wrapper starts in the gate's CWD and searches relative PATH there.
+	// Include the original PATH so other policy commands stay discoverable.
+	t.Setenv("PATH", "."+string(os.PathListSeparator)+os.Getenv("PATH"))
+	code, payload := doctorJSON(t, "--repo", repo, "--policy", policy)
+	if code != exitPass || payload["status"] != "PASS" {
+		t.Fatalf("env delegate should resolve from gate cwd: code=%d payload=%v", code, payload)
+	}
+	if got := findDoctorCheck(t, payload["repository"].(map[string]any), "executable", "test.complete")["detail"].(string); !strings.Contains(got, runner) {
+		t.Fatalf("expected resolved gate executable path in %q", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("doctor executed the delegated gate: %v", err)
+	}
+	if err := os.Remove(runner); err != nil {
+		t.Fatal(err)
+	}
+	code, payload = doctorJSON(t, "--repo", repo, "--policy", policy)
+	if code != exitBlocked || findDoctorCheck(t, payload["repository"].(map[string]any), "executable", "test.complete")["status"] != "BLOCKED" {
+		t.Fatalf("missing env delegate should block: code=%d payload=%v", code, payload)
+	}
+}
+
 func TestDoctorRepositoryRejectsSymlinkWorkdirEscape(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation may require elevated privileges on Windows")
