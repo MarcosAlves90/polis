@@ -331,6 +331,42 @@ func TestDoctorRepositoryRejectsUnsupportedEnvShortOptionWithoutExecutingGate(t 
 	}
 }
 
+func TestDoctorRepositoryRejectsEnvMissingOperandsWithoutExecutingGate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX env wrapper")
+	}
+	if _, err := exec.LookPath("env"); err != nil {
+		t.Skip("env is not on PATH")
+	}
+	repo := makeBuildRepo(t)
+	marker := filepath.Join(repo, "gate-executed")
+	for _, argv := range [][]string{
+		{"env", "--unset"},
+		{"env", "--chdir"},
+		{"env", "--path"},
+		{"env", "--argv0"},
+		{"env", "-u"},
+		{"env", "-iC"},
+		{"env", "-a"},
+		{"env", "--chdir="},
+	} {
+		t.Run(strings.Join(argv, "_"), func(t *testing.T) {
+			policy := doctorExternalPolicy(t, repo, func(p *spec.Policy) {
+				p.Gates[0].Command.Argv = argv
+			})
+			code, payload := doctorJSON(t, "--repo", repo, "--policy", policy)
+			report := payload["repository"].(map[string]any)
+			check := findDoctorCheck(t, report, "policy_plan", "")
+			if code != exitValidationFailed || check["status"] != "FAIL" || !strings.Contains(check["detail"].(string), "operand") || report["gates_executed"] != false {
+				t.Fatalf("invalid env invocation %q accepted: code=%d payload=%v", argv, code, payload)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("doctor executed a gate: %v", err)
+			}
+		})
+	}
+}
+
 func TestDoctorRepositoryChecksEnvDelegatedRelativeExecutableWithoutExecuting(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX executable fixture")

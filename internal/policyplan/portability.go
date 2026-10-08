@@ -211,9 +211,19 @@ func envCommandIndex(argv []string) (int, string) {
 		case arg == "-S", arg == "--split-string", strings.HasPrefix(arg, "--split-string="):
 			return len(argv), "env split-string execution cannot be classified safely"
 		case arg == "--argv0", arg == "--unset", arg == "--chdir", arg == "--path":
+			if index+1 >= len(argv) {
+				return len(argv), fmt.Sprintf("env option %q requires an operand", arg)
+			}
+			if argv[index+1] == "" && arg != "--argv0" {
+				return len(argv), fmt.Sprintf("env option %q requires a non-empty operand", arg)
+			}
 			index++
-		case strings.HasPrefix(arg, "--argv0="), strings.HasPrefix(arg, "--unset="), strings.HasPrefix(arg, "--chdir="), strings.HasPrefix(arg, "--path="):
+		case strings.HasPrefix(arg, "--argv0="):
 			continue
+		case strings.HasPrefix(arg, "--unset="), strings.HasPrefix(arg, "--chdir="), strings.HasPrefix(arg, "--path="):
+			if strings.HasSuffix(arg, "=") {
+				return len(argv), fmt.Sprintf("env option %q requires a non-empty operand", arg)
+			}
 		case strings.HasPrefix(arg, "--"):
 			return len(argv), fmt.Sprintf("unsupported env long option %q cannot be classified safely", arg)
 		case strings.HasPrefix(arg, "-") && arg != "-":
@@ -225,6 +235,12 @@ func envCommandIndex(argv []string) (int, string) {
 					return len(argv), "env split-string execution cannot be classified safely"
 				case 'u', 'C', 'P', 'a':
 					if optionIndex == len(arg)-1 {
+						if index+1 >= len(argv) {
+							return len(argv), fmt.Sprintf("env option %q requires an operand", arg)
+						}
+						if argv[index+1] == "" && arg[optionIndex] != 'a' {
+							return len(argv), fmt.Sprintf("env option %q requires a non-empty operand", arg)
+						}
 						index++
 					}
 					optionIndex = len(arg)
