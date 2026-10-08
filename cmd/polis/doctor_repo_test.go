@@ -182,6 +182,7 @@ func TestDoctorRepositoryDoesNotClaimEnvLookupWithChangedEnvironment(t *testing.
 		{"env", "PATH=/nonexistent", "go"},
 		{"env", "-u", "PATH", "go"},
 		{"env", "-i", "go"},
+		{"env", "-", "go"},
 		{"env", "--chdir=other-directory", "./runner"},
 		{"env", "--chdir=other-directory", "/bin/sh"},
 		{"env", "-P", "/nonexistent", "go"},
@@ -229,6 +230,7 @@ func TestDoctorRepositoryChecksEnvDelegatedRelativeExecutableWithoutExecuting(t 
 		{"env", "VAR=value", "./doctor-runner"},
 		{"env", "PATH=/nonexistent", "./doctor-runner"},
 		{"env", "-i", runner},
+		{"env", "-", runner},
 	} {
 		t.Run(strings.Join(argv[1:], "_"), func(t *testing.T) {
 			policy := doctorExternalPolicy(t, repo, func(p *spec.Policy) {

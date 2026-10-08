@@ -125,7 +125,7 @@ func envLookupChanges(args []string) (pathChanged, cwdChanged bool) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
-		case arg == "--ignore-environment", arg == "--path", strings.HasPrefix(arg, "--path="):
+		case arg == "-", arg == "--ignore-environment", arg == "--path", strings.HasPrefix(arg, "--path="):
 			pathChanged = true
 		case arg == "--chdir", strings.HasPrefix(arg, "--chdir="):
 			cwdChanged = true
@@ -193,6 +193,8 @@ func envCommandIndex(argv []string) (int, bool) {
 		switch {
 		case arg == "--":
 			return index + 1, false
+		case arg == "-": // env's shorthand for --ignore-environment
+			continue
 		case arg == "-S", arg == "--split-string", strings.HasPrefix(arg, "--split-string="):
 			return len(argv), true
 		case arg == "--argv0", arg == "--unset", arg == "--chdir", arg == "--path":

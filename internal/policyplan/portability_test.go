@@ -40,6 +40,10 @@ func TestPreflightExecutables(t *testing.T) {
 	}{
 		{"direct", []string{"go", "test", "./..."}, []string{"go"}, false, false},
 		{"plain env", []string{"env", "-u", "OTHER", "go"}, []string{"env", "go"}, false, false},
+		{"lone dash clears environment", []string{"env", "-", "/bin/true"}, []string{"env", "/bin/true"}, true, false},
+		{"lone dash with PATH lookup", []string{"env", "-", "go"}, []string{"env", "go"}, true, false},
+		{"nested lone dash", []string{"env", "-", "env", "/bin/true"}, []string{"env", "env", "/bin/true"}, true, false},
+		{"double dash leaves lone dash executable", []string{"env", "--", "-"}, []string{"env", "-"}, false, false},
 		{"nested env", []string{"env", "A=1", "env", "B=2", "go"}, []string{"env", "env", "go"}, false, false},
 		{"unset PATH", []string{"env", "-uPATH", "go"}, []string{"env", "go"}, true, false},
 		{"grouped options", []string{"env", "-iuPATH", "go"}, []string{"env", "go"}, true, false},
@@ -102,6 +106,7 @@ func TestCommandPortabilityIssueClassifiesPlatformsAndShellStrings(t *testing.T)
 		{name: "PowerShell on POSIX", argv: []string{"powershell.exe", "-File", "scripts/check.ps1"}, goos: "linux", want: "Windows shell"},
 		{name: "Bash command string", argv: []string{"bash", "-lc", "pytest"}, goos: "darwin", want: "shell command-string"},
 		{name: "env-wrapped shell command", argv: []string{"env", "-u", "TEST_VALUE", "bash", "-c", "pytest"}, goos: "darwin", want: "shell command-string"},
+		{name: "env lone dash shell command", argv: []string{"env", "-", "bash", "-c", "pytest"}, goos: "darwin", want: "shell command-string"},
 		{name: "env -S separated split string", argv: []string{"env", "-S", "bash -c pytest"}, goos: "darwin", want: "env split-string"},
 		{name: "env.exe split-string wrapper", argv: []string{"env.exe", "-S", "bash -c pytest"}, goos: "windows", want: "env split-string"},
 		{name: "nested env.exe split-string wrapper", argv: []string{"env.exe", "env.exe", "-S", "bash -c pytest"}, goos: "windows", want: "env split-string"},
