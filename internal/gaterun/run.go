@@ -17,16 +17,17 @@ import (
 )
 
 type Options struct {
-	Version       string
-	Contract      string
-	EnvironmentID string
-	Selected      []string
-	Affected      bool
-	Jobs          int
-	Reuse         string
-	Replay        string
-	Out           string
-	OnGateStart   func(spec.GatePolicy)
+	Version        string
+	Contract       string
+	EnvironmentID  string
+	Selected       []string
+	Affected       bool
+	Jobs           int
+	Reuse          string
+	Replay         string
+	Out            string
+	OnGateStart    func(spec.GatePolicy)
+	OnGateComplete func(spec.GatePolicy, policyexec.Outcome, int64)
 }
 
 func Run(ctx context.Context, repo string, plan policyplan.Plan, opts Options) (Manifest, policyexec.Result, error) {
@@ -183,7 +184,7 @@ func Run(ctx context.Context, repo string, plan policyplan.Plan, opts Options) (
 					Observation: commandexec.Observation{Status: spec.StatusPass, ExitCode: o.ExitCode, DurationMS: o.DurationMS, StdoutSHA256: o.StdoutSHA256, StderrSHA256: o.StderrSHA256}}}, true
 		}
 	}
-	result := policyexec.ExecutePlanWithOptions(plan, repo, io.Discard, policyexec.Options{Jobs: opts.Jobs, Selected: selected, Reuse: reuse, OnGateStart: opts.OnGateStart})
+	result := policyexec.ExecutePlanWithOptions(plan, repo, io.Discard, policyexec.Options{Jobs: opts.Jobs, Selected: selected, Reuse: reuse, OnGateStart: opts.OnGateStart, OnGateComplete: opts.OnGateComplete})
 	for _, gate := range plan.GatePolicies() {
 		record := records[gate.ID]
 		o := result.Outcomes[gate.ID]

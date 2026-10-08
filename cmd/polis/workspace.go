@@ -65,7 +65,7 @@ func runWorkspaceValidate(args []string, out, errOut io.Writer) int {
 	writeProgress(errOut, *format, "validate the current workspace against the locked contract", "the current source tree and producer gates must match the contract without creating a delivery artifact")
 	result, err := packagebuild.ValidateWorkspace(ctx, packagebuild.WorkspaceOptions{
 		Repo: root, Policy: *policy, Contract: *contract,
-		RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlan, Jobs: *jobs, OnGateStart: gateStartProgress(errOut, *format),
+		RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlan, Jobs: *jobs, OnGateStart: gateStartProgress(errOut, *format), OnGateComplete: gateCompleteProgress(errOut, *format),
 	})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS WORKSPACE VALIDATE", exitValidationFailed, err)

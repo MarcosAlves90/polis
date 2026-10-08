@@ -42,23 +42,35 @@ No repository checkout or network access is needed to read installed help.
 
 ### Command progress
 
-Every executing POLIS command reports intermediate progress before material
-work starts. Each progress event names the current `action` and explains
-`why` that action is required. Help is documentation-only and does not emit
-execution progress.
+Recognized executing commands emit one `started` and one `completed` event on
+stderr. Each launched configured gate also emits this lifecycle pair, even on
+execution failures. Progress is advisory: it does not change gate outcomes,
+output contracts, or immutable evidence. Help remains documentation-only.
 
-With text output, progress is written to stderr as `POLIS PROGRESS` lines so
-the command result on stdout remains unchanged. With `--format json`, progress
-is written to stderr as newline-delimited JSON objects with
-`"type":"progress"`, `"action"`, and `"why"`. Successful JSON results remain
-one JSON object on stdout. If a JSON command fails, its existing structured
-failure object is the final JSON record on stderr after the progress records.
-Consumers that capture JSON failures must therefore read stderr as JSON Lines
-and use the final non-progress record as the command result.
+With `--format json`, progress is newline-delimited JSON on stderr:
 
-Gate-running commands also emit a progress event immediately before each
-configured gate starts. Progress never includes captured command output,
-environment values, secrets, or terminal-only rendering state.
+```json
+{"type":"progress","event":"started","scope":"gate","id":"test.complete","action":"run configured gate test.complete","why":"the effective Project Policy selected this gate and all required prerequisites are satisfied"}
+{"type":"progress","event":"completed","scope":"gate","id":"test.complete","status":"PASS","duration_ms":18420,"action":"run configured gate test.complete","why":"the effective Project Policy selected this gate and all required prerequisites are satisfied"}
+```
+
+The duration in this example is illustrative. Actual `duration_ms` values
+are nonnegative integers measured at runtime using monotonic elapsed time.
+Command events use `scope:"command"` and the CLI command or subcommand as `id`;
+`completed.status` is `PASS`, `FAIL`, or `BLOCKED` based on the command's exit
+category. Gate events report their actual execution status. If gates execute
+concurrently, completion order may differ from start order. Gates that were
+skipped, omitted or reused do not produce execution lifecycle events; inspect
+final gate outcomes for their statuses.
+
+Intermediate progress updates continue to include `type`, `action`, and `why`
+without a lifecycle `event`; they are informational checkpoints rather than
+operation boundaries. Existing text progress lines retain their `POLIS
+PROGRESS: action=... why=...` prefix, with added lifecycle fields on start
+and completion. Standard results stay on stdout. On JSON failure, the
+structured failure remains the final stderr JSON record, *after* command
+completion; consumers should use the last non-progress record as the result.
+Progress does not include raw command output, environment values, or secrets.
 
 ### Incremental gate runs and replay
 

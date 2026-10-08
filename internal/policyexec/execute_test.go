@@ -425,3 +425,95 @@ func TestReadCoverageReportPathSafetyAndLimits(t *testing.T) {
 		t.Fatal("expected oversized report rejection")
 	}
 }
+
+func TestProgressLifecycleSchedulerPairsLaunchedGates(t *testing.T) {
+	for _, mode := range []string{"pass", "fail", "missing-dependency"} {
+		t.Run(mode, func(t *testing.T) {
+			policy := testPolicy(t, mode)
+			started := []string{}
+			finished := map[string]spec.Status{}
+			durations := map[string]int64{}
+			result := ExecuteWithOptions(policy, t.TempDir(), io.Discard, Options{Jobs: 2,
+				OnGateStart: func(g spec.GatePolicy) { started = append(started, g.ID) },
+				OnGateComplete: func(g spec.GatePolicy, outcome Outcome, duration int64) {
+					if _, duplicated := finished[g.ID]; duplicated {
+						t.Errorf("duplicate completion for %s", g.ID)
+					}
+					finished[g.ID] = outcome.Status
+					durations[g.ID] = duration
+				},
+			})
+			if len(started) != len(finished) {
+				t.Fatalf("unmatched starts=%v completions=%v", started, finished)
+			}
+			for _, id := range started {
+				if finished[id] != result.Gates[id] || durations[id] < 0 {
+					t.Fatalf("completion mismatch for %s: outcome=%s duration=%d result=%s", id, finished[id], durations[id], result.Gates[id])
+				}
+			}
+			if _, omitted := finished["smoke"]; omitted {
+				t.Fatal("not-applicable gate must not be presented as executed")
+			}
+			if finished["test.complete"] == "" {
+				t.Fatalf("no completion for test gate: %+v", finished)
+			}
+		})
+	}
+}
+
+func TestProgressLifecycleParallelStartsAndSerializedCompletions(t *testing.T) {
+	policy := testPolicy(t, "pass")
+	policy.SchemaVersion = spec.PolicySchemaVersion
+	for i := range policy.Gates {
+		if policy.Gates[i].ID == "test.complete" || policy.Gates[i].ID == "lint" {
+			policy.Gates[i].Mode = spec.GateModeCommand
+			policy.Gates[i].Command = helperCommand(t, "pass", 10)
+			policy.Gates[i].Reason = nil
+			policy.Gates[i].ParallelSafe = true
+		}
+		if policy.Gates[i].Command != nil {
+			policy.Gates[i].Command.Environment = &spec.EnvironmentSpec{Mode: "inherit"}
+		}
+	}
+	var events []string
+	result := ExecuteWithOptions(policy, t.TempDir(), io.Discard, Options{Jobs: 2,
+		OnGateStart: func(g spec.GatePolicy) { events = append(events, "start:"+g.ID) },
+		OnGateComplete: func(g spec.GatePolicy, outcome Outcome, elapsed int64) {
+			if elapsed < 0 || outcome.Status != spec.StatusPass {
+				t.Errorf("unexpected completion: %s %s %d", g.ID, outcome.Status, elapsed)
+			}
+			events = append(events, "completed:"+g.ID)
+		},
+	})
+	if result.Overall != spec.StatusPass {
+		t.Fatalf("parallel result: %+v", result)
+	}
+	firstComplete := -1
+	for i, event := range events {
+		if strings.HasPrefix(event, "completed:") {
+			firstComplete = i
+			break
+		}
+	}
+	if firstComplete < 2 || !slices.Contains(events[:firstComplete], "start:test.complete") || !slices.Contains(events[:firstComplete], "start:lint") {
+		t.Fatalf("parallel gates did not overlap before first completion: %v", events)
+	}
+}
+
+func TestProgressLifecycleReusedGateIsNotReportedAsLaunched(t *testing.T) {
+	policy := testPolicy(t, "pass")
+	var started, completed []string
+	result := ExecuteWithOptions(policy, t.TempDir(), io.Discard, Options{Jobs: 1,
+		Reuse: func(g spec.GatePolicy, current Result) (Outcome, bool) {
+			if g.ID == "test.complete" {
+				return Outcome{Status: spec.StatusPass, Action: "reused", Reason: "test reuse"}, true
+			}
+			return Outcome{}, false
+		},
+		OnGateStart:    func(g spec.GatePolicy) { started = append(started, g.ID) },
+		OnGateComplete: func(g spec.GatePolicy, outcome Outcome, duration int64) { completed = append(completed, g.ID) },
+	})
+	if result.Overall != spec.StatusPass || slices.Contains(started, "test.complete") || slices.Contains(completed, "test.complete") || !slices.Equal(started, completed) {
+		t.Fatalf("reused gate falsely started: starts=%v completions=%v status=%s", started, completed, result.Overall)
+	}
+}

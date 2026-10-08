@@ -87,7 +87,7 @@ func runRecordedGates(args []string, out, errOut io.Writer) int {
 	}
 	writeProgress(errOut, *format, "execute the selected gate plan", "each runnable gate must produce a current validation result for the selected source and environment")
 	manifest, result, err := gaterun.Run(ctx, root, plan, gaterun.Options{Version: version, Contract: *contract,
-		EnvironmentID: *environmentID, Jobs: *jobs, Selected: selected, Affected: *affected, Reuse: *reuse, Replay: *replay, Out: *outRun, OnGateStart: gateStartProgress(errOut, *format)})
+		EnvironmentID: *environmentID, Jobs: *jobs, Selected: selected, Affected: *affected, Reuse: *reuse, Replay: *replay, Out: *outRun, OnGateStart: gateStartProgress(errOut, *format), OnGateComplete: gateCompleteProgress(errOut, *format)})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS GATES", exitValidationFailed, err)
 	}

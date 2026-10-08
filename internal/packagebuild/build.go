@@ -42,6 +42,7 @@ type Options struct {
 	DeferredGates      []string
 	Jobs               int
 	OnGateStart        func(spec.GatePolicy)
+	OnGateComplete     func(spec.GatePolicy, policyexec.Outcome, int64)
 }
 
 type WorkspaceOptions struct {
@@ -52,6 +53,7 @@ type WorkspaceOptions struct {
 	ImplementationPlan string
 	Jobs               int
 	OnGateStart        func(spec.GatePolicy)
+	OnGateComplete     func(spec.GatePolicy, policyexec.Outcome, int64)
 }
 
 type Result struct {
@@ -99,7 +101,7 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 func ValidateWorkspace(ctx context.Context, opts WorkspaceOptions) (Result, error) {
 	return executeBuild(ctx, Options{
 		Repo: opts.Repo, Policy: opts.Policy, Contract: opts.Contract,
-		RegressionPatch: opts.RegressionPatch, ImplementationPlan: opts.ImplementationPlan, Jobs: opts.Jobs, OnGateStart: opts.OnGateStart,
+		RegressionPatch: opts.RegressionPatch, ImplementationPlan: opts.ImplementationPlan, Jobs: opts.Jobs, OnGateStart: opts.OnGateStart, OnGateComplete: opts.OnGateComplete,
 	}, true)
 }
 

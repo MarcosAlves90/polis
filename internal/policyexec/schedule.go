@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
 	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
@@ -31,12 +32,16 @@ type Options struct {
 	// OnGateStart is called serially immediately before an executable gate is
 	// launched. It is presentation-only and must not affect gate semantics.
 	OnGateStart func(spec.GatePolicy)
+	// OnGateComplete is invoked serially after a launched gate finishes. It is
+	// presentation-only and reports observed monotonic elapsed time in milliseconds.
+	OnGateComplete func(spec.GatePolicy, Outcome, int64)
 }
 
 type completion struct {
-	id       string
-	outcome  Outcome
-	evidence []byte
+	id         string
+	outcome    Outcome
+	evidence   []byte
+	finishedAt time.Time
 }
 
 func ValidateJobs(jobs int) error {
@@ -54,6 +59,7 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 	}
 	gates := plan.GatePolicies()
 	pending, running := map[string]bool{}, map[string]bool{}
+	startedAt := map[string]time.Time{}
 	records := map[string][]byte{}
 	finished := make(chan completion, len(gates))
 	store := func(c completion) {
@@ -113,6 +119,7 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 			}
 			delete(pending, gate.ID)
 			running[gate.ID] = true
+			startedAt[gate.ID] = time.Now()
 			progress = true
 			if opts.OnGateStart != nil {
 				opts.OnGateStart(gate)
@@ -120,13 +127,21 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 			go func(gate spec.GatePolicy) {
 				var buf bytes.Buffer
 				outcome := executeGate(gate, repo, &buf)
-				finished <- completion{id: gate.ID, outcome: outcome, evidence: buf.Bytes()}
+				finished <- completion{id: gate.ID, outcome: outcome, evidence: buf.Bytes(), finishedAt: time.Now()}
 			}(gate)
 		}
 		if len(running) > 0 {
 			c := <-finished
 			delete(running, c.id)
 			store(c)
+			if opts.OnGateComplete != nil {
+				for _, gate := range gates {
+					if gate.ID == c.id {
+						opts.OnGateComplete(gate, c.outcome, c.finishedAt.Sub(startedAt[c.id]).Milliseconds())
+						break
+					}
+				}
+			}
 		} else if !progress {
 			// Defensive fail-closed handling for an incomplete/corrupt plan.
 			for _, gate := range gates {

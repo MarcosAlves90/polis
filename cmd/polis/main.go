@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/MarcosAlves90/polis/v6/docs"
@@ -104,12 +105,17 @@ func runHelp(args []string, out, errOut io.Writer) int {
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
-func run(args []string, out, errOut io.Writer) int {
+func run(args []string, out, errOut io.Writer) (exitCode int) {
 	if len(args) == 0 {
 		fmt.Fprintln(errOut, rootUsageLine())
 		return exitUsage
 	}
-	writeCommandStartProgress(errOut, args)
+	if progress, id, ok := commandProgressDetails(args); ok {
+		w := &commandProgressWriter{out: errOut, format: commandProgressFormat(args), id: id, progress: progress, start: time.Now()}
+		progressLifecycleEvent(errOut, w.format, "started", "command", id, progress.action, progress.why, "", 0)
+		errOut = w
+		defer func() { w.finish(exitCode) }()
+	}
 	// Resolve standalone help before parsing required inputs or executing commands.
 	if len(args) == 2 && (args[1] == "-h" || args[1] == "--help") {
 		for _, command := range commandHelpEntries {
@@ -412,7 +418,7 @@ func runPreflight(args []string, out, errOut io.Writer) int {
 		return writeFailure(errOut, *format, preflightLabel, exitInvalidArtifact, err)
 	}
 	writeProgress(errOut, *format, "validate the artifact against the target repository", "consumer baseline compatibility, change scope, and required gates must pass before apply is allowed")
-	result, err := packageapply.PreflightWithOptions(context.Background(), artifact, *repo, packageapply.Options{BaselineMode: baselineMode, AllowMissingBaselineProof: *allowMissingBaselineProof, OnGateStart: gateStartProgress(errOut, *format)})
+	result, err := packageapply.PreflightWithOptions(context.Background(), artifact, *repo, packageapply.Options{BaselineMode: baselineMode, AllowMissingBaselineProof: *allowMissingBaselineProof, OnGateStart: gateStartProgress(errOut, *format), OnGateComplete: gateCompleteProgress(errOut, *format)})
 	if err != nil {
 		code := exitValidationFailed
 		if errors.Is(err, packageapply.ErrBaselineMismatch) {
@@ -946,7 +952,7 @@ func runBuild(args []string, out, errOut io.Writer) int {
 	writeProgress(errOut, *format, "validate the locked change and assemble the delivery package", "producer gates and package integrity must pass before a .polis artifact is emitted")
 	result, err := packagebuild.Build(context.Background(), packagebuild.Options{
 		Repo: *repo, Policy: *policy, Project: *project, Change: *change, Out: *outDir, Contract: *contract, RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlanPath, DeferredGates: deferredGates, Jobs: *jobs,
-		OnGateStart: gateStartProgress(errOut, *format),
+		OnGateStart: gateStartProgress(errOut, *format), OnGateComplete: gateCompleteProgress(errOut, *format),
 	})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS BUILD", exitUsage, err)
@@ -998,7 +1004,7 @@ func runApply(args []string, out, errOut io.Writer) int {
 		ConfirmCommit: func(message, targetTree string) (bool, error) {
 			return confirmArtifactCommit(os.Stdin, errOut, message, targetTree, stdinIsTerminal(os.Stdin))
 		},
-		OnGateStart: gateStartProgress(errOut, opts.format),
+		OnGateStart: gateStartProgress(errOut, opts.format), OnGateComplete: gateCompleteProgress(errOut, opts.format),
 	})
 	if err != nil {
 		return writeFailure(errOut, opts.format, applyLabel, applyExitCode(err), err)
@@ -1255,6 +1261,9 @@ func runDoctor(args []string, out, errOut io.Writer) int {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		if *format == "json" {
+			if writer, ok := errOut.(interface{ finishBeforeFailure(int) }); ok {
+				writer.finishBeforeFailure(exitBlocked)
+			}
 			writeJSON(errOut, map[string]any{"status": "BLOCKED", "version": version, "os": runtime.GOOS, "arch": runtime.GOARCH, "go_runtime": runtime.Version(), "error": "git not found",
 				"diagnostic": diagnostic.Report{Code: "POLIS_GIT_PREREQUISITE_MISSING", Category: "prerequisite", Stage: "doctor", ObservedCause: "missing_executable", AffectedOperations: []string{"doctor"}, NotRun: []string{"Git version check"}, Remediation: "install_git"}})
 		} else {
@@ -1355,6 +1364,9 @@ func classifyFailure(label string, exitCode int, report diagnostic.Report) diagn
 func writeFailure(w io.Writer, format, label string, code int, err error) int {
 	structured, hasDiagnostic := diagnostic.As(err)
 	if format == "json" {
+		if writer, ok := w.(interface{ finishBeforeFailure(int) }); ok {
+			writer.finishBeforeFailure(code)
+		}
 		payload := map[string]any{"status": "FAIL", "exit_code": code, "error": err.Error()}
 		var report diagnostic.Report
 		if hasDiagnostic {

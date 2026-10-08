@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
+
+	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
 
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
@@ -44,23 +47,82 @@ func writeProgress(w io.Writer, format, action, why string) {
 	fmt.Fprintf(w, "POLIS PROGRESS: action=%q why=%q\n", action, why)
 }
 
-func writeCommandStartProgress(w io.Writer, args []string) {
-	if len(args) == 0 {
+// progressLifecycleEvent is presentation-only. It must not enter POLIS evidence.
+func progressLifecycleEvent(w io.Writer, format, event, scope, id, action, why, status string, durationMS int64) {
+	if w == nil {
 		return
+	}
+	if format == "json" {
+		record := map[string]any{"type": "progress", "event": event, "scope": scope, "id": id, "action": action, "why": why}
+		if event == "completed" {
+			record["status"] = status
+			record["duration_ms"] = durationMS
+		}
+		writeJSON(w, record)
+		return
+	}
+	if event == "completed" {
+		fmt.Fprintf(w, "POLIS PROGRESS: action=%q why=%q event=%q scope=%q id=%q status=%q duration_ms=%d\n", action, why, event, scope, id, status, durationMS)
+	} else {
+		fmt.Fprintf(w, "POLIS PROGRESS: action=%q why=%q event=%q scope=%q id=%q\n", action, why, event, scope, id)
+	}
+}
+
+func commandProgressDetails(args []string) (commandProgress, string, bool) {
+	if len(args) == 0 || args[0] == "help" || hasHelpFlag(args) {
+		return commandProgress{}, "", false
 	}
 	name := args[0]
-	if name == "help" || hasHelpFlag(args) {
-		return
-	}
 	progress, ok := commandProgressByName[name]
 	if !ok {
-		return
+		return commandProgress{}, "", false
 	}
 	if name == "workspace" && len(args) > 1 && (args[1] == "validate" || args[1] == "status") {
+		name += "." + args[1]
 		progress.action = "run workspace " + args[1]
 		progress.why = "the operator requested a " + args[1] + " view of the current workspace against POLIS evidence"
 	}
-	writeProgress(w, commandProgressFormat(args), progress.action, progress.why)
+	return progress, name, true
+}
+
+func writeCommandStartProgress(w io.Writer, args []string) {
+	progress, id, ok := commandProgressDetails(args)
+	if !ok {
+		return
+	}
+	progressLifecycleEvent(w, commandProgressFormat(args), "started", "command", id, progress.action, progress.why, "", 0)
+}
+
+// commandProgressWriter completes JSON failures before their final error record.
+// This preserves the established JSON Lines contract on stderr.
+type commandProgressWriter struct {
+	out        io.Writer
+	format, id string
+	progress   commandProgress
+	start      time.Time
+	finished   bool
+}
+
+func (w *commandProgressWriter) Write(b []byte) (int, error) { return w.out.Write(b) }
+
+func (w *commandProgressWriter) finish(code int) {
+	if w.finished {
+		return
+	}
+	w.finished = true
+	status := "FAIL"
+	if code == exitPass {
+		status = "PASS"
+	} else if code == exitBlocked {
+		status = "BLOCKED"
+	}
+	progressLifecycleEvent(w.out, w.format, "completed", "command", w.id, w.progress.action, w.progress.why, status, time.Since(w.start).Milliseconds())
+}
+
+func (w *commandProgressWriter) finishBeforeFailure(code int) {
+	if w.format == "json" {
+		w.finish(code)
+	}
 }
 
 func hasHelpFlag(args []string) bool {
@@ -86,6 +148,13 @@ func commandProgressFormat(args []string) string {
 
 func gateStartProgress(w io.Writer, format string) func(spec.GatePolicy) {
 	return func(gate spec.GatePolicy) {
-		writeProgress(w, format, "run configured gate "+strings.TrimSpace(gate.ID), "the effective Project Policy selected this gate and all required prerequisites are satisfied")
+		progressLifecycleEvent(w, format, "started", "gate", strings.TrimSpace(gate.ID), "run configured gate "+strings.TrimSpace(gate.ID), "the effective Project Policy selected this gate and all required prerequisites are satisfied", "", 0)
+	}
+}
+
+func gateCompleteProgress(w io.Writer, format string) func(spec.GatePolicy, policyexec.Outcome, int64) {
+	return func(gate spec.GatePolicy, outcome policyexec.Outcome, durationMS int64) {
+		id := strings.TrimSpace(gate.ID)
+		progressLifecycleEvent(w, format, "completed", "gate", id, "run configured gate "+id, "the effective Project Policy selected this gate and all required prerequisites are satisfied", string(outcome.Status), durationMS)
 	}
 }

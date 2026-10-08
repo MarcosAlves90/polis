@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
 	"os/exec"
 	"strings"
 
@@ -42,6 +43,7 @@ type Options struct {
 	CommitMode                CommitMode
 	ConfirmCommit             CommitConfirmation
 	OnGateStart               func(spec.GatePolicy)
+	OnGateComplete            func(spec.GatePolicy, policyexec.Outcome, int64)
 }
 
 type baselineAssessment struct {
