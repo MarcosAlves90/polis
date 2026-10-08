@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -210,7 +211,15 @@ func runStatus(args []string, out, errOut io.Writer) int {
 	}
 	result = changestatus.Project(result)
 	if *format == "json" {
-		writeJSON(out, result)
+		if !result.Consistent {
+			report := diagnostic.Report{Code: "POLIS_WORKFLOW_STATE_INCONSISTENT", Category: "workflow", Stage: "status", ObservedCause: "workflow_evidence_inconsistent", AffectedOperations: []string{"status"}, Remediation: "inspect_workflow_evidence"}
+			writeJSON(out, struct {
+				changestatus.Result
+				Diagnostic diagnostic.Report `json:"diagnostic"`
+			}{result, report})
+		} else {
+			writeJSON(out, result)
+		}
 	} else {
 		writeStatusText(out, result)
 	}
@@ -515,17 +524,18 @@ type gateCLIResult struct {
 }
 
 type gatesCLIResult struct {
-	Status                   spec.Status       `json:"status"`
-	ValidationOnly           bool              `json:"validation_only"`
-	ValidationLevel          string            `json:"validation_level"`
-	EnabledGates             []string          `json:"enabled_gates"`
-	DisabledGates            []string          `json:"disabled_gates"`
-	ExecutedGates            []string          `json:"executed_gates"`
-	GateResults              []gateCLIResult   `json:"gate_results"`
-	DeliveryArtifactBuilt    bool              `json:"delivery_artifact_built"`
-	DeliveryArtifactVerified bool              `json:"delivery_artifact_verified"`
-	DeliveryArtifactNotice   string            `json:"delivery_artifact_notice"`
-	Run                      *gaterun.Manifest `json:"run,omitempty"`
+	Status                   spec.Status        `json:"status"`
+	ValidationOnly           bool               `json:"validation_only"`
+	ValidationLevel          string             `json:"validation_level"`
+	EnabledGates             []string           `json:"enabled_gates"`
+	DisabledGates            []string           `json:"disabled_gates"`
+	ExecutedGates            []string           `json:"executed_gates"`
+	GateResults              []gateCLIResult    `json:"gate_results"`
+	DeliveryArtifactBuilt    bool               `json:"delivery_artifact_built"`
+	DeliveryArtifactVerified bool               `json:"delivery_artifact_verified"`
+	DeliveryArtifactNotice   string             `json:"delivery_artifact_notice"`
+	Run                      *gaterun.Manifest  `json:"run,omitempty"`
+	Diagnostic               *diagnostic.Report `json:"diagnostic,omitempty"`
 }
 
 func runGates(args []string, out, errOut io.Writer) int {
@@ -554,7 +564,29 @@ func gatesResult(plan policyplan.Plan, execution policyexec.Result) gatesCLIResu
 			executedGates = append(executedGates, gateID)
 		}
 	}
+	var gateDiagnostic *diagnostic.Report
+	if execution.Overall != spec.StatusPass {
+		report := diagnostic.Report{
+			Stage:        "project gate validation",
+			Condition:    "one or more configured project gates did not pass",
+			GateStatuses: make(map[string]string, len(execution.Gates)),
+		}
+		for gate, status := range execution.Gates {
+			report.GateStatuses[gate] = string(status)
+			if status == spec.StatusBlocked || status == spec.StatusDeferred {
+				report.NotRun = append(report.NotRun, "gate "+gate)
+			}
+		}
+		sort.Strings(report.NotRun)
+		for gate, exec := range execution.CommandFailures {
+			report.Commands = append(report.Commands, diagnostic.Command{Gate: gate, Status: string(exec.Observation.Status), Prerequisite: safeGatePrerequisite(exec.Observation.Prerequisite)})
+		}
+		sort.Slice(report.Commands, func(i, j int) bool { return report.Commands[i].Gate < report.Commands[j].Gate })
+		report = diagnostic.ClassifyGateFailure(report)
+		gateDiagnostic = &report
+	}
 	return gatesCLIResult{
+		Diagnostic:               gateDiagnostic,
 		Status:                   execution.Overall,
 		ValidationOnly:           true,
 		ValidationLevel:          plan.ValidationLevel,
@@ -566,6 +598,17 @@ func gatesResult(plan policyplan.Plan, execution policyexec.Result) gatesCLIResu
 		DeliveryArtifactVerified: false,
 		DeliveryArtifactNotice:   deliveryArtifactNotice,
 	}
+}
+
+// Startup diagnostics may contain environment-derived values. Expose only a
+// POLIS-owned category; never copy the untrusted prerequisite detail into JSON.
+func safeGatePrerequisite(raw string) string {
+	for _, category := range []string{"missing executable", "missing dependency", "missing environment condition"} {
+		if strings.HasPrefix(raw, category+" ") {
+			return category + " (details omitted)"
+		}
+	}
+	return ""
 }
 
 func gateWasRun(gateID string, status spec.Status, execution policyexec.Result) bool {
@@ -806,7 +849,15 @@ func runCheckRedScope(args []string, out, errOut io.Writer) int {
 		return writeFailure(errOut, *format, "POLIS CHECK-RED-SCOPE", exitValidationFailed, err)
 	}
 	if *format == "json" {
-		writeJSON(out, result)
+		if result.Status != spec.StatusPass {
+			report := diagnostic.Report{Code: "POLIS_RED_PROBE_SCOPE_VIOLATION", Category: "scope", Stage: "Red probe scope check", ObservedCause: "proposed_path_rejected", AffectedOperations: []string{"check-red-scope"}, NotRun: []string{"Red proof capture"}, Remediation: "review_change_and_test_scope"}
+			writeJSON(out, struct {
+				redcapture.ScopeResult
+				Diagnostic diagnostic.Report `json:"diagnostic"`
+			}{result, report})
+		} else {
+			writeJSON(out, result)
+		}
 	} else {
 		writeScopeCheckText(out, result)
 	}
@@ -1204,7 +1255,8 @@ func runDoctor(args []string, out, errOut io.Writer) int {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		if *format == "json" {
-			writeJSON(errOut, map[string]any{"status": "BLOCKED", "version": version, "os": runtime.GOOS, "arch": runtime.GOARCH, "go_runtime": runtime.Version(), "error": "git not found"})
+			writeJSON(errOut, map[string]any{"status": "BLOCKED", "version": version, "os": runtime.GOOS, "arch": runtime.GOARCH, "go_runtime": runtime.Version(), "error": "git not found",
+				"diagnostic": diagnostic.Report{Code: "POLIS_GIT_PREREQUISITE_MISSING", Category: "prerequisite", Stage: "doctor", ObservedCause: "missing_executable", AffectedOperations: []string{"doctor"}, NotRun: []string{"Git version check"}, Remediation: "install_git"}})
 		} else {
 			fmt.Fprintf(out, "POLIS doctor %s\nOS/Arch: %s/%s\nGo runtime: %s\n", version, runtime.GOOS, runtime.GOARCH, runtime.Version())
 			fmt.Fprintln(errOut, "Git: BLOCKED (not found)")
@@ -1267,16 +1319,51 @@ func escapeJSONC1Controls(encoded string) string {
 	return escaped.String()
 }
 
+// classifyFailure provides a conservative category if the underlying error did
+// not carry a more precise diagnostic. Exit categories, not message text, are
+// the only source of fallback classification.
+func classifyFailure(label string, exitCode int, report diagnostic.Report) diagnostic.Report {
+	operation := strings.TrimPrefix(strings.ToLower(label), "polis ")
+	if report.Stage == "" {
+		report.Stage = strings.ReplaceAll(operation, "-", "_")
+	}
+	if len(report.AffectedOperations) == 0 {
+		report.AffectedOperations = []string{operation}
+	}
+	if report.Code != "" {
+		return report
+	}
+	switch exitCode {
+	case exitUsage:
+		report.Code, report.Category, report.ObservedCause = "POLIS_OPERATION_REJECTED", "usage", "invalid_operation_input"
+	case exitInvalidArtifact:
+		report.Code, report.Category, report.ObservedCause = "POLIS_INVALID_ARTIFACT", "artifact", "artifact_validation_failed"
+	case exitBlocked:
+		report.Code, report.Category, report.ObservedCause = "POLIS_OPERATION_BLOCKED", "blocked", "operation_blocked"
+	case exitBaselineMismatch:
+		report.Code, report.Category, report.ObservedCause = "POLIS_BASELINE_MISMATCH", "baseline", "baseline_validation_failed"
+	case exitValidationFailed:
+		report.Code, report.Category, report.ObservedCause = "POLIS_VALIDATION_FAILED", "validation", "operation_validation_failed"
+	case exitApplyFailed:
+		report.Code, report.Category, report.ObservedCause = "POLIS_APPLY_FAILED", "apply", "apply_not_completed"
+	default:
+		report.Code, report.Category, report.ObservedCause = "POLIS_OPERATION_FAILED", "operation", "operation_failed"
+	}
+	return report
+}
+
 func writeFailure(w io.Writer, format, label string, code int, err error) int {
 	structured, hasDiagnostic := diagnostic.As(err)
 	if format == "json" {
 		payload := map[string]any{"status": "FAIL", "exit_code": code, "error": err.Error()}
+		var report diagnostic.Report
 		if hasDiagnostic {
 			if structured.Summary != "" {
 				payload["error"] = structured.Summary
 			}
-			payload["diagnostic"] = structured.Report
+			report = structured.Report
 		}
+		payload["diagnostic"] = classifyFailure(label, code, report)
 		writeJSON(w, payload)
 	} else if hasDiagnostic {
 		summary := structured.Summary

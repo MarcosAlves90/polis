@@ -345,11 +345,17 @@ func validateProbeCandidate(ctx context.Context, repo, head string, patch []byte
 		return false, &diagnostic.Error{
 			Summary: fmt.Sprintf("Red probe scope validation: %v", cause),
 			Report: diagnostic.Report{
-				Stage:     "Red probe scope validation",
-				Condition: "captured Red probe paths must match the declared Change Contract test_scope",
-				Expected:  map[string]any{"allowed_test_paths": scope.AllowedTestPaths},
-				Actual:    map[string]any{"offending_paths": offending, "rejected_paths": scope.RejectedPaths},
-				Paths:     offending,
+				Code:               "POLIS_RED_PROBE_SCOPE_VIOLATION",
+				Category:           "scope",
+				ObservedCause:      "out_of_scope_red_probe_paths",
+				AffectedOperations: []string{"capture-red"},
+				Remediation:        "restrict_red_probe_to_test_scope",
+				NotRun:             []string{"Red baseline execution", "Red proof capture"},
+				Stage:              "Red probe scope validation",
+				Condition:          "captured Red probe paths must match the declared Change Contract test_scope",
+				Expected:           map[string]any{"allowed_test_paths": scope.AllowedTestPaths},
+				Actual:             map[string]any{"offending_paths": offending, "rejected_paths": scope.RejectedPaths},
+				Paths:              offending,
 			},
 			Cause: cause,
 		}

@@ -34,17 +34,24 @@ type Command struct {
 	Prerequisite    string   `json:"prerequisite,omitempty"`
 }
 
+// Report carries stable machine-readable failure identifiers alongside the
+// existing human-readable evidence. New fields are additive to the JSON output.
 type Report struct {
-	Stage        string            `json:"stage"`
-	Condition    string            `json:"condition"`
-	Expected     map[string]any    `json:"expected,omitempty"`
-	Actual       map[string]any    `json:"actual,omitempty"`
-	Paths        []string          `json:"paths,omitempty"`
-	Contributors []PathContributor `json:"contributors,omitempty"`
-	GateStatuses map[string]string `json:"gate_statuses,omitempty"`
-	Command      *Command          `json:"command,omitempty"`
-	Commands     []Command         `json:"commands,omitempty"`
-	NotRun       []string          `json:"not_run,omitempty"`
+	Code               string            `json:"code,omitempty"`
+	Category           string            `json:"category,omitempty"`
+	ObservedCause      string            `json:"observed_cause,omitempty"`
+	AffectedOperations []string          `json:"affected_operations,omitempty"`
+	Remediation        string            `json:"remediation,omitempty"`
+	Stage              string            `json:"stage"`
+	Condition          string            `json:"condition"`
+	Expected           map[string]any    `json:"expected,omitempty"`
+	Actual             map[string]any    `json:"actual,omitempty"`
+	Paths              []string          `json:"paths,omitempty"`
+	Contributors       []PathContributor `json:"contributors,omitempty"`
+	GateStatuses       map[string]string `json:"gate_statuses,omitempty"`
+	Command            *Command          `json:"command,omitempty"`
+	Commands           []Command         `json:"commands,omitempty"`
+	NotRun             []string          `json:"not_run,omitempty"`
 }
 
 type Error struct {
@@ -84,6 +91,53 @@ func As(err error) (*Error, bool) {
 		return nil, false
 	}
 	return diagnostic, true
+}
+
+// ClassifyGateFailure describes an observed gate outcome without inspecting
+// process output text. Prerequisite prefixes are produced by POLIS itself;
+// unrecognized or mixed failures retain the generic gate failure code.
+func ClassifyGateFailure(report Report) Report {
+	report.Code = "POLIS_GATE_VALIDATION_FAILED"
+	report.Category = "gate"
+	report.ObservedCause = "gate_non_pass"
+	report.Remediation = ""
+
+	gateIDs := make([]string, 0, len(report.GateStatuses))
+	for gate, status := range report.GateStatuses {
+		if status != "PASS" && status != "NOT_APPLICABLE" {
+			gateIDs = append(gateIDs, gate)
+		}
+	}
+	sort.Strings(gateIDs)
+	report.AffectedOperations = gateIDs
+
+	if len(report.Commands) != 1 || report.Commands[0].Status != "BLOCKED" || report.GateStatuses[report.Commands[0].Gate] != "BLOCKED" {
+		return report
+	}
+	// Other gates blocked by an unmet prerequisite may be affected without
+	// introducing a competing root failure. A distinct FAIL remains ambiguous.
+	for gate, status := range report.GateStatuses {
+		if gate != report.Commands[0].Gate && status != "PASS" && status != "NOT_APPLICABLE" && status != "BLOCKED" {
+			return report
+		}
+	}
+	prerequisite := report.Commands[0].Prerequisite
+	switch {
+	case strings.HasPrefix(prerequisite, "missing executable "):
+		report.ObservedCause = "missing_executable"
+		report.Remediation = "install_required_executable"
+	case strings.HasPrefix(prerequisite, "missing dependency "):
+		report.ObservedCause = "missing_dependency"
+		report.Remediation = "restore_required_dependency"
+	case strings.HasPrefix(prerequisite, "missing environment condition "):
+		report.ObservedCause = "missing_environment_condition"
+		report.Remediation = "satisfy_required_environment_condition"
+	default:
+		return report
+	}
+	report.Code = "POLIS_GATE_PREREQUISITE_MISSING"
+	report.Category = "prerequisite"
+	return report
 }
 
 func (r Report) FormatText() string {

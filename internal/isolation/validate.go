@@ -224,6 +224,7 @@ func validateTarget(ctx context.Context, validation Validation, redProof map[str
 		if len(commands) == 1 {
 			report.Command = &commands[0]
 		}
+		report = diagnostic.ClassifyGateFailure(report)
 		return &diagnostic.Error{Summary: fmt.Sprintf("%s %s", validation.PolicyFailureLabel, result.Overall), Report: report}
 	}
 	return nil

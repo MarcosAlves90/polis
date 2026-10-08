@@ -2715,3 +2715,100 @@ func TestIssue10BaselineConstraintHasDistinctTextAndJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestOperationalDiagnosticCLIFailureClassesPreserveContracts(t *testing.T) {
+	cases := []struct {
+		exitCode              int
+		code, category, cause string
+	}{
+		{exitUsage, "POLIS_OPERATION_REJECTED", "usage", "invalid_operation_input"},
+		{exitInvalidArtifact, "POLIS_INVALID_ARTIFACT", "artifact", "artifact_validation_failed"},
+		{exitBlocked, "POLIS_OPERATION_BLOCKED", "blocked", "operation_blocked"},
+		{exitBaselineMismatch, "POLIS_BASELINE_MISMATCH", "baseline", "baseline_validation_failed"},
+		{exitValidationFailed, "POLIS_VALIDATION_FAILED", "validation", "operation_validation_failed"},
+		{exitApplyFailed, "POLIS_APPLY_FAILED", "apply", "apply_not_completed"},
+	}
+	for _, tc := range cases {
+		var output bytes.Buffer
+		// Error text is intentionally misleading; semantic codes must use the exit
+		// category, not regex matching human-readable messages.
+		cause := errors.New("missing executable in human message")
+		if got := writeFailure(&output, "json", "POLIS BUILD", tc.exitCode, cause); got != tc.exitCode {
+			t.Fatalf("exit=%d; expected %d", got, tc.exitCode)
+		}
+		var result struct {
+			Status     string            `json:"status"`
+			Error      string            `json:"error"`
+			ExitCode   int               `json:"exit_code"`
+			Diagnostic diagnostic.Report `json:"diagnostic"`
+		}
+		if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Status != "FAIL" || result.ExitCode != tc.exitCode || result.Error != cause.Error() {
+			t.Fatalf("legacy fields changed: %+v", result)
+		}
+		if result.Diagnostic.Code != tc.code || result.Diagnostic.Category != tc.category || result.Diagnostic.ObservedCause != tc.cause || result.Diagnostic.Stage != "build" || !slices.Equal(result.Diagnostic.AffectedOperations, []string{"build"}) || result.Diagnostic.Remediation != "" {
+			t.Fatalf("unexpected fallback diagnostic: %+v", result.Diagnostic)
+		}
+		output.Reset()
+		if got := writeFailure(&output, "text", "POLIS BUILD", tc.exitCode, cause); got != tc.exitCode || output.String() != "POLIS BUILD: FAIL: missing executable in human message\n" {
+			t.Fatalf("legacy text changed: %q", output.String())
+		}
+	}
+}
+
+func TestOperationalDiagnosticSpecificClassOverridesFallback(t *testing.T) {
+	detail := &diagnostic.Error{Summary: "scope was rejected", Report: diagnostic.Report{
+		Code: "POLIS_RED_PROBE_SCOPE_VIOLATION", Category: "scope", Stage: "Red probe scope validation",
+		ObservedCause: "out_of_scope_red_probe_paths", Remediation: "restrict_red_probe_to_test_scope",
+		Expected: map[string]any{"test_paths": []string{"a_test.go"}}, NotRun: []string{"Red proof capture"},
+	}}
+	var output bytes.Buffer
+	if got := writeFailure(&output, "json", "POLIS CAPTURE-RED", exitUsage, detail); got != exitUsage {
+		t.Fatal(got)
+	}
+	var decoded struct {
+		Status     string            `json:"status"`
+		Error      string            `json:"error"`
+		Diagnostic diagnostic.Report `json:"diagnostic"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Status != "FAIL" || decoded.Error != detail.Summary || decoded.Diagnostic.Code != detail.Report.Code || decoded.Diagnostic.Category != "scope" || !slices.Equal(decoded.Diagnostic.NotRun, detail.Report.NotRun) || !slices.Equal(decoded.Diagnostic.AffectedOperations, []string{"capture-red"}) {
+		t.Fatalf("known structured error was lost: %+v", decoded)
+	}
+}
+
+func TestOperationalDiagnosticDoctorMissingGit(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	var out, errOut bytes.Buffer
+	if got := runDoctor([]string{"--format", "json"}, &out, &errOut); got != exitBlocked {
+		t.Fatalf("exit=%d output=%s", got, errOut.String())
+	}
+	got := finalJSONRecordAfterProgress(t, errOut.String())
+	report, ok := got["diagnostic"].(map[string]any)
+	if !ok || got["status"] != "BLOCKED" || got["error"] != "git not found" || report["code"] != "POLIS_GIT_PREREQUISITE_MISSING" || report["remediation"] != "install_git" {
+		t.Fatalf("doctor prerequisite: %+v", got)
+	}
+}
+
+func TestGatePrerequisiteDiagnosticsNeverExposeProcessDerivedValues(t *testing.T) {
+	const secret = "sentinel-process-output-secret"
+	tests := []struct {
+		input, expected string
+	}{
+		{"missing executable " + secret, "missing executable (details omitted)"},
+		{"missing dependency " + secret, "missing dependency (details omitted)"},
+		{"missing environment condition " + secret, "missing environment condition (details omitted)"},
+		{"other prerequisite " + secret, ""},
+		{"missing executable", ""},
+	}
+	for _, tt := range tests {
+		got := safeGatePrerequisite(tt.input)
+		if got != tt.expected || strings.Contains(got, secret) {
+			t.Errorf("unsafe prerequisite category: got %q, want %q", got, tt.expected)
+		}
+	}
+}

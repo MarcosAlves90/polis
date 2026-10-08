@@ -73,12 +73,17 @@ func Build(ctx context.Context, repo, baseCommit string, maxBytes uint64) ([]byt
 		return nil, &diagnostic.Error{
 			Summary: fmt.Sprintf("embedded baseline projected size %d exceeds maximum size %d", projected, maxBytes),
 			Report: diagnostic.Report{
-				Stage:        "baseline snapshot",
-				Condition:    "projected embedded baseline size exceeds the configured member limit",
-				Expected:     map[string]any{"maximum_bytes": maxBytes},
-				Actual:       actual,
-				Paths:        paths,
-				Contributors: contributors,
+				Code:               "POLIS_BASELINE_SIZE_LIMIT_EXCEEDED",
+				Category:           "baseline",
+				ObservedCause:      "projected_baseline_exceeds_limit",
+				AffectedOperations: []string{"baseline snapshot"},
+				Remediation:        "reduce_baseline_size",
+				Stage:              "baseline snapshot",
+				Condition:          "projected embedded baseline size exceeds the configured member limit",
+				Expected:           map[string]any{"maximum_bytes": maxBytes},
+				Actual:             actual,
+				Paths:              paths,
+				Contributors:       contributors,
 			},
 		}
 	}

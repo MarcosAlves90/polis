@@ -307,9 +307,13 @@ func baselineConstraintError(err error, plan policyplan.Plan, workspaceValidatio
 		notRun = append(notRun, "artifact packaging")
 	}
 	report := diagnostic.Report{
-		Stage:     "locked baseline constraint",
-		Condition: "complete identity-checked embedded baseline could not be processed",
-		NotRun:    notRun,
+		Code:               "POLIS_BASELINE_CONSTRAINT",
+		Category:           "baseline",
+		ObservedCause:      "baseline_snapshot_unavailable",
+		AffectedOperations: []string{"baseline snapshot"},
+		Stage:              "locked baseline constraint",
+		Condition:          "complete identity-checked embedded baseline could not be processed",
+		NotRun:             notRun,
 	}
 	summary := err.Error()
 	if detail, ok := diagnostic.As(err); ok {
