@@ -2,6 +2,7 @@ package policyplan
 
 import (
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -24,6 +25,38 @@ func TestCompileRejectsShellInterpreters(t *testing.T) {
 			policy.Gates[0].Command.Argv = tc.argv
 			if _, err := Compile(policy); err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tc.name)) {
 				t.Fatalf("shell command %q was not rejected with a gate-specific portability diagnostic: %v", tc.argv, err)
+			}
+		})
+	}
+}
+
+func TestPreflightExecutables(t *testing.T) {
+	cases := []struct {
+		name        string
+		argv        []string
+		want        []string
+		pathChanged bool
+		cwdChanged  bool
+	}{
+		{"direct", []string{"go", "test", "./..."}, []string{"go"}, false, false},
+		{"plain env", []string{"env", "-u", "OTHER", "go"}, []string{"env", "go"}, false, false},
+		{"nested env", []string{"env", "A=1", "env", "B=2", "go"}, []string{"env", "env", "go"}, false, false},
+		{"unset PATH", []string{"env", "-uPATH", "go"}, []string{"env", "go"}, true, false},
+		{"grouped options", []string{"env", "-iuPATH", "go"}, []string{"env", "go"}, true, false},
+		{"PATH assignment", []string{"env", "PATH=/somewhere", "go"}, []string{"env", "go"}, true, false},
+		{"alternate PATH", []string{"env", "-P", "/custom", "go"}, []string{"env", "go"}, true, false},
+		{"attached alternate PATH", []string{"env", "-P/custom", "go"}, []string{"env", "go"}, true, false},
+		{"long alternate PATH", []string{"env", "--path", "/custom", "go"}, []string{"env", "go"}, true, false},
+		{"changed cwd", []string{"env", "-C", "elsewhere", "./runner"}, []string{"env", "./runner"}, false, true},
+		{"attached cwd", []string{"env", "-Celsewhere", "./runner"}, []string{"env", "./runner"}, false, true},
+		{"nested changes", []string{"env", "-i", "env", "--chdir=/custom", "./runner"}, []string{"env", "env", "./runner"}, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, pathChanged, cwdChanged := PreflightExecutables(tc.argv)
+			if !slices.Equal(got, tc.want) || pathChanged != tc.pathChanged || cwdChanged != tc.cwdChanged {
+				t.Fatalf("PreflightExecutables(%q) = %q, PATH changed=%t, cwd changed=%t; want %q, %t, %t",
+					tc.argv, got, pathChanged, cwdChanged, tc.want, tc.pathChanged, tc.cwdChanged)
 			}
 		})
 	}

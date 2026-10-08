@@ -542,8 +542,9 @@ Required inputs:
   --policy selects an external schema-v3 policy and requires --repo.
 Workflow:
   Check Git/runtime; with --repo, validate policy schema, command portability,
-  dependency plan/order, configured command workdirs/executables, and coverage
-  report path containment without gates.
+  dependency plan/order, configured command workdirs/executables (including
+  executables delegated through env wrappers), and coverage report path
+  containment without gates.
 Reads/writes:
   Reads runtime and PATH; executes Git inspection/version commands. With --repo,
   reads policy and filesystem metadata. No project gate commands are executed.
@@ -563,6 +564,8 @@ Examples:
 Do not use:
   Doctor PASS as proof that gates, transitive dependencies, tests, builds or
   consumer validation work. Executable lookup uses the doctor's environment;
+  env wrappers that change PATH or working directory may make executable lookup
+  inconclusive and are reported as BLOCKED when lookup depends on that state.
   generated coverage reports are not required to exist before their gates run.
 ```
 <!-- /command-help -->

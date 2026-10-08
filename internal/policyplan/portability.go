@@ -99,6 +99,76 @@ func shellExecutable(argv []string) (string, []string) {
 	return "", nil
 }
 
+// PreflightExecutables returns the executable chain for direct argv and env
+// wrappers. It uses the same wrapper parsing as command portability validation.
+// pathMayChange and cwdMayChange indicate that delegated relative commands
+// cannot necessarily be resolved using the doctor's PATH or working directory.
+func PreflightExecutables(argv []string) (executables []string, pathMayChange, cwdMayChange bool) {
+	for len(argv) > 0 && isEnvExecutable(argv[0]) {
+		executables = append(executables, argv[0])
+		index, splitString := envCommandIndex(argv)
+		if splitString || index >= len(argv) {
+			return executables, pathMayChange, cwdMayChange
+		}
+		pathChanged, cwdChanged := envLookupChanges(argv[1:index])
+		pathMayChange = pathMayChange || pathChanged
+		cwdMayChange = cwdMayChange || cwdChanged
+		argv = argv[index:]
+	}
+	if len(argv) > 0 {
+		executables = append(executables, argv[0])
+	}
+	return executables, pathMayChange, cwdMayChange
+}
+
+func envLookupChanges(args []string) (pathChanged, cwdChanged bool) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--ignore-environment", arg == "--path", strings.HasPrefix(arg, "--path="):
+			pathChanged = true
+		case arg == "--chdir", strings.HasPrefix(arg, "--chdir="):
+			cwdChanged = true
+		case strings.Contains(arg, "=") && strings.EqualFold(strings.SplitN(arg, "=", 2)[0], "PATH"):
+			pathChanged = true
+		case arg == "--unset":
+			if i+1 < len(args) && strings.EqualFold(args[i+1], "PATH") {
+				pathChanged = true
+			}
+			i++
+		case strings.HasPrefix(arg, "--unset="):
+			if strings.EqualFold(strings.TrimPrefix(arg, "--unset="), "PATH") {
+				pathChanged = true
+			}
+		case strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--"):
+			for j := 1; j < len(arg); j++ {
+				switch arg[j] {
+				case 'i', 'P':
+					pathChanged = true
+					if arg[j] == 'P' {
+						j = len(arg)
+					}
+				case 'C':
+					cwdChanged = true
+					j = len(arg)
+				case 'u':
+					if j+1 < len(arg) {
+						if strings.EqualFold(arg[j+1:], "PATH") {
+							pathChanged = true
+						}
+					} else if i+1 < len(args) && strings.EqualFold(args[i+1], "PATH") {
+						pathChanged = true
+					}
+					j = len(arg)
+				case 'a':
+					j = len(arg)
+				}
+			}
+		}
+	}
+	return pathChanged, cwdChanged
+}
+
 func usesEnvSplitString(argv []string) bool {
 	for len(argv) > 0 && isEnvExecutable(argv[0]) {
 		index, splitString := envCommandIndex(argv)
@@ -125,16 +195,16 @@ func envCommandIndex(argv []string) (int, bool) {
 			return index + 1, false
 		case arg == "-S", arg == "--split-string", strings.HasPrefix(arg, "--split-string="):
 			return len(argv), true
-		case arg == "--argv0", arg == "--unset", arg == "--chdir":
+		case arg == "--argv0", arg == "--unset", arg == "--chdir", arg == "--path":
 			index++
-		case strings.HasPrefix(arg, "--argv0="), strings.HasPrefix(arg, "--unset="), strings.HasPrefix(arg, "--chdir="):
+		case strings.HasPrefix(arg, "--argv0="), strings.HasPrefix(arg, "--unset="), strings.HasPrefix(arg, "--chdir="), strings.HasPrefix(arg, "--path="):
 			continue
 		case strings.HasPrefix(arg, "-") && arg != "-":
 			for optionIndex := 1; optionIndex < len(arg); optionIndex++ {
 				switch arg[optionIndex] {
 				case 'S':
 					return len(argv), true
-				case 'u', 'C', 'a':
+				case 'u', 'C', 'P', 'a':
 					if optionIndex == len(arg)-1 {
 						index++
 					}

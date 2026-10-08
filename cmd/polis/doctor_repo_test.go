@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -137,6 +138,111 @@ func TestDoctorRepositoryReportsMissingExecutableAndDirectory(t *testing.T) {
 				t.Fatalf("missing diagnostics: %v", report)
 			}
 		})
+	}
+}
+
+func TestDoctorRepositoryChecksEnvDelegatedExecutables(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX env wrapper")
+	}
+	if _, err := exec.LookPath("env"); err != nil {
+		t.Skip("env is not on PATH")
+	}
+	repo := makeBuildRepo(t)
+	for _, argv := range [][]string{
+		{"env", "polis-doctor-missing-delegate-73931"},
+		{"env", "-u", "UNRELATED", "polis-doctor-missing-delegate-73931"},
+		{"env", "FOO=bar", "polis-doctor-missing-delegate-73931"},
+		{"env", "--", "polis-doctor-missing-delegate-73931"},
+		{"env", "env", "FOO=bar", "polis-doctor-missing-delegate-73931"},
+	} {
+		t.Run(strings.Join(argv[1:], "_"), func(t *testing.T) {
+			policy := doctorExternalPolicy(t, repo, func(p *spec.Policy) { p.Gates[0].Command.Argv = argv })
+			code, payload := doctorJSON(t, "--repo", repo, "--policy", policy)
+			report := payload["repository"].(map[string]any)
+			check := findDoctorCheck(t, report, "executable", "test.complete")
+			// A wrapper PASS must never hide a missing delegated executable.
+			if code != exitBlocked || payload["status"] != "BLOCKED" || check["status"] != "BLOCKED" ||
+				!strings.Contains(check["detail"].(string), "polis-doctor-missing-delegate-73931") || report["gates_executed"] != false {
+				t.Fatalf("env delegated executable was not blocked: code=%d report=%v", code, report)
+			}
+		})
+	}
+}
+
+func TestDoctorRepositoryDoesNotClaimEnvLookupWithChangedEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX env wrapper")
+	}
+	if _, err := exec.LookPath("env"); err != nil {
+		t.Skip("env is not on PATH")
+	}
+	repo := makeBuildRepo(t)
+	for _, argv := range [][]string{
+		{"env", "PATH=/nonexistent", "go"},
+		{"env", "-u", "PATH", "go"},
+		{"env", "-i", "go"},
+		{"env", "--chdir=other-directory", "./runner"},
+		{"env", "--chdir=other-directory", "/bin/sh"},
+		{"env", "-P", "/nonexistent", "go"},
+		{"env", "--path=/nonexistent", "go"},
+		{"env", "env", "-iuPATH", "go"},
+	} {
+		t.Run(strings.Join(argv[1:], "_"), func(t *testing.T) {
+			policy := doctorExternalPolicy(t, repo, func(p *spec.Policy) { p.Gates[0].Command.Argv = argv })
+			code, payload := doctorJSON(t, "--repo", repo, "--policy", policy)
+			report := payload["repository"].(map[string]any)
+			check := findDoctorCheck(t, report, "executable", "test.complete")
+			if code != exitBlocked || check["status"] != "BLOCKED" || !strings.Contains(check["detail"].(string), "cannot reliably inspect") {
+				t.Fatalf("modified lookup was claimed as available: code=%d report=%v", code, report)
+			}
+		})
+	}
+	policy := doctorExternalPolicy(t, repo, func(p *spec.Policy) {
+		p.Gates[0].Command.Argv = []string{"env", "go"}
+		p.Gates[0].Command.Environment = &spec.EnvironmentSpec{Mode: spec.EnvironmentModeClean}
+	})
+	code, payload := doctorJSON(t, "--repo", repo, "--policy", policy)
+	if code != exitBlocked || !strings.Contains(findDoctorCheck(t, payload["repository"].(map[string]any), "executable", "test.complete")["detail"].(string), "cannot reliably inspect") {
+		t.Fatalf("clean PATH missing from env wrapper was accepted: code=%d payload=%v", code, payload)
+	}
+}
+
+func TestDoctorRepositoryChecksEnvDelegatedRelativeExecutableWithoutExecuting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable fixture")
+	}
+	if _, err := exec.LookPath("env"); err != nil {
+		t.Skip("env is not on PATH")
+	}
+	repo := makeBuildRepo(t)
+	workdir := filepath.Join(repo, "tools")
+	if err := os.Mkdir(workdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := filepath.Join(workdir, "doctor-runner")
+	marker := filepath.Join(workdir, "gate-executed")
+	if err := os.WriteFile(runner, []byte("#!/bin/sh\ntouch gate-executed\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, argv := range [][]string{
+		{"env", "VAR=value", "./doctor-runner"},
+		{"env", "PATH=/nonexistent", "./doctor-runner"},
+		{"env", "-i", runner},
+	} {
+		t.Run(strings.Join(argv[1:], "_"), func(t *testing.T) {
+			policy := doctorExternalPolicy(t, repo, func(p *spec.Policy) {
+				p.Gates[0].Command.Cwd = "tools"
+				p.Gates[0].Command.Argv = argv
+			})
+			code, payload := doctorJSON(t, "--repo", repo, "--policy", policy)
+			if code != exitPass || payload["status"] != "PASS" || payload["repository"].(map[string]any)["gates_executed"] != false {
+				t.Fatalf("existing executable should pass: code=%d payload=%v", code, payload)
+			}
+		})
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("doctor executed env-wrapped gate: %v", err)
 	}
 }
 

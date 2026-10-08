@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
@@ -99,22 +100,47 @@ func inspectDoctorRepository(repo, policy string) (doctorRepositoryReport, int) 
 		}
 		report.Checks = append(report.Checks, doctorCheck{Code: "working_directory", Status: "PASS", Gate: gate.ID, Detail: gate.Command.Cwd})
 
-		program := gate.Command.Argv[0]
-		lookup := program
-		if !filepath.IsAbs(program) && strings.ContainsAny(program, `/\`) {
-			lookup = filepath.Join(cwd, filepath.FromSlash(program))
+		programs, pathMayChange, cwdMayChange := policyplan.PreflightExecutables(gate.Command.Argv)
+		resolved := make([]string, 0, len(programs))
+		blocked := false
+		for index, program := range programs {
+			relative := !filepath.IsAbs(program)
+			usesPATH := relative && !strings.ContainsAny(program, `/\`)
+			cleanWithoutPATH := gate.Command.Environment != nil && gate.Command.Environment.Mode == "clean" && !containsPathPass(gate.Command.Environment.Pass)
+			if index > 0 && (cwdMayChange || (usesPATH && (pathMayChange || cleanWithoutPATH))) {
+				block("executable", gate.ID, fmt.Sprintf("cannot reliably inspect executable %q: env wrapper changes PATH/working directory or the gate's clean environment does not inherit PATH", program))
+				blocked = true
+				break
+			}
+			lookup := program
+			if !filepath.IsAbs(program) && strings.ContainsAny(program, `/\`) {
+				lookup = filepath.Join(cwd, filepath.FromSlash(program))
+			}
+			path, err := exec.LookPath(lookup)
+			if err != nil {
+				block("executable", gate.ID, fmt.Sprintf("executable %q is unavailable: %v", program, err))
+				blocked = true
+				break
+			}
+			resolved = append(resolved, fmt.Sprintf("%q resolved to %q", program, path))
 		}
-		path, err := exec.LookPath(lookup)
-		if err != nil {
-			block("executable", gate.ID, fmt.Sprintf("executable %q is unavailable: %v", program, err))
-			continue
+		if !blocked {
+			report.Checks = append(report.Checks, doctorCheck{Code: "executable", Status: "PASS", Gate: gate.ID, Detail: strings.Join(resolved, "; ") + " using the doctor's environment"})
 		}
-		report.Checks = append(report.Checks, doctorCheck{Code: "executable", Status: "PASS", Gate: gate.ID, Detail: fmt.Sprintf("%q resolved to %q using the doctor's environment", program, path)})
 	}
 	if report.Status == "BLOCKED" {
 		return report, exitBlocked
 	}
 	return report, exitPass
+}
+
+func containsPathPass(names []string) bool {
+	for _, name := range names {
+		if name == "PATH" || (runtime.GOOS == "windows" && strings.EqualFold(name, "PATH")) {
+			return true
+		}
+	}
+	return false
 }
 
 func writeDoctorRepositoryText(out io.Writer, report doctorRepositoryReport) {
