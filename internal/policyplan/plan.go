@@ -70,6 +70,7 @@ type Runtime struct {
 type Gate struct {
 	ID                  string            `json:"id"`
 	InputPaths          []string          `json:"input_paths,omitempty"`
+	InputPathsComplete  bool              `json:"input_paths_complete,omitempty"`
 	ParallelSafe        bool              `json:"parallel_safe,omitempty"`
 	State               string            `json:"state"`
 	Mode                string            `json:"mode"`
@@ -268,6 +269,7 @@ func describeGate(policyGate spec.GatePolicy, dependencies []string, deferred ma
 	return Gate{
 		ID:                  policyGate.ID,
 		InputPaths:          append([]string{}, policyGate.InputPaths...),
+		InputPathsComplete:  policyGate.InputPathsComplete,
 		ParallelSafe:        policyGate.ParallelSafe,
 		State:               state,
 		Mode:                policyGate.Mode,

@@ -127,6 +127,22 @@ func Run(ctx context.Context, repo string, plan policyplan.Plan, opts Options) (
 			selected = map[string]bool{}
 		}
 	}
+	// Scope assertions only apply to incremental reuse; replay remains bound to
+	// the exact global source identity. Compute selected file snapshots before
+	// launching any commands, and fail closed if a declared scope is unsafe.
+	scopedSources := map[string]string{}
+	if opts.Replay == "" {
+		for _, gate := range plan.GatePolicies() {
+			if !selected[gate.ID] || !gate.InputPathsComplete || containsRepoRootInput(gate.InputPaths) {
+				continue
+			}
+			sha, snapshotErr := scopedSnapshot(ctx, repo, gate.InputPaths)
+			if snapshotErr != nil {
+				return empty, noResult, fmt.Errorf("gate %s input scope: %w", gate.ID, snapshotErr)
+			}
+			scopedSources[gate.ID] = sha
+		}
+	}
 	manifest := Manifest{SchemaVersion: 1, Inputs: in, SelectedGates: []string{}, SelectionReason: selectionReason,
 		ChangedPaths: paths, Jobs: opts.Jobs, Current: true, Gates: []Gate{}}
 	if opts.Replay != "" {
@@ -161,7 +177,7 @@ func Run(ctx context.Context, repo string, plan policyplan.Plan, opts Options) (
 			for _, dep := range gate.DependsOn {
 				dependencies[dep] = resultIdentity(records[dep].Identity, result.Outcomes[dep])
 			}
-			record.Identity = identity(in, gate, dependencies)
+			record.Identity = gateRunIdentity(in, gate, dependencies, scopedSources)
 			old := priorGate(previous, gate.ID)
 			if old == nil {
 				record.StaleCategories = []string{"identity_missing_or_invalid"}
@@ -198,13 +214,25 @@ func Run(ctx context.Context, repo string, plan policyplan.Plan, opts Options) (
 			for _, dep := range gate.DependsOn {
 				dependencies[dep] = resultIdentity(records[dep].Identity, result.Outcomes[dep])
 			}
-			record.Identity = identity(in, gate, dependencies)
+			record.Identity = gateRunIdentity(in, gate, dependencies, scopedSources)
 		}
 		manifest.Gates = append(manifest.Gates, *record)
 	}
 	// Commands are allowed to produce outputs, but a changed source state cannot
 	// retain a current passing identity. Never reseal results to new inputs.
 	head, source, err := snapshot(ctx, repo)
+	// A gate may write an ignored file declared as its own input. The global
+	// source snapshot omits ignored files, so recheck each scoped input set too.
+	for _, gate := range plan.GatePolicies() {
+		before, scoped := scopedSources[gate.ID]
+		if !scoped {
+			continue
+		}
+		after, scopeErr := scopedSnapshot(ctx, repo, gate.InputPaths)
+		if scopeErr != nil || after != before {
+			manifest.Current = false
+		}
+	}
 	if err != nil || head != in.Head || source != in.SourceSHA256 || !manifest.Current {
 		manifest.Current = false
 		result.Overall = spec.StatusBlocked
@@ -261,4 +289,22 @@ func validEnvironmentID(id string) bool {
 		}
 	}
 	return true
+}
+
+func gateRunIdentity(in Inputs, gate spec.GatePolicy, deps map[string]string, scopedSources map[string]string) Identity {
+	if sha, ok := scopedSources[gate.ID]; ok && gate.InputPathsComplete {
+		return scopedIdentity(in, gate, deps, sha)
+	}
+	return identity(in, gate, deps)
+}
+
+// The repository root is already covered by the existing global source identity.
+// Its declaration cannot narrow the dependency closure.
+func containsRepoRootInput(paths []string) bool {
+	for _, path := range paths {
+		if path == "." {
+			return true
+		}
+	}
+	return false
 }

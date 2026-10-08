@@ -194,3 +194,13 @@ func differences(old, current Identity) []string {
 	sort.Strings(changed)
 	return changed
 }
+
+// scopedIdentity is opt-in only. A different category inventory prevents a
+// previously recorded global identity from being mistaken for a scoped proof.
+func scopedIdentity(in Inputs, gate spec.GatePolicy, dependencies map[string]string, sourceSHA256 string) Identity {
+	id := identity(in, gate, dependencies)
+	id.Categories["source"] = digest([]string{in.Repository, sourceSHA256})
+	id.Categories["source_scope"] = digest([]any{"input-paths-complete-v1", gate.InputPaths})
+	id.SHA256 = digest(id.Categories)
+	return id
+}

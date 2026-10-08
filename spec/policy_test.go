@@ -343,3 +343,36 @@ func TestPolicyIncrementalConfigurationRoundTripAndValidation(t *testing.T) {
 		t.Fatal("legacy schema accepted incremental configuration")
 	}
 }
+
+func TestScopedGatePolicyExplicitDeclaration(t *testing.T) {
+	policy := decodeDependencyPolicy(t, ValidationLevelStrict, GateModeCommand, GateModeCoverage)
+	policy.Gates[0].InputPaths = []string{"internal"}
+	policy.Gates[0].InputPathsComplete = true
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodePolicy(raw)
+	if err != nil || !got.Gates[0].InputPathsComplete {
+		t.Fatalf("round trip failed: %v", err)
+	}
+	for _, candidate := range []string{
+		strings.Replace(string(raw), `"input_paths_complete":true`, `"input_paths_complete":null`, 1),
+		strings.Replace(string(raw), `"input_paths_complete":true`, `"input_paths_complete":"true"`, 1),
+	} {
+		if _, err := DecodePolicy([]byte(candidate)); err == nil {
+			t.Fatalf("invalid scope completeness declaration: %s", candidate)
+		}
+	}
+	policy.Gates[0].InputPaths = nil
+	if policy.Validate() == nil {
+		t.Fatal("complete declaration without paths")
+	}
+	policy.Gates[0].InputPaths = []string{"internal"}
+	policy.Gates[0].InputPathsComplete = false
+	policy.Gates[1].InputPaths = []string{"internal"}
+	policy.Gates[1].InputPathsComplete = true
+	if policy.Validate() == nil {
+		t.Fatal("coverage may not assert source-only dependency closure")
+	}
+}

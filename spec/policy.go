@@ -85,17 +85,20 @@ type EnvironmentSpec struct {
 }
 
 type GatePolicy struct {
-	ID               string       `json:"id"`
-	Mode             string       `json:"mode"`
-	InputPaths       []string     `json:"input_paths,omitempty"`
-	ParallelSafe     bool         `json:"parallel_safe,omitempty"`
-	Command          *CommandSpec `json:"command,omitempty"`
-	Reason           *string      `json:"reason,omitempty"`
-	DependsOn        []string     `json:"depends_on,omitempty"`
-	Adapter          string       `json:"adapter,omitempty"`
-	Report           string       `json:"report,omitempty"`
-	Operator         string       `json:"operator,omitempty"`
-	ThresholdPercent *float64     `json:"threshold_percent,omitempty"`
+	ID         string   `json:"id"`
+	Mode       string   `json:"mode"`
+	InputPaths []string `json:"input_paths,omitempty"`
+	// InputPathsComplete attests that all file inputs affecting this command gate
+	// are covered by InputPaths; external state remains bound by environment-id.
+	InputPathsComplete bool         `json:"input_paths_complete,omitempty"`
+	ParallelSafe       bool         `json:"parallel_safe,omitempty"`
+	Command            *CommandSpec `json:"command,omitempty"`
+	Reason             *string      `json:"reason,omitempty"`
+	DependsOn          []string     `json:"depends_on,omitempty"`
+	Adapter            string       `json:"adapter,omitempty"`
+	Report             string       `json:"report,omitempty"`
+	Operator           string       `json:"operator,omitempty"`
+	ThresholdPercent   *float64     `json:"threshold_percent,omitempty"`
 }
 
 type Policy struct {
@@ -196,6 +199,11 @@ func decodeGatePolicy(raw json.RawMessage) (GatePolicy, error) {
 		return GatePolicy{}, err
 	}
 	gate := GatePolicy{ID: id, Mode: mode}
+	if mode != GateModeCommand {
+		if _, declared := fields["input_paths_complete"]; declared {
+			return GatePolicy{}, errors.New("input_paths_complete only applies to command gates")
+		}
+	}
 	if mode == GateModeNotApplicable {
 		if _, ok := fields["parallel_safe"]; ok {
 			return GatePolicy{}, errors.New("disabled gates cannot declare parallel_safe")
@@ -207,6 +215,11 @@ func decodeGatePolicy(raw json.RawMessage) (GatePolicy, error) {
 	if raw, ok := fields["parallel_safe"]; ok {
 		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &gate.ParallelSafe) != nil {
 			return GatePolicy{}, errors.New("parallel_safe must be a boolean")
+		}
+	}
+	if raw, ok := fields["input_paths_complete"]; ok {
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &gate.InputPathsComplete) != nil {
+			return GatePolicy{}, errors.New("input_paths_complete must be a boolean")
 		}
 	}
 	if raw, ok := fields["input_paths"]; ok {
@@ -228,7 +241,7 @@ func decodeGateFields(raw json.RawMessage) (map[string]json.RawMessage, error) {
 	allowed := map[string]struct{}{
 		"id": {}, "mode": {}, "command": {}, "reason": {}, "adapter": {},
 		"report": {}, "operator": {}, "threshold_percent": {}, "depends_on": {},
-		"input_paths": {}, "parallel_safe": {},
+		"input_paths": {}, "input_paths_complete": {}, "parallel_safe": {},
 	}
 	for key := range fields {
 		if _, ok := allowed[key]; !ok {
@@ -331,7 +344,7 @@ func decodeNotApplicableGate(gate *GatePolicy, fields map[string]json.RawMessage
 
 func dependencyFieldCount(fields map[string]json.RawMessage) int {
 	count := 0
-	for _, key := range []string{"depends_on", "input_paths", "parallel_safe"} {
+	for _, key := range []string{"depends_on", "input_paths", "input_paths_complete", "parallel_safe"} {
 		if _, ok := fields[key]; ok {
 			count++
 		}
@@ -567,7 +580,7 @@ func validatePolicyGateAt(index int, expectedID string, gate GatePolicy, schemaV
 	if schemaVersion < PolicySchemaVersion && gate.DependsOn != nil {
 		return fmt.Errorf("gate %q: policy schema v%d does not support depends_on", gate.ID, schemaVersion)
 	}
-	if schemaVersion < PolicySchemaVersion && (gate.InputPaths != nil || gate.ParallelSafe) {
+	if schemaVersion < PolicySchemaVersion && (gate.InputPaths != nil || gate.ParallelSafe || gate.InputPathsComplete) {
 		return fmt.Errorf("gate %q: incremental configuration requires policy schema v3", gate.ID)
 	}
 	if err := gate.Validate(); err != nil {
@@ -602,7 +615,10 @@ func (g GatePolicy) Validate() error {
 		}
 		seenPaths[input] = true
 	}
-	if g.Mode == GateModeNotApplicable && (len(g.InputPaths) != 0 || g.ParallelSafe) {
+	if g.InputPathsComplete && (g.Mode != GateModeCommand || len(g.InputPaths) == 0) {
+		return errors.New("input_paths_complete requires a command gate with non-empty input_paths")
+	}
+	if g.Mode == GateModeNotApplicable && (len(g.InputPaths) != 0 || g.ParallelSafe || g.InputPathsComplete) {
 		return errors.New("disabled gates cannot declare incremental inputs or parallel safety")
 	}
 	if err := g.validateDependencies(); err != nil {

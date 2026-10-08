@@ -344,6 +344,26 @@ REQ -> AC -> regression proof
 
 Every requirement MUST be covered by at least one acceptance criterion, every acceptance criterion MUST reference existing requirements, and the proof binding remains deterministic.
 
+### Incremental input-scoped gate-run identity extension
+
+For `polis gates` only, schema-v3 command gates MAY explicitly set
+`input_paths_complete: true` with non-empty `input_paths`. This is a trusted
+policy-author assertion that the declared paths close all file inputs to the
+gate. Without it, global source/HEAD invalidation remains required. Coverage
+and disabled gates MUST NOT assert completeness. Scoped identity MUST bind
+worktree content and relevant Git index/staging/mode/symlink metadata for
+tracked, untracked and ignored files in those paths, plus command, policy,
+contract, baseline, dependency result identities, runtime/version and declared
+environment identity. Invalid/unsafe scopes MUST fail closed. A separate
+identity category/version MUST prevent legacy global manifest reuse as scoped.
+Only current passing gate-run observations may be reused; replay is strict
+and executes anew, and delivery validation never reuses gate-run observations.
+The completeness declaration is not automatically provable by POLIS. The
+policy author MUST declare every file dependency and version external inputs
+through `environment-id`; where this cannot be established, global invalidation
+remains mandatory. Existing policies remain accepted without alteration; policy
+files exercising this additive extension require an updated decoder.
+
 ## 12. Unchanged contracts
 
 V6 preserves the following contracts unless explicitly superseded above:

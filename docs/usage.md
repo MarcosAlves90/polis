@@ -97,32 +97,37 @@ Repeat `--gate` for explicit selection; all required prerequisites (including
 unstaged, deleted and nonignored untracked changes against HEAD, or against
 the baseline of an explicitly supplied external `--contract <locked.json>`.
 Policy schema-v3 command and coverage gates can declare `input_paths` as
-normalized exact paths or directory prefixes (no globs), for example
-`"input_paths": ["internal", "go.mod"]`. Mapping is a caller assertion of
-complete gate inputs, not inferred dependency analysis. Unmapped gates are
-always included; any unmapped changed path falls back to all configured
-checks. Policies without mapping continue running all configured checks.
+normalized file paths or directory prefixes (no globs). These paths select
+gates for `--affected`; a missing mapping conservatively selects all checks.
+Selection mapping alone does **not** authorize scoped reuse.
 
-Only a prior passing result with a complete matching identity can be reused.
-Reports distinguish `executed`, `reused`, `omitted`, and dependency-blocked
-gates; stale results name changed categories in text and JSON. Source
-identity conservatively covers all tracked and nonignored untracked files,
-including file contents, executable bits, contained symlink targets and
-staging entries, the staged delta and index visibility flags; any source change
-invalidates reuse, even if unrelated to a gate's mapping. Submodules, escaping
-symlinks, nonregular source files,
-more than 100,000 files or more than 256 MiB of source fail closed.
+By default, `--reuse` requires the existing global source identity, including
+HEAD, tracked and nonignored untracked file contents, modes, symlink targets,
+index and staging metadata. Any unrelated source change invalidates reuse.
+For command gates with demonstrably exhaustive inputs, the policy author may
+**explicitly assert** `"input_paths_complete": true` alongside non-empty
+`input_paths`. For example:
 
-Ignored files, tools, external services/resources, Git configuration and
-environment values are not automatically fingerprinted. `--environment-id`
-is an explicit nonsecret caller-provided version assertion for these inputs
-and must change whenever any can affect a result. Without it, gates execute
-normally but results are not reused and replay is refused. Never put secrets
-in the identifier or literal command arguments. This is provenance under
-declared inputs, not hermetic execution or authentication of an untrusted
-manifest. Records are caller-owned and checksummed, not signed delivery proof.
-Startup failure reasons use fixed prerequisite categories rather than tokens
-from command output, since expanded command/module names can contain secrets.
+```json
+{"id":"lint","mode":"command","input_paths":["backend"],"input_paths_complete":true,"command":{"argv":["go","test","./backend/..."],"cwd":".","timeout_seconds":600,"environment":{"mode":"clean","pass":["PATH","HOME"]}}}
+```
+
+The opt-in scope hashes declared files (tracked, untracked and ignored),
+content, executable modes, contained symlinks, staging and index metadata;
+HEAD changes alone and unrelated files no longer invalidate that gate.
+Dependencies, policy, command, contract, baseline, runtime and declared
+environment identities remain enforced. Reused gates must have complete prior
+passing observations and unchanged dependency identities; old global identities
+cannot be silently treated as scoped. Scope snapshots are rechecked after the
+run, and unsafe paths, submodules or excessive input sets fail closed.
+Coverage gates retain global identity because their report lifecycle is not a
+closed file-input claim. Input-path claims do **not** prove completeness:
+if a command reads undeclared paths or external state, scoped reuse may be stale.
+Use global fallback for opaque commands. `--environment-id` versions external
+resources, Git configuration, toolchains and environment; it must change when
+any can affect results. Without it, no reuse is permitted. Gate-run manifests
+are checksummed, not authenticated delivery proof. The new field is additive
+but older strict policy decoders will reject policies that use it.
 
 Replay requires the same available source/configuration and an explicit
 matching environment identifier; supply the same external policy and locked
