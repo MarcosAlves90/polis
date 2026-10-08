@@ -9,8 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - Extend `polis status` into a unified workflow projection that accepts explicit external Policy, Change Contract, Implementation Plan, Red proof, workspace checkpoint, and package inputs while preserving automatic repository-retention discovery.
 - Add agent-oriented `proven`, `stale_or_unproven`, and `missing` status projections so resumed workflows distinguish verified evidence from historical or incomplete state.
+- Add stable machine-readable CLI failure diagnostics with error codes, categories, observed causes, affected operations, and remediation guidance for known gate, prerequisite, baseline, and Red-probe scope failures; sanitize prerequisite details without changing existing exit codes or text output.
 - Add intermediate command progress that always reports the current action and its reason, including per-gate start events and structured JSON Lines progress for `--format json`.
+- Add paired `started` and `completed` progress events for executing commands and launched gates, with stable scope/IDs, completion status, and elapsed milliseconds; preserve JSON result ordering and support concurrent gate execution.
 - Add `--jobs <1..16>` to `polis build` and `polis workspace validate`, reusing the deterministic `parallel_safe` gate scheduler while keeping serial execution as the default.
+- Add opt-in input-scoped `polis gates --reuse` for command gates declaring `input_paths_complete: true` and exhaustive `input_paths`; fingerprint in-scope files (including ignored files), Git metadata, dependencies, policy, and environment while retaining conservative global invalidation for other gates.
 - Add portability validation for shell command-string wrappers and host-incompatible Project Policy commands before gate execution.
 - Add a cross-platform Python multi-tool runner example that uses `sys.executable`, direct subprocess argv, explicit working directories, and fail-closed prerequisite checks.
 
