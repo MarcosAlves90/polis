@@ -51,8 +51,8 @@ func validateCommandPortability(policy spec.Policy) error {
 }
 
 func commandPortabilityIssue(argv []string, goos string) string {
-	if usesEnvSplitString(argv) {
-		return "env split-string execution cannot be classified safely"
+	if issue := envWrapperIssue(argv); issue != "" {
+		return issue
 	}
 	name, shellArgs := shellExecutable(argv)
 	if name != "" {
@@ -83,8 +83,8 @@ func commandPortabilityIssue(argv []string, goos string) string {
 
 func shellExecutable(argv []string) (string, []string) {
 	for len(argv) > 0 && isEnvExecutable(argv[0]) {
-		index, splitString := envCommandIndex(argv)
-		if splitString || index >= len(argv) {
+		index, issue := envCommandIndex(argv)
+		if issue != "" || index >= len(argv) {
 			return "", nil
 		}
 		argv = argv[index:]
@@ -106,8 +106,8 @@ func shellExecutable(argv []string) (string, []string) {
 func PreflightExecutables(argv []string) (executables []string, pathMayChange, cwdMayChange bool) {
 	for len(argv) > 0 && isEnvExecutable(argv[0]) {
 		executables = append(executables, argv[0])
-		index, splitString := envCommandIndex(argv)
-		if splitString || index >= len(argv) {
+		index, issue := envCommandIndex(argv)
+		if issue != "" || index >= len(argv) {
 			return executables, pathMayChange, cwdMayChange
 		}
 		pathChanged, cwdChanged := envLookupChanges(argv[1:index])
@@ -173,49 +173,54 @@ func isEnvPATHName(name string) bool {
 	return name == "PATH" || (runtime.GOOS == "windows" && strings.EqualFold(name, "PATH"))
 }
 
-func usesEnvSplitString(argv []string) bool {
+func envWrapperIssue(argv []string) string {
 	for len(argv) > 0 && isEnvExecutable(argv[0]) {
-		index, splitString := envCommandIndex(argv)
-		if splitString {
-			return true
+		index, issue := envCommandIndex(argv)
+		if issue != "" {
+			return issue
 		}
 		if index >= len(argv) {
-			return false
+			return ""
 		}
 		argv = argv[index:]
 	}
-	return false
+	return ""
 }
 
 func isEnvExecutable(value string) bool {
 	return strings.TrimSuffix(executableBase(value), ".exe") == "env"
 }
 
-func envCommandIndex(argv []string) (int, bool) {
+// envCommandIndex only accepts explicitly understood long options. GNU env
+// accepts abbreviated long options, but their meaning depends on the env
+// implementation and can change PATH/CWD without a safe static lookup.
+func envCommandIndex(argv []string) (int, string) {
 	assignmentsStarted := false
 	for index := 1; index < len(argv); index++ {
 		arg := argv[index]
 		// env accepts options before NAME=VALUE operands only. Once an
 		// assignment is seen, the first non-assignment starts the command.
 		if assignmentsStarted && (!strings.Contains(arg, "=") || strings.HasPrefix(arg, "-")) {
-			return index, false
+			return index, ""
 		}
 		switch {
 		case arg == "--":
-			return index + 1, false
-		case arg == "-": // env's shorthand for --ignore-environment
+			return index + 1, ""
+		case arg == "-", arg == "--ignore-environment": // env's environment-clearing options
 			continue
 		case arg == "-S", arg == "--split-string", strings.HasPrefix(arg, "--split-string="):
-			return len(argv), true
+			return len(argv), "env split-string execution cannot be classified safely"
 		case arg == "--argv0", arg == "--unset", arg == "--chdir", arg == "--path":
 			index++
 		case strings.HasPrefix(arg, "--argv0="), strings.HasPrefix(arg, "--unset="), strings.HasPrefix(arg, "--chdir="), strings.HasPrefix(arg, "--path="):
 			continue
+		case strings.HasPrefix(arg, "--"):
+			return len(argv), fmt.Sprintf("unsupported env long option %q cannot be classified safely", arg)
 		case strings.HasPrefix(arg, "-") && arg != "-":
 			for optionIndex := 1; optionIndex < len(arg); optionIndex++ {
 				switch arg[optionIndex] {
 				case 'S':
-					return len(argv), true
+					return len(argv), "env split-string execution cannot be classified safely"
 				case 'u', 'C', 'P', 'a':
 					if optionIndex == len(arg)-1 {
 						index++
@@ -227,10 +232,10 @@ func envCommandIndex(argv []string) (int, bool) {
 			assignmentsStarted = true
 			continue
 		default:
-			return index, false
+			return index, ""
 		}
 	}
-	return len(argv), false
+	return len(argv), ""
 }
 
 func usesShellCommandString(shell string, args []string) bool {
