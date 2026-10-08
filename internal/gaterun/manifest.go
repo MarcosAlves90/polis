@@ -116,6 +116,9 @@ func Load(filename string) (Manifest, error) {
 	if m.SchemaVersion != 1 || len(m.Nonce) != 32 || !validDigest || len(m.Gates) != len(spec.ProjectGateOrder) {
 		return m, errors.New("invalid gate-run version, inventory or digest")
 	}
+	if m.Inputs.EnvironmentAssurance != "" && (m.Inputs.EnvironmentAssurance != EnvironmentAssuranceCallerAsserted || m.Inputs.EnvironmentID == "") {
+		return m, errors.New("unsupported gate-run environment assurance")
+	}
 	seen := map[string]bool{}
 	for _, gate := range m.Gates {
 		if !spec.IsProjectGate(gate.ID) || gate.Definition.ID != gate.ID || seen[gate.ID] {

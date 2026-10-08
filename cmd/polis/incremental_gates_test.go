@@ -30,6 +30,14 @@ func TestIncrementalGateWorkflow(t *testing.T) {
 	if manifest["run_id"] == "" || first["delivery_artifact_built"] != false {
 		t.Fatalf("invalid run: %v", first)
 	}
+	assertAssurance := func(result map[string]any) {
+		t.Helper()
+		inputs := result["run"].(map[string]any)["inputs"].(map[string]any)
+		if inputs["environment_id"] != "fixture-v1" || inputs["environment_assurance"] != "caller_asserted" {
+			t.Fatalf("missing caller assertion: %v", inputs)
+		}
+	}
+	assertAssurance(first)
 	assertAction := func(result map[string]any, id, action string) {
 		t.Helper()
 		for _, raw := range result["run"].(map[string]any)["gates"].([]any) {
@@ -43,11 +51,39 @@ func TestIncrementalGateWorkflow(t *testing.T) {
 	assertAction(first, "test.complete", "executed")
 	assertAction(first, "coverage", "omitted")
 	second := invoke("--gate", "test.complete", "--reuse", record)
+	assertAssurance(second)
 	assertAction(second, "test.complete", "reused")
 	replayed := invoke("--replay", record)
+	assertAssurance(replayed)
 	assertAction(replayed, "test.complete", "executed")
 	if replayed["run"].(map[string]any)["run_id"] == manifest["run_id"] {
 		t.Fatal("replay reused the old run identity")
+	}
+	var inspectJSON, inspectErr bytes.Buffer
+	if code := run([]string{"gates", "--inspect-run", record, "--format", "json"}, &inspectJSON, &inspectErr); code != exitPass {
+		t.Fatalf("inspect code=%d stderr=%s", code, inspectErr.String())
+	}
+	var inspected map[string]any
+	if err := json.Unmarshal(inspectJSON.Bytes(), &inspected); err != nil {
+		t.Fatal(err)
+	}
+	if inputs := inspected["inputs"].(map[string]any); inputs["environment_assurance"] != "caller_asserted" {
+		t.Fatalf("missing saved environment assurance: %v", inputs)
+	}
+	for _, args := range [][]string{
+		{"gates", "--inspect-run", record, "--format", "text"},
+		{"gates", "--repo", repo, "--gate", "test.complete", "--reuse", record, "--environment-id", "fixture-v1", "--format", "text"},
+		{"gates", "--repo", repo, "--replay", record, "--environment-id", "fixture-v1", "--format", "text"},
+	} {
+		var out, errOut bytes.Buffer
+		if code := run(args, &out, &errOut); code != exitPass {
+			t.Fatalf("text report code=%d stderr=%s", code, errOut.String())
+		}
+		for _, want := range []string{`Environment ID: "fixture-v1"`, `Environment assurance: "caller_asserted"`, "does not verify the environment or guarantee hermetic execution"} {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("text report missing %q: %s", want, out.String())
+			}
+		}
 	}
 	if err := os.WriteFile(filepath.Join(repo, "new-source.txt"), []byte("changed\n"), 0o600); err != nil {
 		t.Fatal(err)
