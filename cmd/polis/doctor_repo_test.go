@@ -170,6 +170,60 @@ func TestDoctorRepositoryChecksEnvDelegatedExecutables(t *testing.T) {
 	}
 }
 
+func TestDoctorRepositoryTreatsPostAssignmentOptionsAsExecutables(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX env wrapper")
+	}
+	if _, err := exec.LookPath("env"); err != nil {
+		t.Skip("env is not on PATH")
+	}
+	repo := makeBuildRepo(t)
+	for _, argv := range [][]string{
+		{"env", "FOO=x", "-u", "FOO", "/bin/true"},
+		{"env", "FOO=x", "--", "/bin/true"},
+	} {
+		t.Run(strings.Join(argv, "_"), func(t *testing.T) {
+			policy := doctorExternalPolicy(t, repo, func(p *spec.Policy) { p.Gates[0].Command.Argv = argv })
+			code, payload := doctorJSON(t, "--repo", repo, "--policy", policy)
+			report := payload["repository"].(map[string]any)
+			check := findDoctorCheck(t, report, "executable", "test.complete")
+			if code != exitBlocked || check["status"] != "BLOCKED" ||
+				!strings.Contains(check["detail"].(string), "executable \""+argv[2]+"\" is unavailable") ||
+				report["gates_executed"] != false {
+				t.Fatalf("command after assignment not diagnosed: code=%d report=%v", code, report)
+			}
+		})
+	}
+}
+
+func TestDoctorRepositoryAllowsPOSIXLowercasePathVariables(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX case-sensitive environment")
+	}
+	for _, program := range []string{"env", "sh"} {
+		if _, err := exec.LookPath(program); err != nil {
+			t.Skipf("%s is not on PATH", program)
+		}
+	}
+	repo := makeBuildRepo(t)
+	for _, argv := range [][]string{
+		{"env", "path=/nonexistent", "sh"},
+		{"env", "-u", "path", "sh"},
+		{"env", "--unset=path", "sh"},
+		{"env", "-upath", "sh"},
+	} {
+		t.Run(strings.Join(argv, "_"), func(t *testing.T) {
+			policy := doctorExternalPolicy(t, repo, func(p *spec.Policy) { p.Gates[0].Command.Argv = argv })
+			code, payload := doctorJSON(t, "--repo", repo, "--policy", policy)
+			report := payload["repository"].(map[string]any)
+			check := findDoctorCheck(t, report, "executable", "test.complete")
+			if code != exitPass || check["status"] != "PASS" || report["gates_executed"] != false {
+				t.Fatalf("unrelated POSIX variable blocked PATH: code=%d report=%v", code, report)
+			}
+		})
+	}
+}
+
 func TestDoctorRepositoryDoesNotClaimEnvLookupWithChangedEnvironment(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX env wrapper")

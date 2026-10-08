@@ -129,15 +129,15 @@ func envLookupChanges(args []string) (pathChanged, cwdChanged bool) {
 			pathChanged = true
 		case arg == "--chdir", strings.HasPrefix(arg, "--chdir="):
 			cwdChanged = true
-		case strings.Contains(arg, "=") && strings.EqualFold(strings.SplitN(arg, "=", 2)[0], "PATH"):
+		case strings.Contains(arg, "=") && isEnvPATHName(strings.SplitN(arg, "=", 2)[0]):
 			pathChanged = true
 		case arg == "--unset":
-			if i+1 < len(args) && strings.EqualFold(args[i+1], "PATH") {
+			if i+1 < len(args) && isEnvPATHName(args[i+1]) {
 				pathChanged = true
 			}
 			i++
 		case strings.HasPrefix(arg, "--unset="):
-			if strings.EqualFold(strings.TrimPrefix(arg, "--unset="), "PATH") {
+			if isEnvPATHName(strings.TrimPrefix(arg, "--unset=")) {
 				pathChanged = true
 			}
 		case strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--"):
@@ -153,10 +153,10 @@ func envLookupChanges(args []string) (pathChanged, cwdChanged bool) {
 					j = len(arg)
 				case 'u':
 					if j+1 < len(arg) {
-						if strings.EqualFold(arg[j+1:], "PATH") {
+						if isEnvPATHName(arg[j+1:]) {
 							pathChanged = true
 						}
-					} else if i+1 < len(args) && strings.EqualFold(args[i+1], "PATH") {
+					} else if i+1 < len(args) && isEnvPATHName(args[i+1]) {
 						pathChanged = true
 					}
 					j = len(arg)
@@ -167,6 +167,10 @@ func envLookupChanges(args []string) (pathChanged, cwdChanged bool) {
 		}
 	}
 	return pathChanged, cwdChanged
+}
+
+func isEnvPATHName(name string) bool {
+	return name == "PATH" || (runtime.GOOS == "windows" && strings.EqualFold(name, "PATH"))
 }
 
 func usesEnvSplitString(argv []string) bool {
@@ -188,8 +192,14 @@ func isEnvExecutable(value string) bool {
 }
 
 func envCommandIndex(argv []string) (int, bool) {
+	assignmentsStarted := false
 	for index := 1; index < len(argv); index++ {
 		arg := argv[index]
+		// env accepts options before NAME=VALUE operands only. Once an
+		// assignment is seen, the first non-assignment starts the command.
+		if assignmentsStarted && (!strings.Contains(arg, "=") || strings.HasPrefix(arg, "-")) {
+			return index, false
+		}
 		switch {
 		case arg == "--":
 			return index + 1, false
@@ -214,6 +224,7 @@ func envCommandIndex(argv []string) (int, bool) {
 				}
 			}
 		case strings.Contains(arg, "="):
+			assignmentsStarted = true
 			continue
 		default:
 			return index, false
