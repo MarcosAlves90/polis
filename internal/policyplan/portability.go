@@ -191,9 +191,9 @@ func isEnvExecutable(value string) bool {
 	return strings.TrimSuffix(executableBase(value), ".exe") == "env"
 }
 
-// envCommandIndex only accepts explicitly understood long options. GNU env
-// accepts abbreviated long options, but their meaning depends on the env
-// implementation and can change PATH/CWD without a safe static lookup.
+// envCommandIndex only accepts explicitly understood options. GNU env accepts
+// abbreviated long options and other short options whose effects cannot be
+// safely classified by the static preflight.
 func envCommandIndex(argv []string) (int, string) {
 	assignmentsStarted := false
 	for index := 1; index < len(argv); index++ {
@@ -219,6 +219,8 @@ func envCommandIndex(argv []string) (int, string) {
 		case strings.HasPrefix(arg, "-") && arg != "-":
 			for optionIndex := 1; optionIndex < len(arg); optionIndex++ {
 				switch arg[optionIndex] {
+				case 'i':
+					continue
 				case 'S':
 					return len(argv), "env split-string execution cannot be classified safely"
 				case 'u', 'C', 'P', 'a':
@@ -226,6 +228,8 @@ func envCommandIndex(argv []string) (int, string) {
 						index++
 					}
 					optionIndex = len(arg)
+				default:
+					return len(argv), fmt.Sprintf("unsupported env short option %q cannot be classified safely", arg)
 				}
 			}
 		case strings.Contains(arg, "="):

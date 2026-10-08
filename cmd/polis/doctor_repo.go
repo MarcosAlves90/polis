@@ -136,25 +136,47 @@ func inspectDoctorRepository(repo, policy string) (doctorRepositoryReport, int) 
 }
 
 // An env wrapper searches PATH after its process starts in the gate's CWD.
-// Go's LookPath instead uses the doctor's CWD and rejects relative PATH
-// matches with ErrDot. Search each entry without executing any command.
+// Go's LookPath uses the doctor's CWD for relative PATH components; resolve
+// each against the gate's CWD and use LookPath for platform extensions.
 func doctorLookPath(program, cwd string, delegatedPATH bool) (string, error) {
-	if !delegatedPATH || runtime.GOOS == "windows" {
+	if !delegatedPATH {
 		return exec.LookPath(program)
 	}
 
+	// On Windows, unqualified executables can also be found implicitly in the
+	// current directory. Preserve LookPath's ErrDot protection if that file
+	// shadows the explicit PATH result (or is the only matching file).
+	var implicit string
+	if runtime.GOOS == "windows" {
+		if _, disabled := os.LookupEnv("NoDefaultCurrentDirectoryInExePath"); !disabled {
+			implicit, _ = exec.LookPath(filepath.Join(cwd, program))
+		}
+	}
 	var firstError error
 	for _, directory := range filepath.SplitList(os.Getenv("PATH")) {
+		if runtime.GOOS == "windows" && directory == "" {
+			continue // Windows LookPath skips empty PATH entries.
+		}
 		if !filepath.IsAbs(directory) {
 			directory = filepath.Join(cwd, directory)
 		}
 		path, err := exec.LookPath(filepath.Join(directory, program))
 		if err == nil {
+			if implicit != "" {
+				implicitInfo, implicitErr := os.Lstat(implicit)
+				pathInfo, pathErr := os.Lstat(path)
+				if implicitErr != nil || pathErr != nil || !os.SameFile(implicitInfo, pathInfo) {
+					return "", &exec.Error{Name: program, Err: exec.ErrDot}
+				}
+			}
 			return path, nil
 		}
 		if firstError == nil && !errors.Is(err, exec.ErrNotFound) && !errors.Is(err, os.ErrNotExist) {
 			firstError = err
 		}
+	}
+	if implicit != "" {
+		return "", &exec.Error{Name: program, Err: exec.ErrDot}
 	}
 	if firstError != nil {
 		return "", firstError
