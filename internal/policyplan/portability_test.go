@@ -30,6 +30,21 @@ func TestCompileRejectsShellInterpreters(t *testing.T) {
 	}
 }
 
+func TestEnvUnsetOperandValidation(t *testing.T) {
+	for _, argv := range [][]string{
+		{"env", "--unset", "FOO=bar", "/bin/true"},
+		{"env", "--unset=FOO=bar", "/bin/true"},
+		{"env", "-u", "FOO=bar", "/bin/true"},
+		{"env", "-uFOO=bar", "/bin/true"},
+	} {
+		t.Run(strings.Join(argv[1:], "_"), func(t *testing.T) {
+			if got := commandPortabilityIssue(argv, "linux"); !strings.Contains(got, "unset operand must be a variable name") {
+				t.Fatalf("invalid env unset operand accepted for %q: %q", argv, got)
+			}
+		})
+	}
+}
+
 func TestPreflightExecutables(t *testing.T) {
 	cases := []struct {
 		name        string

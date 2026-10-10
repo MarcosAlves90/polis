@@ -217,10 +217,21 @@ func envCommandIndex(argv []string) (int, string) {
 			if argv[index+1] == "" && arg != "--argv0" {
 				return len(argv), fmt.Sprintf("env option %q requires a non-empty operand", arg)
 			}
+			if arg == "--unset" && strings.Contains(argv[index+1], "=") {
+				return len(argv), fmt.Sprintf("env option %q unset operand must be a variable name without '='", arg)
+			}
 			index++
 		case strings.HasPrefix(arg, "--argv0="):
 			continue
-		case strings.HasPrefix(arg, "--unset="), strings.HasPrefix(arg, "--chdir="), strings.HasPrefix(arg, "--path="):
+		case strings.HasPrefix(arg, "--unset="):
+			operand := strings.TrimPrefix(arg, "--unset=")
+			if operand == "" {
+				return len(argv), fmt.Sprintf("env option %q requires a non-empty operand", "--unset")
+			}
+			if strings.Contains(operand, "=") {
+				return len(argv), fmt.Sprintf("env option %q unset operand must be a variable name without '='", "--unset")
+			}
+		case strings.HasPrefix(arg, "--chdir="), strings.HasPrefix(arg, "--path="):
 			if strings.HasSuffix(arg, "=") {
 				return len(argv), fmt.Sprintf("env option %q requires a non-empty operand", arg)
 			}
@@ -241,7 +252,12 @@ func envCommandIndex(argv []string) (int, string) {
 						if argv[index+1] == "" && arg[optionIndex] != 'a' {
 							return len(argv), fmt.Sprintf("env option %q requires a non-empty operand", arg)
 						}
+						if arg[optionIndex] == 'u' && strings.Contains(argv[index+1], "=") {
+							return len(argv), fmt.Sprintf("env option %q unset operand must be a variable name without '='", "-u")
+						}
 						index++
+					} else if arg[optionIndex] == 'u' && strings.Contains(arg[optionIndex+1:], "=") {
+						return len(argv), fmt.Sprintf("env option %q unset operand must be a variable name without '='", "-u")
 					}
 					optionIndex = len(arg)
 				default:

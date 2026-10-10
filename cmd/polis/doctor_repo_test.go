@@ -367,6 +367,42 @@ func TestDoctorRepositoryRejectsEnvMissingOperandsWithoutExecutingGate(t *testin
 	}
 }
 
+func TestDoctorRepositoryRejectsInvalidEnvUnsetOperands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX env wrapper")
+	}
+	if _, err := exec.LookPath("env"); err != nil {
+		t.Skip("env is not on PATH")
+	}
+	repo := makeBuildRepo(t)
+	marker := filepath.Join(repo, "gate-executed")
+	runner := filepath.Join(repo, "runner")
+	if err := os.WriteFile(runner, []byte("#!/bin/sh\ntouch gate-executed\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, argv := range [][]string{
+		{"env", "--unset", "FOO=bar", "./runner"},
+		{"env", "--unset=FOO=bar", "./runner"},
+		{"env", "-u", "FOO=bar", "./runner"},
+		{"env", "-uFOO=bar", "./runner"},
+	} {
+		t.Run(strings.Join(argv[1:], "_"), func(t *testing.T) {
+			policy := doctorExternalPolicy(t, repo, func(p *spec.Policy) {
+				p.Gates[0].Command.Argv = argv
+			})
+			code, payload := doctorJSON(t, "--repo", repo, "--policy", policy)
+			report := payload["repository"].(map[string]any)
+			check := findDoctorCheck(t, report, "policy_plan", "")
+			if code != exitValidationFailed || check["status"] != "FAIL" || !strings.Contains(check["detail"].(string), "unset operand must be a variable name") || report["gates_executed"] != false {
+				t.Fatalf("invalid env unset operand accepted for %q: code=%d report=%v", argv, code, report)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("doctor executed a gate: %v", err)
+			}
+		})
+	}
+}
+
 func TestDoctorRepositoryChecksEnvDelegatedRelativeExecutableWithoutExecuting(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX executable fixture")
