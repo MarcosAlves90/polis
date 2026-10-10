@@ -1,0 +1,209 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+
+	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
+	"github.com/MarcosAlves90/polis/v6/internal/pathguard"
+	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
+)
+
+// Doctor checks describe static observations only. Even a PASS is not gate proof.
+type doctorCheck struct {
+	Code   string `json:"code"`
+	Status string `json:"status"`
+	Gate   string `json:"gate,omitempty"`
+	Detail string `json:"detail"`
+}
+
+type doctorRepositoryReport struct {
+	Status          string        `json:"status"`
+	Root            string        `json:"root,omitempty"`
+	PolicySource    string        `json:"policy_source,omitempty"`
+	PolicySHA256    string        `json:"policy_sha256,omitempty"`
+	ValidationLevel string        `json:"validation_level,omitempty"`
+	ExecutionOrder  []string      `json:"execution_order,omitempty"`
+	Checks          []doctorCheck `json:"checks"`
+	GatesExecuted   bool          `json:"gates_executed"`
+}
+
+func inspectDoctorRepository(repo, policy string) (doctorRepositoryReport, int) {
+	report := doctorRepositoryReport{Status: "PASS", Checks: []doctorCheck{}}
+	block := func(code, gate, detail string) {
+		report.Status = "BLOCKED"
+		report.Checks = append(report.Checks, doctorCheck{Code: code, Status: "BLOCKED", Gate: gate, Detail: detail})
+	}
+	ctx := context.Background()
+	root, err := gitutil.ResolveRoot(ctx, repo, gitutil.ResolveRootOptions{GitError: "not a Git worktree"})
+	if err != nil {
+		block("repository", "", err.Error())
+		return report, exitBlocked
+	}
+	report.Root = root
+	report.Checks = append(report.Checks, doctorCheck{Code: "repository", Status: "PASS", Detail: "Git worktree resolved"})
+	plan, err := policyplan.Load(ctx, policyplan.Options{Repo: root, Policy: policy})
+	if err != nil {
+		report.Status = "FAIL"
+		report.Checks = append(report.Checks, doctorCheck{Code: "policy_plan", Status: "FAIL", Detail: err.Error()})
+		return report, exitValidationFailed
+	}
+	report.PolicySource = plan.PolicySource
+	report.PolicySHA256 = plan.PolicySHA256
+	report.ValidationLevel = plan.ValidationLevel
+	report.ExecutionOrder = plan.ExecutionOrder
+	report.Checks = append(report.Checks, doctorCheck{Code: "policy_plan", Status: "PASS", Detail: "policy schema, platform portability and dependency plan validated"})
+
+	for _, gate := range plan.GatePolicies() {
+		if gate.Command == nil {
+			continue
+		}
+		// Coverage reports may be produced by the gate, so only check their
+		// path containment here. Requiring the report to exist would reject
+		// otherwise valid first runs.
+		if gate.Report != "" {
+			reportPath := filepath.Join(root, filepath.FromSlash(gate.Report))
+			inside, err := pathguard.Contains(root, reportPath)
+			switch {
+			case err != nil:
+				block("report_path", gate.ID, "cannot inspect report path: "+err.Error())
+			case !inside:
+				block("report_path", gate.ID, "report path resolves outside the repository: "+gate.Report)
+			default:
+				report.Checks = append(report.Checks, doctorCheck{Code: "report_path", Status: "PASS", Gate: gate.ID, Detail: "report path stays within the repository (report existence not checked): " + gate.Report})
+			}
+		}
+		cwd := filepath.Join(root, filepath.FromSlash(gate.Command.Cwd))
+		inside, err := pathguard.Contains(root, cwd)
+		switch {
+		case err != nil:
+			block("working_directory", gate.ID, "cannot inspect working directory: "+err.Error())
+			continue
+		case !inside:
+			block("working_directory", gate.ID, "working directory resolves outside the repository: "+gate.Command.Cwd)
+			continue
+		}
+		info, err := os.Stat(cwd)
+		switch {
+		case err != nil:
+			block("working_directory", gate.ID, fmt.Sprintf("working directory %q: %v", gate.Command.Cwd, err))
+			continue
+		case !info.IsDir():
+			block("working_directory", gate.ID, fmt.Sprintf("working directory %q is not a directory", gate.Command.Cwd))
+			continue
+		}
+		report.Checks = append(report.Checks, doctorCheck{Code: "working_directory", Status: "PASS", Gate: gate.ID, Detail: gate.Command.Cwd})
+
+		programs, pathMayChange, cwdMayChange := policyplan.PreflightExecutables(gate.Command.Argv)
+		resolved := make([]string, 0, len(programs))
+		blocked := false
+		for index, program := range programs {
+			relative := !filepath.IsAbs(program)
+			usesPATH := relative && !strings.ContainsAny(program, `/\`)
+			cleanWithoutPATH := gate.Command.Environment != nil && gate.Command.Environment.Mode == "clean" && !containsPathPass(gate.Command.Environment.Pass)
+			if index > 0 && (cwdMayChange || (usesPATH && (pathMayChange || cleanWithoutPATH))) {
+				block("executable", gate.ID, fmt.Sprintf("cannot reliably inspect executable %q: env wrapper changes PATH/working directory or the gate's clean environment does not inherit PATH", program))
+				blocked = true
+				break
+			}
+			lookup := program
+			if !filepath.IsAbs(program) && strings.ContainsAny(program, `/\`) {
+				lookup = filepath.Join(cwd, filepath.FromSlash(program))
+			}
+			path, err := doctorLookPath(lookup, cwd, index > 0 && usesPATH)
+			if err != nil {
+				block("executable", gate.ID, fmt.Sprintf("executable %q is unavailable: %v", program, err))
+				blocked = true
+				break
+			}
+			resolved = append(resolved, fmt.Sprintf("%q resolved to %q", program, path))
+		}
+		if !blocked {
+			report.Checks = append(report.Checks, doctorCheck{Code: "executable", Status: "PASS", Gate: gate.ID, Detail: strings.Join(resolved, "; ") + " using the doctor's environment"})
+		}
+	}
+	if report.Status == "BLOCKED" {
+		return report, exitBlocked
+	}
+	return report, exitPass
+}
+
+// An env wrapper searches PATH after its process starts in the gate's CWD.
+// Go's LookPath uses the doctor's CWD for relative PATH components; resolve
+// each against the gate's CWD and use LookPath for platform extensions.
+func doctorLookPath(program, cwd string, delegatedPATH bool) (string, error) {
+	if !delegatedPATH {
+		return exec.LookPath(program)
+	}
+
+	// On Windows, unqualified executables can also be found implicitly in the
+	// current directory. Preserve LookPath's ErrDot protection if that file
+	// shadows the explicit PATH result (or is the only matching file).
+	var implicit string
+	if runtime.GOOS == "windows" {
+		if _, disabled := os.LookupEnv("NoDefaultCurrentDirectoryInExePath"); !disabled {
+			implicit, _ = exec.LookPath(filepath.Join(cwd, program))
+		}
+	}
+	var firstError error
+	for _, directory := range filepath.SplitList(os.Getenv("PATH")) {
+		if runtime.GOOS == "windows" && directory == "" {
+			continue // Windows LookPath skips empty PATH entries.
+		}
+		if !filepath.IsAbs(directory) {
+			directory = filepath.Join(cwd, directory)
+		}
+		path, err := exec.LookPath(filepath.Join(directory, program))
+		if err == nil {
+			if implicit != "" {
+				implicitInfo, implicitErr := os.Lstat(implicit)
+				pathInfo, pathErr := os.Lstat(path)
+				if implicitErr != nil || pathErr != nil || !os.SameFile(implicitInfo, pathInfo) {
+					return "", &exec.Error{Name: program, Err: exec.ErrDot}
+				}
+			}
+			return path, nil
+		}
+		if firstError == nil && !errors.Is(err, exec.ErrNotFound) && !errors.Is(err, os.ErrNotExist) {
+			firstError = err
+		}
+	}
+	if implicit != "" {
+		return "", &exec.Error{Name: program, Err: exec.ErrDot}
+	}
+	if firstError != nil {
+		return "", firstError
+	}
+	return "", &exec.Error{Name: program, Err: exec.ErrNotFound}
+}
+
+func containsPathPass(names []string) bool {
+	for _, name := range names {
+		if name == "PATH" || (runtime.GOOS == "windows" && strings.EqualFold(name, "PATH")) {
+			return true
+		}
+	}
+	return false
+}
+
+func writeDoctorRepositoryText(out io.Writer, report doctorRepositoryReport) {
+	fmt.Fprintf(out, "Repository diagnostics: %s\n", report.Status)
+	if report.Root != "" {
+		fmt.Fprintf(out, "Repository: %s\n", report.Root)
+	}
+	for _, check := range report.Checks {
+		label := check.Code
+		if check.Gate != "" {
+			label += " [" + check.Gate + "]"
+		}
+		fmt.Fprintf(out, "  %s: %s — %s\n", label, check.Status, check.Detail)
+	}
+	fmt.Fprintln(out, "Project gates executed: no (static prerequisites only; run gates/workspace validation for actual proof)")
+}

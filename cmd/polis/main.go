@@ -1251,11 +1251,23 @@ func runDoctor(args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	format := fs.String("format", "text", outputFormatHelp)
+	repo := fs.String("repo", "", repoHelp)
+	policy := fs.String("policy", "", externalPolicyHelp)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	if fs.NArg() != 0 || !validFormat(*format) {
-		fmt.Fprintln(errOut, "usage: polis doctor [--format text|json]")
+	repoSpecified := false
+	policySpecified := false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "repo":
+			repoSpecified = true
+		case "policy":
+			policySpecified = true
+		}
+	})
+	if fs.NArg() != 0 || !validFormat(*format) || (repoSpecified && *repo == "") || (policySpecified && (!repoSpecified || *policy == "")) {
+		fmt.Fprintln(errOut, "usage: polis doctor [--repo <path> [--policy <policy-v3.json>]] [--format text|json]")
 		return exitUsage
 	}
 	writeProgress(errOut, *format, "locate the Git executable", "POLIS repository operations require a working Git installation")
@@ -1279,6 +1291,17 @@ func runDoctor(args []string, out, errOut io.Writer) int {
 		return writeFailure(errOut, *format, "POLIS DOCTOR", exitBlocked, err)
 	}
 	gitVersion := strings.TrimSpace(string(b))
+	if repoSpecified {
+		writeProgress(errOut, *format, "inspect the effective repository policy and static gate prerequisites", "validate the plan and check paths and executables without running project gates")
+		report, code := inspectDoctorRepository(*repo, *policy)
+		if *format == "json" {
+			writeJSON(out, map[string]any{"status": report.Status, "version": version, "os": runtime.GOOS, "arch": runtime.GOARCH, "go_runtime": runtime.Version(), "git": gitVersion, "repository": report})
+		} else {
+			fmt.Fprintf(out, "POLIS doctor %s\nOS/Arch: %s/%s\nGo runtime: %s\nGit: %s\n", version, runtime.GOOS, runtime.GOARCH, runtime.Version(), gitVersion)
+			writeDoctorRepositoryText(out, report)
+		}
+		return code
+	}
 	if *format == "json" {
 		writeJSON(out, map[string]any{"status": "PASS", "version": version, "os": runtime.GOOS, "arch": runtime.GOARCH, "go_runtime": runtime.Version(), "git": gitVersion})
 	} else {

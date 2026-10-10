@@ -803,7 +803,7 @@ func TestRunCommandHelp(t *testing.T) {
 	if code := run([]string{"help", "doctor"}, &out, &errOut); code != exitPass {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
 	}
-	for _, fragment := range []string{"Usage:", "polis doctor [--format text|json]", "Git and runtime prerequisites"} {
+	for _, fragment := range []string{"Usage:", "polis doctor [--repo <path>", "Git on PATH", "static"} {
 		if !strings.Contains(out.String(), fragment) {
 			t.Errorf("command help missing %q: %s", fragment, out.String())
 		}

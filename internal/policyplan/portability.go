@@ -51,8 +51,8 @@ func validateCommandPortability(policy spec.Policy) error {
 }
 
 func commandPortabilityIssue(argv []string, goos string) string {
-	if usesEnvSplitString(argv) {
-		return "env split-string execution cannot be classified safely"
+	if issue := envWrapperIssue(argv); issue != "" {
+		return issue
 	}
 	name, shellArgs := shellExecutable(argv)
 	if name != "" {
@@ -83,8 +83,8 @@ func commandPortabilityIssue(argv []string, goos string) string {
 
 func shellExecutable(argv []string) (string, []string) {
 	for len(argv) > 0 && isEnvExecutable(argv[0]) {
-		index, splitString := envCommandIndex(argv)
-		if splitString || index >= len(argv) {
+		index, issue := envCommandIndex(argv)
+		if issue != "" || index >= len(argv) {
 			return "", nil
 		}
 		argv = argv[index:]
@@ -99,55 +99,179 @@ func shellExecutable(argv []string) (string, []string) {
 	return "", nil
 }
 
-func usesEnvSplitString(argv []string) bool {
+// PreflightExecutables returns the executable chain for direct argv and env
+// wrappers. It uses the same wrapper parsing as command portability validation.
+// pathMayChange and cwdMayChange indicate that delegated relative commands
+// cannot necessarily be resolved using the doctor's PATH or working directory.
+func PreflightExecutables(argv []string) (executables []string, pathMayChange, cwdMayChange bool) {
 	for len(argv) > 0 && isEnvExecutable(argv[0]) {
-		index, splitString := envCommandIndex(argv)
-		if splitString {
-			return true
+		executables = append(executables, argv[0])
+		index, issue := envCommandIndex(argv)
+		if issue != "" || index >= len(argv) {
+			return executables, pathMayChange, cwdMayChange
+		}
+		pathChanged, cwdChanged := envLookupChanges(argv[1:index])
+		pathMayChange = pathMayChange || pathChanged
+		cwdMayChange = cwdMayChange || cwdChanged
+		argv = argv[index:]
+	}
+	if len(argv) > 0 {
+		executables = append(executables, argv[0])
+	}
+	return executables, pathMayChange, cwdMayChange
+}
+
+func envLookupChanges(args []string) (pathChanged, cwdChanged bool) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-", arg == "--ignore-environment", arg == "--path", strings.HasPrefix(arg, "--path="):
+			pathChanged = true
+		case arg == "--chdir", strings.HasPrefix(arg, "--chdir="):
+			cwdChanged = true
+		case strings.Contains(arg, "=") && isEnvPATHName(strings.SplitN(arg, "=", 2)[0]):
+			pathChanged = true
+		case arg == "--unset":
+			if i+1 < len(args) && isEnvPATHName(args[i+1]) {
+				pathChanged = true
+			}
+			i++
+		case strings.HasPrefix(arg, "--unset="):
+			if isEnvPATHName(strings.TrimPrefix(arg, "--unset=")) {
+				pathChanged = true
+			}
+		case strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--"):
+			for j := 1; j < len(arg); j++ {
+				switch arg[j] {
+				case 'i', 'P':
+					pathChanged = true
+					if arg[j] == 'P' {
+						j = len(arg)
+					}
+				case 'C':
+					cwdChanged = true
+					j = len(arg)
+				case 'u':
+					if j+1 < len(arg) {
+						if isEnvPATHName(arg[j+1:]) {
+							pathChanged = true
+						}
+					} else if i+1 < len(args) && isEnvPATHName(args[i+1]) {
+						pathChanged = true
+					}
+					j = len(arg)
+				case 'a':
+					j = len(arg)
+				}
+			}
+		}
+	}
+	return pathChanged, cwdChanged
+}
+
+func isEnvPATHName(name string) bool {
+	return name == "PATH" || (runtime.GOOS == "windows" && strings.EqualFold(name, "PATH"))
+}
+
+func envWrapperIssue(argv []string) string {
+	for len(argv) > 0 && isEnvExecutable(argv[0]) {
+		index, issue := envCommandIndex(argv)
+		if issue != "" {
+			return issue
 		}
 		if index >= len(argv) {
-			return false
+			return ""
 		}
 		argv = argv[index:]
 	}
-	return false
+	return ""
 }
 
 func isEnvExecutable(value string) bool {
 	return strings.TrimSuffix(executableBase(value), ".exe") == "env"
 }
 
-func envCommandIndex(argv []string) (int, bool) {
+// envCommandIndex only accepts explicitly understood options. GNU env accepts
+// abbreviated long options and other short options whose effects cannot be
+// safely classified by the static preflight.
+func envCommandIndex(argv []string) (int, string) {
+	assignmentsStarted := false
 	for index := 1; index < len(argv); index++ {
 		arg := argv[index]
+		// env accepts options before NAME=VALUE operands only. Once an
+		// assignment is seen, the first non-assignment starts the command.
+		if assignmentsStarted && (!strings.Contains(arg, "=") || strings.HasPrefix(arg, "-")) {
+			return index, ""
+		}
 		switch {
 		case arg == "--":
-			return index + 1, false
-		case arg == "-S", arg == "--split-string", strings.HasPrefix(arg, "--split-string="):
-			return len(argv), true
-		case arg == "--argv0", arg == "--unset", arg == "--chdir":
-			index++
-		case strings.HasPrefix(arg, "--argv0="), strings.HasPrefix(arg, "--unset="), strings.HasPrefix(arg, "--chdir="):
+			return index + 1, ""
+		case arg == "-", arg == "--ignore-environment": // env's environment-clearing options
 			continue
+		case arg == "-S", arg == "--split-string", strings.HasPrefix(arg, "--split-string="):
+			return len(argv), "env split-string execution cannot be classified safely"
+		case arg == "--argv0", arg == "--unset", arg == "--chdir", arg == "--path":
+			if index+1 >= len(argv) {
+				return len(argv), fmt.Sprintf("env option %q requires an operand", arg)
+			}
+			if argv[index+1] == "" && arg != "--argv0" {
+				return len(argv), fmt.Sprintf("env option %q requires a non-empty operand", arg)
+			}
+			if arg == "--unset" && strings.Contains(argv[index+1], "=") {
+				return len(argv), fmt.Sprintf("env option %q unset operand must be a variable name without '='", arg)
+			}
+			index++
+		case strings.HasPrefix(arg, "--argv0="):
+			continue
+		case strings.HasPrefix(arg, "--unset="):
+			operand := strings.TrimPrefix(arg, "--unset=")
+			if operand == "" {
+				return len(argv), fmt.Sprintf("env option %q requires a non-empty operand", "--unset")
+			}
+			if strings.Contains(operand, "=") {
+				return len(argv), fmt.Sprintf("env option %q unset operand must be a variable name without '='", "--unset")
+			}
+		case strings.HasPrefix(arg, "--chdir="), strings.HasPrefix(arg, "--path="):
+			if strings.HasSuffix(arg, "=") {
+				return len(argv), fmt.Sprintf("env option %q requires a non-empty operand", arg)
+			}
+		case strings.HasPrefix(arg, "--"):
+			return len(argv), fmt.Sprintf("unsupported env long option %q cannot be classified safely", arg)
 		case strings.HasPrefix(arg, "-") && arg != "-":
 			for optionIndex := 1; optionIndex < len(arg); optionIndex++ {
 				switch arg[optionIndex] {
+				case 'i':
+					continue
 				case 'S':
-					return len(argv), true
-				case 'u', 'C', 'a':
+					return len(argv), "env split-string execution cannot be classified safely"
+				case 'u', 'C', 'P', 'a':
 					if optionIndex == len(arg)-1 {
+						if index+1 >= len(argv) {
+							return len(argv), fmt.Sprintf("env option %q requires an operand", arg)
+						}
+						if argv[index+1] == "" && arg[optionIndex] != 'a' {
+							return len(argv), fmt.Sprintf("env option %q requires a non-empty operand", arg)
+						}
+						if arg[optionIndex] == 'u' && strings.Contains(argv[index+1], "=") {
+							return len(argv), fmt.Sprintf("env option %q unset operand must be a variable name without '='", "-u")
+						}
 						index++
+					} else if arg[optionIndex] == 'u' && strings.Contains(arg[optionIndex+1:], "=") {
+						return len(argv), fmt.Sprintf("env option %q unset operand must be a variable name without '='", "-u")
 					}
 					optionIndex = len(arg)
+				default:
+					return len(argv), fmt.Sprintf("unsupported env short option %q cannot be classified safely", arg)
 				}
 			}
 		case strings.Contains(arg, "="):
+			assignmentsStarted = true
 			continue
 		default:
-			return index, false
+			return index, ""
 		}
 	}
-	return len(argv), false
+	return len(argv), ""
 }
 
 func usesShellCommandString(shell string, args []string) bool {

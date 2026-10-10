@@ -2,6 +2,7 @@ package policyplan
 
 import (
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -24,6 +25,65 @@ func TestCompileRejectsShellInterpreters(t *testing.T) {
 			policy.Gates[0].Command.Argv = tc.argv
 			if _, err := Compile(policy); err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tc.name)) {
 				t.Fatalf("shell command %q was not rejected with a gate-specific portability diagnostic: %v", tc.argv, err)
+			}
+		})
+	}
+}
+
+func TestEnvUnsetOperandValidation(t *testing.T) {
+	for _, argv := range [][]string{
+		{"env", "--unset", "FOO=bar", "/bin/true"},
+		{"env", "--unset=FOO=bar", "/bin/true"},
+		{"env", "-u", "FOO=bar", "/bin/true"},
+		{"env", "-uFOO=bar", "/bin/true"},
+	} {
+		t.Run(strings.Join(argv[1:], "_"), func(t *testing.T) {
+			if got := commandPortabilityIssue(argv, "linux"); !strings.Contains(got, "unset operand must be a variable name") {
+				t.Fatalf("invalid env unset operand accepted for %q: %q", argv, got)
+			}
+		})
+	}
+}
+
+func TestPreflightExecutables(t *testing.T) {
+	cases := []struct {
+		name        string
+		argv        []string
+		want        []string
+		pathChanged bool
+		cwdChanged  bool
+	}{
+		{"direct", []string{"go", "test", "./..."}, []string{"go"}, false, false},
+		{"plain env", []string{"env", "-u", "OTHER", "go"}, []string{"env", "go"}, false, false},
+		{"assignment ends option parsing", []string{"env", "FOO=x", "-u", "FOO", "/bin/true"}, []string{"env", "-u"}, false, false},
+		{"assignment ends double dash parsing", []string{"env", "FOO=x", "--", "/bin/true"}, []string{"env", "--"}, false, false},
+		{"assignment ends split-string parsing", []string{"env", "FOO=x", "-S", "sh -c echo"}, []string{"env", "-S"}, false, false},
+		{"multiple assignments before command", []string{"env", "FOO=x", "BAR=y", "go"}, []string{"env", "go"}, false, false},
+		{"lowercase path assignment", []string{"env", "path=/nonexistent", "go"}, []string{"env", "go"}, runtime.GOOS == "windows", false},
+		{"lowercase path unset", []string{"env", "-u", "path", "go"}, []string{"env", "go"}, runtime.GOOS == "windows", false},
+		{"lowercase path attached unset", []string{"env", "-upath", "go"}, []string{"env", "go"}, runtime.GOOS == "windows", false},
+		{"lowercase path long unset", []string{"env", "--unset=path", "go"}, []string{"env", "go"}, runtime.GOOS == "windows", false},
+		{"lone dash clears environment", []string{"env", "-", "/bin/true"}, []string{"env", "/bin/true"}, true, false},
+		{"lone dash with PATH lookup", []string{"env", "-", "go"}, []string{"env", "go"}, true, false},
+		{"nested lone dash", []string{"env", "-", "env", "/bin/true"}, []string{"env", "env", "/bin/true"}, true, false},
+		{"double dash leaves lone dash executable", []string{"env", "--", "-"}, []string{"env", "-"}, false, false},
+		{"nested env", []string{"env", "A=1", "env", "B=2", "go"}, []string{"env", "env", "go"}, false, false},
+		{"unset PATH", []string{"env", "-uPATH", "go"}, []string{"env", "go"}, true, false},
+		{"grouped options", []string{"env", "-iuPATH", "go"}, []string{"env", "go"}, true, false},
+		{"PATH assignment", []string{"env", "PATH=/somewhere", "go"}, []string{"env", "go"}, true, false},
+		{"alternate PATH", []string{"env", "-P", "/custom", "go"}, []string{"env", "go"}, true, false},
+		{"attached alternate PATH", []string{"env", "-P/custom", "go"}, []string{"env", "go"}, true, false},
+		{"long alternate PATH", []string{"env", "--path", "/custom", "go"}, []string{"env", "go"}, true, false},
+		{"changed cwd", []string{"env", "-C", "elsewhere", "./runner"}, []string{"env", "./runner"}, false, true},
+		{"attached cwd", []string{"env", "-Celsewhere", "./runner"}, []string{"env", "./runner"}, false, true},
+		{"nested changes", []string{"env", "-i", "env", "--chdir=/custom", "./runner"}, []string{"env", "env", "./runner"}, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, pathChanged, cwdChanged := PreflightExecutables(tc.argv)
+			if !slices.Equal(got, tc.want) || pathChanged != tc.pathChanged || cwdChanged != tc.cwdChanged {
+				t.Fatalf("PreflightExecutables(%q) = %q, PATH changed=%t, cwd changed=%t; want %q, %t, %t",
+					tc.argv, got, pathChanged, cwdChanged, tc.want, tc.pathChanged, tc.cwdChanged)
 			}
 		})
 	}
@@ -69,7 +129,9 @@ func TestCommandPortabilityIssueClassifiesPlatformsAndShellStrings(t *testing.T)
 		{name: "PowerShell on POSIX", argv: []string{"powershell.exe", "-File", "scripts/check.ps1"}, goos: "linux", want: "Windows shell"},
 		{name: "Bash command string", argv: []string{"bash", "-lc", "pytest"}, goos: "darwin", want: "shell command-string"},
 		{name: "env-wrapped shell command", argv: []string{"env", "-u", "TEST_VALUE", "bash", "-c", "pytest"}, goos: "darwin", want: "shell command-string"},
+		{name: "env lone dash shell command", argv: []string{"env", "-", "bash", "-c", "pytest"}, goos: "darwin", want: "shell command-string"},
 		{name: "env -S separated split string", argv: []string{"env", "-S", "bash -c pytest"}, goos: "darwin", want: "env split-string"},
+		{name: "env assignment before -S command", argv: []string{"env", "FOO=bar", "-S", "bash -c pytest"}, goos: "darwin"},
 		{name: "env.exe split-string wrapper", argv: []string{"env.exe", "-S", "bash -c pytest"}, goos: "windows", want: "env split-string"},
 		{name: "nested env.exe split-string wrapper", argv: []string{"env.exe", "env.exe", "-S", "bash -c pytest"}, goos: "windows", want: "env split-string"},
 		{name: "env --split-string separated split string", argv: []string{"env", "--split-string", "bash -c pytest"}, goos: "darwin", want: "env split-string"},
@@ -77,6 +139,38 @@ func TestCommandPortabilityIssueClassifiesPlatformsAndShellStrings(t *testing.T)
 		{name: "env bundled -S split string", argv: []string{"env", "-iSbash", "-c", "pytest"}, goos: "darwin", want: "env split-string"},
 		{name: "env --split-string attached split string", argv: []string{"env", "--split-string=bash", "-c", "pytest"}, goos: "darwin", want: "env split-string"},
 		{name: "env --argv0 argument before shell", argv: []string{"env", "--argv0", "alias", "bash", "-c", "pytest"}, goos: "darwin", want: "shell command-string"},
+		{name: "abbreviated env chdir attached", argv: []string{"env", "--ch=/tmp", "./runner"}, goos: "linux", want: "unsupported env long option"},
+		{name: "abbreviated env chdir separated", argv: []string{"env", "--ch", "/tmp", "./runner"}, goos: "linux", want: "unsupported env long option"},
+		{name: "abbreviated env unset PATH", argv: []string{"env", "--un=PATH", "go"}, goos: "linux", want: "unsupported env long option"},
+		{name: "abbreviated env split string", argv: []string{"env", "--split", "bash -c pytest"}, goos: "linux", want: "unsupported env long option"},
+		{name: "nested abbreviated env chdir", argv: []string{"env", "env", "--ch=/tmp", "./runner"}, goos: "linux", want: "unsupported env long option"},
+		{name: "unknown env long option", argv: []string{"env", "--mystery", "go"}, goos: "linux", want: "unsupported env long option"},
+		{name: "env null output with a command", argv: []string{"env", "-0", "/bin/true"}, goos: "linux", want: "unsupported env short option"},
+		{name: "env unknown short option", argv: []string{"env", "-Z", "go"}, goos: "linux", want: "unsupported env short option"},
+		{name: "env unknown grouped short option", argv: []string{"env", "-i0", "go"}, goos: "linux", want: "unsupported env short option"},
+		{name: "nested env unknown short option", argv: []string{"env", "env", "-0", "go"}, goos: "linux", want: "unsupported env short option"},
+		{name: "env recognized short options", argv: []string{"env", "-i", "-uPATH", "-C", "/tmp", "-P/custom", "-a", "alias", "go"}, goos: "linux"},
+		{name: "env missing long unset operand", argv: []string{"env", "--unset"}, goos: "linux", want: "requires an operand"},
+		{name: "env missing long chdir operand", argv: []string{"env", "--chdir"}, goos: "linux", want: "requires an operand"},
+		{name: "env missing long path operand", argv: []string{"env", "--path"}, goos: "linux", want: "requires an operand"},
+		{name: "env missing long argv0 operand", argv: []string{"env", "--argv0"}, goos: "linux", want: "requires an operand"},
+		{name: "env missing short unset operand", argv: []string{"env", "-u"}, goos: "linux", want: "requires an operand"},
+		{name: "env missing bundled short chdir operand", argv: []string{"env", "-iC"}, goos: "linux", want: "requires an operand"},
+		{name: "env missing short path operand", argv: []string{"env", "-P"}, goos: "linux", want: "requires an operand"},
+		{name: "env missing short argv0 operand", argv: []string{"env", "-a"}, goos: "linux", want: "requires an operand"},
+		{name: "env empty separated chdir operand", argv: []string{"env", "--chdir", ""}, goos: "linux", want: "non-empty operand"},
+		{name: "env empty attached chdir operand", argv: []string{"env", "--chdir="}, goos: "linux", want: "non-empty operand"},
+		{name: "env empty attached unset operand", argv: []string{"env", "--unset="}, goos: "linux", want: "non-empty operand"},
+		{name: "env empty attached path operand", argv: []string{"env", "--path="}, goos: "linux", want: "non-empty operand"},
+		{name: "env empty short chdir operand", argv: []string{"env", "-C", ""}, goos: "linux", want: "non-empty operand"},
+		{name: "env empty short unset operand", argv: []string{"env", "-u", ""}, goos: "linux", want: "non-empty operand"},
+		{name: "env explicit empty argv0 is allowed", argv: []string{"env", "--argv0=", "go"}, goos: "linux"},
+		{name: "env valid long unset argument", argv: []string{"env", "--unset", "KEY", "go"}, goos: "linux"},
+		{name: "env valid short chdir argument", argv: []string{"env", "-C", "/tmp", "go"}, goos: "linux"},
+		{name: "env long option after assignment is executable", argv: []string{"env", "FOO=bar", "--ch=/tmp"}, goos: "linux"},
+		{name: "env short option after assignment is executable", argv: []string{"env", "FOO=bar", "-0"}, goos: "linux"},
+		{name: "env short option after separator is executable", argv: []string{"env", "--", "-0"}, goos: "linux"},
+		{name: "env long option after separator is executable", argv: []string{"env", "--", "--ch=/tmp"}, goos: "linux"},
 		{name: "absolute env.exe argv0 wrapper before shell", argv: []string{`C:\Program Files\Git\usr\bin\env.exe`, "--argv0", "alias", "bash", "-c", "pytest"}, goos: "windows", want: "shell command-string"},
 		{name: "nested env.exe shell wrapper", argv: []string{"env.exe", "env.exe", "bash.exe", "-c", "pytest"}, goos: "windows", want: "shell command-string"},
 		{name: "env -a argument before shell", argv: []string{"env", "-a", "alias", "bash", "-c", "pytest"}, goos: "darwin", want: "shell command-string"},
