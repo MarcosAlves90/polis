@@ -32,7 +32,7 @@ polis doctor
 For a reproducible installation, pin the release instead of using `@latest`:
 
 ```bash
-go install github.com/MarcosAlves90/polis/v6/cmd/polis@v6.10.0
+go install github.com/MarcosAlves90/polis/v6/cmd/polis@v6.11.0
 ```
 
 See the [installation guide](docs/installation.md) for `PATH` setup on Linux,

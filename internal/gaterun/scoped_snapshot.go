@@ -88,8 +88,15 @@ func scopedSnapshot(ctx context.Context, repo string, inputs []string) (string, 
 		ordered = append(ordered, path)
 	}
 	sort.Strings(ordered)
+	directories, err := scopedDirectories(repo, inputs)
+	if err != nil {
+		return "", err
+	}
 	h := sha256.New()
-	fmt.Fprintf(h, "scoped-input-v1 %q %q %q %q\n", inputs, stages, staged, flags)
+	fmt.Fprintf(h, "scoped-input-v2 %q %q %q %q\n", inputs, stages, staged, flags)
+	for _, entry := range directories {
+		fmt.Fprintln(h, entry)
+	}
 	var total int64
 	for _, path := range ordered {
 		file := filepath.Join(repo, filepath.FromSlash(path))
@@ -139,4 +146,63 @@ func scopedSnapshot(ctx context.Context, repo string, inputs []string) (string, 
 		fmt.Fprintf(h, "%q %t %q %x\n", path, info.Mode()&0111 != 0, link, fh.Sum(nil))
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// Git enumerates files but omits empty directories. A gate can depend on
+// directory existence, so include in-scope directory topology and permissions
+// in the scoped identity as well as file contents and Git metadata.
+func scopedDirectories(repo string, inputs []string) ([]string, error) {
+	const maxEntries = 100000
+	seen := make(map[string]string)
+	visited := 0
+	for _, input := range inputs {
+		root := filepath.Join(repo, filepath.FromSlash(input))
+		if _, err := os.Lstat(root); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return nil, err
+		}
+		if inside, err := pathguard.Contains(repo, root); err != nil || !inside {
+			return nil, fmt.Errorf("scoped input %q resolves outside worktree", input)
+		}
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			visited++
+			if visited > maxEntries {
+				return errors.New("scoped identity exceeds directory traversal limit")
+			}
+			if !entry.IsDir() {
+				return nil
+			}
+			if inside, err := pathguard.Contains(repo, path); err != nil || !inside {
+				return fmt.Errorf("scoped directory %q resolves outside worktree", path)
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			relative, err := filepath.Rel(repo, path)
+			if err != nil {
+				return err
+			}
+			relative = filepath.ToSlash(relative)
+			seen[relative] = fmt.Sprintf("directory %q mode=%#o", relative, info.Mode().Perm())
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	paths := make([]string, 0, len(seen))
+	for path := range seen {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	entries := make([]string, 0, len(paths))
+	for _, path := range paths {
+		entries = append(entries, seen[path])
+	}
+	return entries, nil
 }

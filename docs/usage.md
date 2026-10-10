@@ -128,7 +128,8 @@ For command gates with demonstrably exhaustive inputs, the policy author may
 ```
 
 The opt-in scope hashes declared files (tracked, untracked and ignored),
-content, executable modes, contained symlinks, staging and index metadata;
+content, executable modes, contained symlinks, directory existence and topology
+(including empty directories), directory permissions, staging and index metadata;
 HEAD changes alone and unrelated files no longer invalidate that gate.
 Dependencies, policy, command, contract, baseline, runtime and declared
 environment identities remain enforced. Reused gates must have complete prior

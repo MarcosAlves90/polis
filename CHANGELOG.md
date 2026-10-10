@@ -6,7 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [6.11.0] - 2026-10-10
+
 ### Added
+- Add opt-in `polis doctor --repo` diagnostics with optional `--policy` to validate repository policy, dependency order, gate working directories, output paths, and executable availability without executing project gates. Report static `PASS`, `BLOCKED`, and `FAIL` checks in text or JSON; inspect delegated `env` executables and reject ambiguous option parsing.
 - Extend `polis status` into a unified workflow projection that accepts explicit external Policy, Change Contract, Implementation Plan, Red proof, workspace checkpoint, and package inputs while preserving automatic repository-retention discovery.
 - Add agent-oriented `proven`, `stale_or_unproven`, and `missing` status projections so resumed workflows distinguish verified evidence from historical or incomplete state.
 - Add stable machine-readable CLI failure diagnostics with error codes, categories, observed causes, affected operations, and remediation guidance for known gate, prerequisite, baseline, and Red-probe scope failures; sanitize prerequisite details without changing existing exit codes or text output.
@@ -25,6 +28,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Reduce release distribution size by stripping Go debug/symbol data from release binaries and Deflate-compressing deterministic offline ZIP members.
 - Compose `environment.mode=clean` from an empty POLIS base, present Windows structural bootstrap variables, and the explicit policy allowlist, with case-insensitive Windows matching and deterministic deduplication.
 - Reject selected Windows environment-name collisions with conflicting values; continue omitting absent structural variables and all unapproved ambient variables.
+
+### Fixed
+- Avoid creating `__pycache__` inside the source checkout when running the Python validation-runner integration tests.
+- Invalidate input-scoped gate reuse when directory topology changes within declared input paths, including empty subdirectories.
 
 ## [6.10.0] - 2026-10-04
 
@@ -282,7 +289,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Aligned the Go module identity with the repository before the V4 semantic import-path migration.
 - Made Git-based CI fixtures deterministic across Windows line-ending behavior.
 
-[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.10.0...HEAD
+[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.11.0...HEAD
+[6.11.0]: https://github.com/MarcosAlves90/polis/compare/v6.10.0...v6.11.0
 [6.10.0]: https://github.com/MarcosAlves90/polis/compare/v6.9.0...v6.10.0
 [6.9.0]: https://github.com/MarcosAlves90/polis/compare/v6.8.1...v6.9.0
 [6.8.1]: https://github.com/MarcosAlves90/polis/compare/v6.8.0...v6.8.1

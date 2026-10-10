@@ -16,7 +16,7 @@ Compatibility MUST NOT weaken the canonical zero-residue producer path or author
 
 ## 2. Runtime identity
 
-The V6 CLI version is `6.10.0`.
+The V6 CLI version is `6.11.0`.
 
 The Go module path is:
 
@@ -352,7 +352,8 @@ policy-author assertion that the declared paths close all file inputs to the
 gate. Without it, global source/HEAD invalidation remains required. Coverage
 and disabled gates MUST NOT assert completeness. Scoped identity MUST bind
 worktree content and relevant Git index/staging/mode/symlink metadata for
-tracked, untracked and ignored files in those paths, plus command, policy,
+tracked, untracked and ignored files, as well as in-scope directory existence,
+topology (including empty directories), and permissions, plus command, policy,
 contract, baseline, dependency result identities, runtime/version and declared
 environment identity. Invalid/unsafe scopes MUST fail closed. A separate
 identity category/version MUST prevent legacy global manifest reuse as scoped.

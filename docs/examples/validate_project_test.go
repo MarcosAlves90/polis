@@ -39,6 +39,7 @@ func TestExampleRunnerUsesTheActiveVirtualenvInterpreter(t *testing.T) {
 	cmd := exec.Command(venvPython, "-c", code, runner, backend)
 	cmd.Env = withEnvironment(os.Environ(), "PYTHONPATH", modules)
 	cmd.Env = withEnvironment(cmd.Env, "POLIS_VENV_EXECUTABLE", interpreterRecord)
+	cmd.Env = withEnvironment(cmd.Env, "PYTHONDONTWRITEBYTECODE", "1")
 	output, err := cmd.CombinedOutput()
 	var exitErr *exec.ExitError
 	if !errorsAs(err, &exitErr) || exitErr.ExitCode() != 13 {
@@ -68,6 +69,7 @@ func TestExampleRunnerFailsExplicitlyWhenFlutterIsMissing(t *testing.T) {
 	code := "import importlib.util, pathlib, sys; p=pathlib.Path(sys.argv[1]); s=importlib.util.spec_from_file_location('validate_project', p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); raise SystemExit(m.run_flutter_tests(pathlib.Path(sys.argv[2])))"
 	cmd := exec.Command(python, "-c", code, runner, frontend)
 	cmd.Env = withEnvironment(os.Environ(), "PATH", emptyPath)
+	cmd.Env = withEnvironment(cmd.Env, "PYTHONDONTWRITEBYTECODE", "1")
 	output, err := cmd.CombinedOutput()
 	var exitErr *exec.ExitError
 	if !errorsAs(err, &exitErr) || exitErr.ExitCode() != 127 || !strings.Contains(string(output), "missing required executable: flutter") {
