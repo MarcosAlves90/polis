@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MarcosAlves90/polis/v6/internal/policyorigin"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -79,8 +80,19 @@ func TestInitAutoCreatesCanonicalGoPolicyWithoutTouchingIndex(t *testing.T) {
 		t.Fatalf("index changed")
 	}
 	status := runGit(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
-	if status != "?? .polis/policy.json" {
+	if status != "?? .polis/policy-provenance.json\n?? .polis/policy.json" {
 		t.Fatalf("status=%q", status)
+	}
+	evidence, err := os.ReadFile(result.ProvenancePath)
+	if err != nil || string(evidence) != string(result.Provenance) {
+		t.Fatalf("stored provenance differs: %v", err)
+	}
+	manifest, err := policyorigin.Decode(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Profile != ProfileGo || manifest.Gates[0].Source != policyorigin.SourceProfileDefault || manifest.Gates[0].Reason != "generated_by_profile" {
+		t.Fatalf("init gate origin=%+v", manifest)
 	}
 }
 
@@ -94,12 +106,20 @@ func TestInitRefusesOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	originalOrigin, err := os.ReadFile(first.ProvenancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Init(context.Background(), Options{Repo: repo, Profile: "go"}); err == nil {
 		t.Fatal("expected overwrite rejection")
 	}
 	after, _ := os.ReadFile(first.PolicyPath)
 	if string(after) != string(before) {
 		t.Fatal("policy bytes changed")
+	}
+	afterOrigin, err := os.ReadFile(first.ProvenancePath)
+	if err != nil || string(afterOrigin) != string(originalOrigin) {
+		t.Fatalf("provenance changed during rejected init: %v", err)
 	}
 }
 
@@ -398,6 +418,85 @@ func TestInitStandardDisablesCoverageWithAnExplicitReason(t *testing.T) {
 	coverage := policy.Gates[1]
 	if coverage.Mode != spec.GateModeNotApplicable || coverage.Reason == nil || strings.TrimSpace(*coverage.Reason) == "" {
 		t.Fatalf("coverage=%+v", coverage)
+	}
+	manifest, err := policyorigin.Decode(result.Provenance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if origin := manifest.Match(policy)["coverage"]; origin.Source != policyorigin.SourceProfileDefault || origin.Reason != "profile_validation_level_default" {
+		t.Fatalf("standard profile default origin=%+v", origin)
+	}
+}
+
+func TestInitPersistsExplicitOverridesSeparatelyFromProfileDefaults(t *testing.T) {
+	repo := goRepo(t)
+	result, err := Init(context.Background(), Options{Repo: repo, Profile: ProfileGo, ValidationLevel: spec.ValidationLevelStandard, DisabledGates: []string{"lint", "coverage"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := spec.DecodePolicy(result.Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := policyorigin.Decode(result.Provenance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches := manifest.Match(policy)
+	for _, id := range []string{"lint", "coverage"} {
+		if matches[id] != (policyorigin.Decision{Source: policyorigin.SourcePolicyExplicit, Reason: "init_explicit_disable_gate"}) {
+			t.Fatalf("explicit override origin for %s=%+v", id, matches[id])
+		}
+	}
+	if matches["test.complete"].Source != policyorigin.SourceProfileDefault || matches["build"].Source != policyorigin.SourceProfileDefault {
+		t.Fatalf("unmodified defaults=%+v", matches)
+	}
+}
+
+func TestInitCustomCommandsAreRecordedAsExplicit(t *testing.T) {
+	repo := nonGoRepo(t)
+	result, err := Init(context.Background(), customOptions(repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := spec.DecodePolicy(result.Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := policyorigin.Decode(result.Provenance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches := manifest.Match(policy)
+	for _, id := range []string{"test.complete", "coverage"} {
+		if matches[id] != (policyorigin.Decision{Source: policyorigin.SourcePolicyExplicit, Reason: "init_explicit_command"}) {
+			t.Fatalf("custom command origin for %s=%+v", id, matches[id])
+		}
+	}
+	if matches["lint"].Source != policyorigin.SourceProfileDefault {
+		t.Fatalf("custom omitted gate origin=%+v", matches["lint"])
+	}
+}
+
+func TestInitRefusesExistingProvenanceWithoutCreatingPolicy(t *testing.T) {
+	repo := goRepo(t)
+	dir := filepath.Join(repo, ".polis")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, policyorigin.Filename)
+	if err := os.WriteFile(path, []byte("existing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Init(context.Background(), Options{Repo: repo, Profile: ProfileGo}); err == nil {
+		t.Fatal("expected existing provenance rejection")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "policy.json")); !os.IsNotExist(err) {
+		t.Fatalf("policy created despite sidecar collision: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != "existing" {
+		t.Fatalf("sidecar was overwritten: %v", err)
 	}
 }
 

@@ -111,8 +111,68 @@ func TestCompileDefaultsAbsentLevelToStrict(t *testing.T) {
 	if plan.ValidationLevel != spec.ValidationLevelStrict {
 		t.Fatalf("validation level=%q", plan.ValidationLevel)
 	}
+	if plan.ValidationLevelProvenance != (Decision{Source: DecisionSourcePolicyDefault, Reason: "omitted_validation_level_defaults_to_strict"}) {
+		t.Fatalf("default level provenance=%+v", plan.ValidationLevelProvenance)
+	}
 	if len(plan.EnabledGates) != 2 || len(plan.DisabledGates) != len(spec.ProjectGateOrder)-2 {
 		t.Fatalf("enabled=%v disabled=%v", plan.EnabledGates, plan.DisabledGates)
+	}
+}
+
+func TestCompileProvenanceFollowsEffectiveDecisions(t *testing.T) {
+	policy := planPolicy(spec.ValidationLevelStrict)
+	policy.ValidationLevel = spec.ValidationLevelStrict
+	policy.Gates[1].DependsOn = []string{"test.complete"} // Declaring the required edge again must not change its origin.
+	policy.Gates[4] = spec.GatePolicy{ID: "build", Mode: spec.GateModeCommand, Command: cloneCommand(policy.Gates[0].Command), DependsOn: []string{"test.complete"}}
+	plan, err := CompileWithOptions(policy, CompileOptions{DeferredGates: []string{"coverage"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.ValidationLevelProvenance != (Decision{Source: DecisionSourcePolicyExplicit, Reason: "declared_validation_level"}) {
+		t.Fatalf("explicit level provenance=%+v", plan.ValidationLevelProvenance)
+	}
+	if want := []DependencyEdge{
+		{Gate: "coverage", DependsOn: "test.complete", Provenance: Decision{Source: DecisionSourceMandatoryDependency, Reason: "built_in_prerequisite"}},
+		{Gate: "build", DependsOn: "test.complete", Provenance: Decision{Source: DecisionSourcePolicyExplicit, Reason: "declared_prerequisite"}},
+	}; !reflect.DeepEqual(plan.DependencyEdges, want) {
+		t.Fatalf("dependency provenance=%+v want=%+v", plan.DependencyEdges, want)
+	}
+	testGate, deferred, disabled := plan.Gates[0], plan.Gates[1], plan.Gates[2]
+	if testGate.Provenance != (GateProvenance{
+		Configuration:       Decision{Source: DecisionSourcePolicyExplicit, Reason: "policy_gate_declaration"},
+		State:               Decision{Source: DecisionSourcePolicyExplicit, Reason: "declared_gate_mode"},
+		ProducerAction:      Decision{Source: DecisionSourcePolicyExplicit, Reason: "enabled_gate_scheduled"},
+		ConsumerRequirement: Decision{Source: DecisionSourceGateState, Reason: "enabled_gate_required"},
+	}) {
+		t.Fatalf("scheduled gate provenance=%+v", testGate.Provenance)
+	}
+	if deferred.State != GateStateEnabled || deferred.Provenance.State != testGate.Provenance.State || deferred.Provenance.ProducerAction != (Decision{Source: DecisionSourceExecutorDeferral, Reason: "requested_by_executor"}) || deferred.Provenance.ConsumerRequirement != (Decision{Source: DecisionSourceExecutorDeferral, Reason: "deferred_gate_requires_consumer_validation"}) {
+		t.Fatalf("deferred gate provenance=%+v", deferred)
+	}
+	if disabled.Provenance != (GateProvenance{
+		Configuration:       Decision{Source: DecisionSourcePolicyExplicit, Reason: "policy_gate_declaration"},
+		State:               Decision{Source: DecisionSourceNotApplicable, Reason: "declared_not_applicable"},
+		ProducerAction:      Decision{Source: DecisionSourceNotApplicable, Reason: "gate_not_applicable"},
+		ConsumerRequirement: Decision{Source: DecisionSourceNotApplicable, Reason: "gate_not_applicable"},
+	}) || disabled.Reason == nil || *disabled.Reason != "disabled for this planning fixture" {
+		t.Fatalf("disabled gate provenance=%+v", disabled)
+	}
+	if plan.Guarantees[0].Provenance != (Decision{Source: DecisionSourceGateState, Reason: "enabled_gate_required"}) || plan.Guarantees[1].Provenance != deferred.Provenance.ConsumerRequirement || plan.Guarantees[2].Provenance != disabled.Provenance.ConsumerRequirement {
+		t.Fatalf("guarantee provenance=%+v", plan.Guarantees[:3])
+	}
+	if !strings.Contains(plan.Guarantees[1].Description, "consumer validation must execute") {
+		t.Fatalf("deferred guarantee incorrectly describes producer execution: %+v", plan.Guarantees[1])
+	}
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Plan
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decoded.DependencyEdges, plan.DependencyEdges) || !reflect.DeepEqual(decoded.Gates[1].Provenance, deferred.Provenance) || decoded.ValidationLevelProvenance != plan.ValidationLevelProvenance {
+		t.Fatalf("JSON round trip lost provenance: %+v", decoded)
 	}
 }
 

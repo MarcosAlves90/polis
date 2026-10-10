@@ -178,7 +178,7 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 	if err := requireV6ProducerContract(changeContract); err != nil {
 		return Result{}, err
 	}
-	plan, err := policyplan.CompileWithOptions(policy, policyplan.CompileOptions{DeferredGates: opts.DeferredGates})
+	plan, err := policyplan.CompileForRepository(ctx, repo, policy, opts.Policy == "", opts.DeferredGates)
 	if err != nil {
 		return Result{}, err
 	}

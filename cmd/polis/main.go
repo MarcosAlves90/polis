@@ -488,7 +488,7 @@ func runInit(args []string, out, errOut io.Writer) int {
 		_, _ = out.Write(result.Policy)
 		return exitPass
 	}
-	fmt.Fprintf(out, "POLIS INIT: PASS\nProfile: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\nPolicy: %s\nNext: review and commit .polis/policy.json before polis build\n", result.Profile, result.ValidationLevel, strings.Join(result.EnabledGates, ", "), strings.Join(result.DisabledGates, ", "), result.PolicyPath)
+	fmt.Fprintf(out, "POLIS INIT: PASS\nProfile: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\nPolicy: %s\nProvenance: %s\nNext: review and commit .polis/policy.json and .polis/policy-provenance.json before polis build\n", result.Profile, result.ValidationLevel, strings.Join(result.EnabledGates, ", "), strings.Join(result.DisabledGates, ", "), result.PolicyPath, result.ProvenancePath)
 	return exitPass
 }
 
@@ -677,18 +677,18 @@ func writePlanText(out io.Writer, plan policyplan.Plan) {
 	writePlanGuarantees(out, plan.Guarantees)
 }
 
-func writePlanDependencies(out io.Writer, dependencies []spec.PolicyDependency, executionOrder []string) {
+func writePlanDependencies(out io.Writer, dependencies []policyplan.DependencyEdge, executionOrder []string) {
 	fmt.Fprintln(out, "Dependency edges:")
 	for _, dependency := range dependencies {
-		fmt.Fprintf(out, "- %s -> %s\n", dependency.DependsOn, dependency.Gate)
+		fmt.Fprintf(out, "- %s -> %s source=%s reason=%s\n", dependency.DependsOn, dependency.Gate, dependency.Provenance.Source, dependency.Provenance.Reason)
 	}
 	fmt.Fprintf(out, "Execution order: %s\n", strings.Join(executionOrder, ", "))
 }
 
 func writePlanSummary(out io.Writer, plan policyplan.Plan) {
-	fmt.Fprintf(out, "POLIS PLAN: PASS\nPlan version: %d\nPolicy source: %s\nPolicy SHA256: %s\nPolicy schema: %d\nRuntime: %s/%s (%s)\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\nDeferred gates: %s\nConsumer validation required: %t\n",
+	fmt.Fprintf(out, "POLIS PLAN: PASS\nPlan version: %d\nPolicy source: %s\nPolicy SHA256: %s\nPolicy schema: %d\nRuntime: %s/%s (%s)\nValidation level: %s (source=%s reason=%s)\nEnabled gates: %s\nDisabled gates: %s\nDeferred gates: %s\nConsumer validation required: %t\n",
 		plan.PlanVersion, plan.PolicySource, plan.PolicySHA256, plan.PolicySchemaVersion, plan.Runtime.OS, plan.Runtime.Architecture, plan.Runtime.GoVersion,
-		plan.ValidationLevel, strings.Join(plan.EnabledGates, ", "), strings.Join(plan.DisabledGates, ", "), strings.Join(plan.DeferredGates, ", "), plan.ConsumerValidationRequired)
+		plan.ValidationLevel, plan.ValidationLevelProvenance.Source, plan.ValidationLevelProvenance.Reason, strings.Join(plan.EnabledGates, ", "), strings.Join(plan.DisabledGates, ", "), strings.Join(plan.DeferredGates, ", "), plan.ConsumerValidationRequired)
 }
 
 func writePlanGates(out io.Writer, gates []policyplan.Gate) {
@@ -700,6 +700,10 @@ func writePlanGates(out io.Writer, gates []policyplan.Gate) {
 
 func writePlanGate(out io.Writer, gate policyplan.Gate) {
 	fmt.Fprintf(out, "- %s %s (%s) producer_action=%s consumer_requirement=%s", strings.ToUpper(gate.State), gate.ID, gate.Mode, gate.ProducerAction, gate.ConsumerRequirement)
+	fmt.Fprintf(out, " configuration_source=%s configuration_reason=%s state_source=%s state_reason=%s producer_source=%s producer_reason=%s consumer_source=%s consumer_reason=%s",
+		gate.Provenance.Configuration.Source, gate.Provenance.Configuration.Reason,
+		gate.Provenance.State.Source, gate.Provenance.State.Reason, gate.Provenance.ProducerAction.Source, gate.Provenance.ProducerAction.Reason,
+		gate.Provenance.ConsumerRequirement.Source, gate.Provenance.ConsumerRequirement.Reason)
 	if gate.Command != nil {
 		fmt.Fprintf(out, " parallel_safe=%t", gate.ParallelSafe)
 	}
@@ -744,7 +748,7 @@ func writePlanInvariants(out io.Writer, invariants []policyplan.Invariant) {
 func writePlanGuarantees(out io.Writer, guarantees []policyplan.Guarantee) {
 	fmt.Fprintln(out, "Guarantees:")
 	for _, guarantee := range guarantees {
-		fmt.Fprintf(out, "- %s [%s]: %s\n", guarantee.Gate, guarantee.Status, guarantee.Description)
+		fmt.Fprintf(out, "- %s [%s] source=%s reason=%s: %s\n", guarantee.Gate, guarantee.Status, guarantee.Provenance.Source, guarantee.Provenance.Reason, guarantee.Description)
 	}
 }
 

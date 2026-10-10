@@ -24,6 +24,7 @@ Alpha.6 supports exactly the Go profile. `auto` selects Go only when a root-leve
 - runtime MUST use exclusive creation and MUST NOT overwrite an existing policy;
 - runtime MUST NOT stage, commit, reset, clean, or otherwise mutate Git history/index;
 - generated policy MUST validate through the same `spec.DecodePolicy` path used by build/verify/apply.
+- in non-dry-run mode, create the optional profile-origin manifest `.polis/policy-provenance.json` exclusively, with a canonical per-gate digest and a decision recorded when each default or explicit override was selected; do not overwrite existing metadata and roll back a newly created policy if manifest creation fails.
 
 ## Canonical Go profile
 
@@ -47,7 +48,8 @@ Success reports:
 
 - profile
 - absolute policy path
-- explicit next action: review and commit `.polis/policy.json` before `polis build`
+- explicit next action: review and commit `.polis/policy.json` and its provenance manifest before `polis build`
+- sidecar path and next action to review and commit `.polis/policy-provenance.json` alongside policy; a dry run returns validated policy JSON and makes no persistent writes.
 
 ## Acceptance criteria
 
@@ -56,4 +58,4 @@ Success reports:
 - non-Git directory fails.
 - unsupported repository fails without creating `.polis/policy.json`.
 - explicit unknown profile fails.
-- init leaves HEAD, index, and pre-existing worktree state unchanged except the new `.polis/policy.json` path.
+- init leaves HEAD, index, and pre-existing worktree state unchanged except the new `.polis/policy.json` and `.polis/policy-provenance.json` paths.

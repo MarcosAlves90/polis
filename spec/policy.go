@@ -522,6 +522,17 @@ func builtInPolicyDependencies(gateID string) []string {
 	return nil
 }
 
+// IsBuiltInPolicyDependency classifies an effective dependency using the same
+// required edges that the policy linter applies to the execution graph.
+func IsBuiltInPolicyDependency(gateID, dependencyID string) bool {
+	for _, required := range builtInPolicyDependencies(gateID) {
+		if required == dependencyID {
+			return true
+		}
+	}
+	return false
+}
+
 func appendPolicyLintIssue(report *PolicyLintReport, code, gate, dependency, message string) {
 	report.Issues = append(report.Issues, PolicyLintIssue{Code: code, Gate: gate, DependsOn: dependency, Message: message})
 }

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- Add rule-derived `source` and `reason` provenance to `polis plan` version 4 for validation level, gate configuration/state, producer action, consumer requirements, dependency edges, and guarantees in JSON and text output. `polis init` records per-gate profile-default versus explicit-override origins in a separately committed `.polis/policy-provenance.json` manifest. Only declarations whose saved digests still match retain generated-profile attribution; legacy and changed policies fall back conservatively. Required dependencies, executor deferrals, and `not_applicable` statuses retain their effective-rule origins. Project Policy schema and package formats remain unchanged.
+- Preserve explicit `--validation-level strict` and default-level intent in the optional init manifest without changing policy v3 field serialization. Share provenance resolution between plan and producer build, and bound committed Git blob reads before loading optional metadata.
+
 ## [6.11.0] - 2026-10-10
 
 ### Added

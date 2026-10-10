@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/MarcosAlves90/polis/v6/internal/policyorigin"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -40,6 +41,8 @@ type Result struct {
 	DisabledGates   []string
 	PolicyPath      string
 	Policy          []byte
+	ProvenancePath  string
+	Provenance      []byte
 }
 
 func Init(ctx context.Context, opts Options) (Result, error) {
@@ -62,7 +65,7 @@ func Init(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	policy, err := policyForProfile(resolvedProfile, opts)
+	policy, decisions, levelOrigin, err := policyForProfile(resolvedProfile, opts)
 	if err != nil {
 		return Result{}, err
 	}
@@ -70,7 +73,17 @@ func Init(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	manifest, err := policyorigin.Create(resolvedProfile, policy, decisions)
+	if err != nil {
+		return Result{}, fmt.Errorf("create policy provenance: %w", err)
+	}
+	manifest.ValidationLevel = &levelOrigin
+	provenance, err := policyorigin.Encode(manifest)
+	if err != nil {
+		return Result{}, fmt.Errorf("encode policy provenance: %w", err)
+	}
 	policyPath := filepath.Join(root, ".polis", "policy.json")
+	provenancePath := filepath.Join(root, ".polis", policyorigin.Filename)
 	summary := policy.ValidationSummary()
 	result := Result{
 		Profile:         resolvedProfile,
@@ -79,11 +92,13 @@ func Init(ctx context.Context, opts Options) (Result, error) {
 		DisabledGates:   append([]string{}, summary.DisabledGates...),
 		PolicyPath:      policyPath,
 		Policy:          encoded,
+		ProvenancePath:  provenancePath,
+		Provenance:      provenance,
 	}
 	if opts.DryRun {
 		return result, nil
 	}
-	if err := writePolicy(policyPath, encoded); err != nil {
+	if err := writePolicyWithProvenance(policyPath, encoded, provenancePath, provenance); err != nil {
 		return Result{}, err
 	}
 	return result, nil
@@ -155,44 +170,58 @@ func knownProjectGate(id string) bool {
 	return false
 }
 
-func policyForProfile(profile string, opts Options) (spec.Policy, error) {
+func policyForProfile(profile string, opts Options) (spec.Policy, map[string]policyorigin.Decision, policyorigin.LevelRecord, error) {
 	level := opts.ValidationLevel
+	levelOrigin := policyorigin.LevelRecord{Decision: policyorigin.Decision{Source: policyorigin.SourcePolicyExplicit, Reason: "init_explicit_validation_level"}}
 	if level == "" {
 		level = spec.ValidationLevelStrict
+		levelOrigin.Decision = policyorigin.Decision{Source: policyorigin.SourceProfileDefault, Reason: "init_default_validation_level"}
 	}
 	var policy spec.Policy
+	var explicit map[string]policyorigin.Decision
 	switch profile {
 	case ProfileGo:
 		policy = goPolicy()
 	case ProfileCustom:
-		policy = customPolicy(opts)
+		policy, explicit = customPolicy(opts)
 	default:
-		return spec.Policy{}, fmt.Errorf("unsupported profile %q", profile)
+		return spec.Policy{}, nil, policyorigin.LevelRecord{}, fmt.Errorf("unsupported profile %q", profile)
+	}
+	decisions := make(map[string]policyorigin.Decision, len(policy.Gates))
+	for _, gate := range policy.Gates {
+		decisions[gate.ID] = policyorigin.Decision{Source: policyorigin.SourceProfileDefault, Reason: "generated_by_profile"}
+	}
+	for id, decision := range explicit {
+		decisions[id] = decision
 	}
 	if level != spec.ValidationLevelStrict {
 		policy.ValidationLevel = level
 	}
+	levelOrigin.PolicyValue = policy.ValidationLevel
 	if profile != ProfileCustom {
-		applyLevelDefaults(&policy, level)
+		applyLevelDefaults(&policy, level, decisions)
 	}
-	applyDisabledGates(&policy, opts.DisabledGates, level)
-	return policy, nil
+	applyDisabledGates(&policy, opts.DisabledGates, level, decisions)
+	return policy, decisions, levelOrigin, nil
 }
 
-func applyLevelDefaults(policy *spec.Policy, level string) {
+func applyLevelDefaults(policy *spec.Policy, level string, decisions map[string]policyorigin.Decision) {
 	switch level {
 	case spec.ValidationLevelStandard:
 		disableGate(policy, "coverage", "disabled by the standard validation level; coverage is a non-structural project-quality gate")
+		decisions["coverage"] = policyorigin.Decision{Source: policyorigin.SourceProfileDefault, Reason: "profile_validation_level_default"}
 	case spec.ValidationLevelMinimal:
 		for _, id := range spec.ProjectGateOrder {
 			disableGate(policy, id, "disabled by the minimal validation level; project-quality gates are not required in this execution context")
+			decisions[id] = policyorigin.Decision{Source: policyorigin.SourceProfileDefault, Reason: "profile_validation_level_default"}
 		}
 	}
 }
 
-func applyDisabledGates(policy *spec.Policy, disabled []string, level string) {
+func applyDisabledGates(policy *spec.Policy, disabled []string, level string, decisions map[string]policyorigin.Decision) {
 	for _, id := range disabled {
 		disableGate(policy, id, fmt.Sprintf("disabled by explicit validation configuration at level %q", level))
+		decisions[id] = policyorigin.Decision{Source: policyorigin.SourcePolicyExplicit, Reason: "init_explicit_disable_gate"}
 	}
 }
 
@@ -243,6 +272,41 @@ func writePolicy(policyPath string, encoded []byte) error {
 	if err := f.Close(); err != nil {
 		_ = os.Remove(policyPath)
 		return fmt.Errorf("close .polis/policy.json: %w", err)
+	}
+	return nil
+}
+
+func writePolicyWithProvenance(policyPath string, encoded []byte, provenancePath string, provenance []byte) error {
+	if _, err := os.Lstat(provenancePath); err == nil {
+		return errors.New(".polis/policy-provenance.json already exists; POLIS init never overwrites provenance")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect .polis/policy-provenance.json: %w", err)
+	}
+	if err := writePolicy(policyPath, encoded); err != nil {
+		return err
+	}
+	if err := writeExclusive(provenancePath, provenance); err != nil {
+		if cleanupErr := os.Remove(policyPath); cleanupErr != nil {
+			return fmt.Errorf("create provenance: %v; rollback policy: %w", err, cleanupErr)
+		}
+		return fmt.Errorf("create provenance: %w", err)
+	}
+	return nil
+}
+
+func writeExclusive(path string, encoded []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(encoded); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
 	}
 	return nil
 }
@@ -309,14 +373,19 @@ func goPolicy() spec.Policy {
 	}
 }
 
-func customPolicy(opts Options) spec.Policy {
+func customPolicy(opts Options) (spec.Policy, map[string]policyorigin.Decision) {
+	explicit := make(map[string]policyorigin.Decision)
 	testGate := spec.GatePolicy{ID: testCompleteGateID, Mode: spec.GateModeCommand, Command: commandFromArgv(1200, opts.TestArgv)}
 	if len(opts.TestArgv) == 0 {
 		testGate = notApplicable(testCompleteGateID, "custom profile has no explicit test command for this validation level")
+	} else {
+		explicit[testCompleteGateID] = policyorigin.Decision{Source: policyorigin.SourcePolicyExplicit, Reason: "init_explicit_command"}
 	}
 	coverageGate := spec.GatePolicy{ID: "coverage", Mode: spec.GateModeCoverage, Command: commandFromArgv(1200, opts.CoverageArgv), Adapter: opts.CoverageAdapter, Report: opts.CoverageReport, Operator: spec.CoverageOperatorGreaterThan, ThresholdPercent: coverageThreshold(opts)}
 	if len(opts.CoverageArgv) == 0 {
 		coverageGate = notApplicable("coverage", "custom profile has no explicit coverage command for this validation level")
+	} else {
+		explicit["coverage"] = policyorigin.Decision{Source: policyorigin.SourcePolicyExplicit, Reason: "init_explicit_command"}
 	}
 	return spec.Policy{
 		SchemaVersion: spec.PolicySchemaVersion,
@@ -333,7 +402,7 @@ func customPolicy(opts Options) spec.Policy {
 			notApplicable("security", "custom profile has no explicit command for security"),
 			notApplicable("platform", "custom profile has no explicit command for platform"),
 		},
-	}
+	}, explicit
 }
 
 func coverageThreshold(opts Options) *float64 {

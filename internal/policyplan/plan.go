@@ -1,19 +1,26 @@
 package policyplan
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/policyload"
+	"github.com/MarcosAlves90/polis/v6/internal/policyorigin"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
 const (
-	PlanVersion = 2
+	PlanVersion = 4
 
 	PolicySourceCommitted = "committed"
 	PolicySourceExternal  = "external"
@@ -30,6 +37,14 @@ const (
 
 	GuaranteeProvided    = "provided"
 	GuaranteeNotProvided = "not_provided"
+
+	DecisionSourcePolicyExplicit      = "policy_explicit"
+	DecisionSourcePolicyDefault       = "policy_default"
+	DecisionSourceMandatoryDependency = "mandatory_dependency"
+	DecisionSourceExecutorDeferral    = "executor_deferral"
+	DecisionSourceNotApplicable       = "not_applicable"
+	DecisionSourceGateState           = "gate_state"
+	DecisionSourceProfileDefault      = policyorigin.SourceProfileDefault
 )
 
 type Options struct {
@@ -40,24 +55,28 @@ type Options struct {
 
 type CompileOptions struct {
 	DeferredGates []string
+	// Origin is optional persisted init evidence. Only matching gate digests
+	// can contribute provenance to the compiled plan.
+	Origin *policyorigin.Manifest
 }
 
 type Plan struct {
-	PlanVersion                int                     `json:"plan_version"`
-	PolicySchemaVersion        int                     `json:"policy_schema_version"`
-	PolicySource               string                  `json:"policy_source"`
-	PolicySHA256               string                  `json:"policy_sha256"`
-	Runtime                    Runtime                 `json:"runtime"`
-	ValidationLevel            string                  `json:"validation_level"`
-	EnabledGates               []string                `json:"enabled_gates"`
-	DisabledGates              []string                `json:"disabled_gates"`
-	DeferredGates              []string                `json:"deferred_gates"`
-	ConsumerValidationRequired bool                    `json:"consumer_validation_required"`
-	DependencyEdges            []spec.PolicyDependency `json:"dependency_edges"`
-	ExecutionOrder             []string                `json:"execution_order"`
-	Gates                      []Gate                  `json:"gates"`
-	MandatoryInvariants        []Invariant             `json:"mandatory_invariants"`
-	Guarantees                 []Guarantee             `json:"guarantees"`
+	PlanVersion                int              `json:"plan_version"`
+	PolicySchemaVersion        int              `json:"policy_schema_version"`
+	PolicySource               string           `json:"policy_source"`
+	PolicySHA256               string           `json:"policy_sha256"`
+	Runtime                    Runtime          `json:"runtime"`
+	ValidationLevel            string           `json:"validation_level"`
+	ValidationLevelProvenance  Decision         `json:"validation_level_provenance"`
+	EnabledGates               []string         `json:"enabled_gates"`
+	DisabledGates              []string         `json:"disabled_gates"`
+	DeferredGates              []string         `json:"deferred_gates"`
+	ConsumerValidationRequired bool             `json:"consumer_validation_required"`
+	DependencyEdges            []DependencyEdge `json:"dependency_edges"`
+	ExecutionOrder             []string         `json:"execution_order"`
+	Gates                      []Gate           `json:"gates"`
+	MandatoryInvariants        []Invariant      `json:"mandatory_invariants"`
+	Guarantees                 []Guarantee      `json:"guarantees"`
 	gatePolicies               []spec.GatePolicy
 }
 
@@ -65,6 +84,26 @@ type Runtime struct {
 	OS           string `json:"os"`
 	Architecture string `json:"architecture"`
 	GoVersion    string `json:"go_version"`
+}
+
+// Decision identifies the rule that selected an already validated plan value.
+// Reason is a stable rule code, distinct from a project-authored gate reason.
+type Decision struct {
+	Source string `json:"source"`
+	Reason string `json:"reason"`
+}
+
+type GateProvenance struct {
+	Configuration       Decision `json:"configuration"`
+	State               Decision `json:"state"`
+	ProducerAction      Decision `json:"producer_action"`
+	ConsumerRequirement Decision `json:"consumer_requirement"`
+}
+
+type DependencyEdge struct {
+	Gate       string   `json:"gate"`
+	DependsOn  string   `json:"depends_on"`
+	Provenance Decision `json:"provenance"`
 }
 
 type Gate struct {
@@ -76,6 +115,7 @@ type Gate struct {
 	Mode                string            `json:"mode"`
 	ProducerAction      string            `json:"producer_action"`
 	ConsumerRequirement string            `json:"consumer_requirement"`
+	Provenance          GateProvenance    `json:"provenance"`
 	Command             *spec.CommandSpec `json:"command,omitempty"`
 	Reason              *string           `json:"reason,omitempty"`
 	DependsOn           []string          `json:"depends_on,omitempty"`
@@ -91,9 +131,10 @@ type Invariant struct {
 }
 
 type Guarantee struct {
-	Gate        string `json:"gate"`
-	Status      string `json:"status"`
-	Description string `json:"description"`
+	Gate        string   `json:"gate"`
+	Status      string   `json:"status"`
+	Description string   `json:"description"`
+	Provenance  Decision `json:"provenance"`
 }
 
 func Load(ctx context.Context, opts Options) (Plan, error) {
@@ -109,7 +150,7 @@ func Load(ctx context.Context, opts Options) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	plan, err := CompileWithOptions(policy, CompileOptions{DeferredGates: opts.DeferredGates})
+	plan, err := CompileForRepository(ctx, root, policy, source == PolicySourceCommitted, opts.DeferredGates)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -118,6 +159,16 @@ func Load(ctx context.Context, opts Options) (Plan, error) {
 	plan.PolicySHA256 = hex.EncodeToString(digest[:])
 	plan.Runtime = Runtime{OS: runtime.GOOS, Architecture: runtime.GOARCH, GoVersion: runtime.Version()}
 	return plan, nil
+}
+
+// CompileForRepository shares the provenance boundary for command planning and
+// producer execution. An external policy never inherits repository metadata.
+func CompileForRepository(ctx context.Context, root string, policy spec.Policy, committed bool, deferred []string) (Plan, error) {
+	var origin *policyorigin.Manifest
+	if committed {
+		origin = readCommittedOrigin(ctx, root)
+	}
+	return CompileWithOptions(policy, CompileOptions{DeferredGates: deferred, Origin: origin})
 }
 
 func Compile(policy spec.Policy) (Plan, error) {
@@ -136,9 +187,30 @@ func CompileWithOptions(policy spec.Policy, opts CompileOptions) (Plan, error) {
 		return Plan{}, fmt.Errorf("compile execution plan: %w", err)
 	}
 	summary := policy.ValidationSummary()
+	origins := map[string]policyorigin.Decision{}
+	if opts.Origin != nil {
+		origins = opts.Origin.Match(policy)
+	}
+	validationLevelProvenance := Decision{Source: DecisionSourcePolicyExplicit, Reason: "declared_validation_level"}
+	if policy.ValidationLevel == "" {
+		validationLevelProvenance = Decision{Source: DecisionSourcePolicyDefault, Reason: "omitted_validation_level_defaults_to_strict"}
+	}
+	if opts.Origin != nil {
+		if recorded, ok := opts.Origin.MatchValidationLevel(policy); ok {
+			validationLevelProvenance = Decision(recorded)
+		}
+	}
 	dependencies := make(map[string][]string, len(policy.Gates))
+	dependencyEdges := make([]DependencyEdge, 0, len(lint.Dependencies))
 	for _, edge := range lint.Dependencies {
 		dependencies[edge.Gate] = append(dependencies[edge.Gate], edge.DependsOn)
+		provenance := Decision{Source: DecisionSourcePolicyExplicit, Reason: "declared_prerequisite"}
+		if spec.IsBuiltInPolicyDependency(edge.Gate, edge.DependsOn) {
+			provenance = Decision{Source: DecisionSourceMandatoryDependency, Reason: "built_in_prerequisite"}
+		} else if origin, ok := origins[edge.Gate]; ok && origin.Source == DecisionSourceProfileDefault {
+			provenance = Decision{Source: origin.Source, Reason: "generated_profile_prerequisite"}
+		}
+		dependencyEdges = append(dependencyEdges, DependencyEdge{Gate: edge.Gate, DependsOn: edge.DependsOn, Provenance: provenance})
 	}
 	deferredGates, deferredSet, err := canonicalDeferredGates(policy, opts.DeferredGates)
 	if err != nil {
@@ -151,11 +223,12 @@ func CompileWithOptions(policy spec.Policy, opts CompileOptions) (Plan, error) {
 		PlanVersion:                PlanVersion,
 		PolicySchemaVersion:        policy.SchemaVersion,
 		ValidationLevel:            summary.Level,
+		ValidationLevelProvenance:  validationLevelProvenance,
 		EnabledGates:               append([]string{}, summary.EnabledGates...),
 		DisabledGates:              append([]string{}, summary.DisabledGates...),
 		DeferredGates:              deferredGates,
 		ConsumerValidationRequired: len(deferredGates) > 0,
-		DependencyEdges:            append([]spec.PolicyDependency{}, lint.Dependencies...),
+		DependencyEdges:            dependencyEdges,
 		ExecutionOrder:             append([]string{}, lint.ExecutionOrder...),
 		Gates:                      make([]Gate, 0, len(policy.Gates)),
 		MandatoryInvariants:        mandatoryInvariants(),
@@ -163,8 +236,9 @@ func CompileWithOptions(policy spec.Policy, opts CompileOptions) (Plan, error) {
 		gatePolicies:               make([]spec.GatePolicy, 0, len(policy.Gates)),
 	}
 	for _, policyGate := range policy.Gates {
-		plan.Gates = append(plan.Gates, describeGate(policyGate, dependencies[policyGate.ID], deferredSet))
-		plan.Guarantees = append(plan.Guarantees, describeGuarantee(policyGate))
+		gate := describeGate(policyGate, dependencies[policyGate.ID], deferredSet, origins[policyGate.ID])
+		plan.Gates = append(plan.Gates, gate)
+		plan.Guarantees = append(plan.Guarantees, describeGuarantee(gate))
 	}
 	gateByID := make(map[string]spec.GatePolicy, len(policy.Gates))
 	for _, policyGate := range policy.Gates {
@@ -255,16 +329,89 @@ func loadPolicy(ctx context.Context, root, policyPath string) ([]byte, spec.Poli
 	return raw, policy, PolicySourceCommitted, err
 }
 
-func describeGate(policyGate spec.GatePolicy, dependencies []string, deferred map[string]struct{}) Gate {
+// The provenance sidecar must be committed unchanged. Missing, modified, or
+// malformed optional evidence is ignored, keeping policy interpretation intact.
+const maxProvenanceBytes = 1 << 20
+
+func readCommittedOrigin(ctx context.Context, root string) *policyorigin.Manifest {
+	path := filepath.Join(root, ".polis", policyorigin.Filename)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxProvenanceBytes {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	openInfo, err := f.Stat()
+	if err != nil || !openInfo.Mode().IsRegular() || openInfo.Size() > maxProvenanceBytes {
+		return nil
+	}
+	working, err := io.ReadAll(io.LimitReader(f, maxProvenanceBytes+1))
+	if err != nil || len(working) > maxProvenanceBytes {
+		return nil
+	}
+	// Resolve a fixed blob identity, then inspect its size before reading its
+	// bytes. gitutil.Bytes buffers all output, so never feed it an unchecked blob.
+	objectID, err := gitutil.Output(ctx, root, nil, nil, "rev-parse", "--verify", "HEAD:.polis/"+policyorigin.Filename)
+	if err != nil || (len(objectID) != 40 && len(objectID) != 64) {
+		return nil
+	}
+	if _, err := hex.DecodeString(objectID); err != nil {
+		return nil
+	}
+	sizeText, err := gitutil.Output(ctx, root, nil, nil, "cat-file", "-s", objectID)
+	if err != nil {
+		return nil
+	}
+	size, err := strconv.ParseInt(strings.TrimSpace(sizeText), 10, 64)
+	if err != nil || size < 0 || size > maxProvenanceBytes || size != int64(len(working)) {
+		return nil
+	}
+	committed, err := gitutil.Bytes(ctx, root, nil, nil, "cat-file", "blob", objectID)
+	if err != nil || int64(len(committed)) != size || !bytes.Equal(working, committed) {
+		return nil
+	}
+	manifest, err := policyorigin.Decode(committed)
+	if err != nil {
+		return nil
+	}
+	return &manifest
+}
+
+func describeGate(policyGate spec.GatePolicy, dependencies []string, deferred map[string]struct{}, origin policyorigin.Decision) Gate {
 	state := GateStateEnabled
 	producerAction := ProducerActionExecute
 	consumerRequirement := ConsumerRequirementRequired
+	configuration := Decision{Source: DecisionSourcePolicyExplicit, Reason: "policy_gate_declaration"}
+	if origin.Source != "" {
+		configuration = Decision{Source: origin.Source, Reason: origin.Reason}
+	}
+	provenance := GateProvenance{
+		Configuration:       configuration,
+		State:               Decision{Source: configuration.Source, Reason: configuration.Reason},
+		ProducerAction:      Decision{Source: configuration.Source, Reason: configuration.Reason},
+		ConsumerRequirement: Decision{Source: DecisionSourceGateState, Reason: "enabled_gate_required"},
+	}
+	if origin.Source == "" {
+		provenance.State.Reason = "declared_gate_mode"
+		provenance.ProducerAction.Reason = "enabled_gate_scheduled"
+	}
 	if policyGate.Mode == spec.GateModeNotApplicable {
 		state = GateStateDisabled
 		producerAction = ProducerActionNotApplicable
 		consumerRequirement = ConsumerRequirementNotRequired
+		provenance = GateProvenance{
+			Configuration:       configuration,
+			State:               Decision{Source: DecisionSourceNotApplicable, Reason: "declared_not_applicable"},
+			ProducerAction:      Decision{Source: DecisionSourceNotApplicable, Reason: "gate_not_applicable"},
+			ConsumerRequirement: Decision{Source: DecisionSourceNotApplicable, Reason: "gate_not_applicable"},
+		}
 	} else if _, ok := deferred[policyGate.ID]; ok {
 		producerAction = ProducerActionDeferred
+		provenance.ProducerAction = Decision{Source: DecisionSourceExecutorDeferral, Reason: "requested_by_executor"}
+		provenance.ConsumerRequirement = Decision{Source: DecisionSourceExecutorDeferral, Reason: "deferred_gate_requires_consumer_validation"}
 	}
 	return Gate{
 		ID:                  policyGate.ID,
@@ -275,6 +422,7 @@ func describeGate(policyGate spec.GatePolicy, dependencies []string, deferred ma
 		Mode:                policyGate.Mode,
 		ProducerAction:      producerAction,
 		ConsumerRequirement: consumerRequirement,
+		Provenance:          provenance,
 		Command:             cloneCommand(policyGate.Command),
 		Reason:              cloneString(policyGate.Reason),
 		DependsOn:           append([]string{}, dependencies...),
@@ -285,19 +433,23 @@ func describeGate(policyGate spec.GatePolicy, dependencies []string, deferred ma
 	}
 }
 
-func describeGuarantee(policyGate spec.GatePolicy) Guarantee {
-	if policyGate.Mode == spec.GateModeNotApplicable {
+func describeGuarantee(gate Gate) Guarantee {
+	if gate.State == GateStateDisabled {
 		return Guarantee{
-			Gate:        policyGate.ID,
+			Gate:        gate.ID,
 			Status:      GuaranteeNotProvided,
 			Description: "this gate is not scheduled; its project-quality guarantee is absent",
+			Provenance:  gate.Provenance.ConsumerRequirement,
 		}
 	}
 	description := "the declared command is scheduled and its pass condition is required"
-	if policyGate.Mode == spec.GateModeCoverage {
+	if gate.Mode == spec.GateModeCoverage {
 		description = "the declared coverage command and threshold are scheduled and their pass condition is required"
 	}
-	return Guarantee{Gate: policyGate.ID, Status: GuaranteeProvided, Description: description}
+	if gate.ProducerAction == ProducerActionDeferred {
+		description = "this gate is deferred by the producer; consumer validation must execute it and require its pass condition"
+	}
+	return Guarantee{Gate: gate.ID, Status: GuaranteeProvided, Description: description, Provenance: gate.Provenance.ConsumerRequirement}
 }
 
 func mandatoryInvariants() []Invariant {

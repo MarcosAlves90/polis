@@ -400,6 +400,34 @@ the guarantees provided or absent by the effective policy. Repeat
 consumer. A producer-executed gate cannot depend directly or transitively on a
 deferred gate.
 
+Plan JSON version 4 adds `{source, reason}` provenance for the effective
+validation level, gate configuration/state, producer action, consumer
+requirement, dependency edges, and guarantees; the same decisions appear in
+text output. For example,
+`coverage -> test.complete` has `source: mandatory_dependency`, and a producer
+action changed by `--defer-gate coverage` has `source: executor_deferral` while
+the gate's enabled state still comes from the policy. The machine-readable
+decision reason is separate from the project-authored `reason` of a
+`not_applicable` gate. `polis init` writes `.polis/policy-provenance.json`
+alongside the policy; review and commit both. The manifest preserves
+`profile_default` and explicit init overrides at generation time with a
+digest per gate. Only still-matching gates from a committed, unchanged manifest
+can be attributed to the profile. Changed gates, legacy policies without a
+committed manifest, and external policies use `policy_explicit` for observable
+declarations. A disabled gate's `provenance.configuration` records the
+configuration source while its state and responsibilities remain
+`not_applicable`. This provenance is descriptive project metadata, not a
+signature proving authorship.
+
+The manifest separately records validation-level intent. A requested
+`--validation-level strict` and an omitted flag both produce compatible policy
+JSON with no `validation_level` field, but their recorded plan origins differ:
+`policy_explicit` and `profile_default` respectively. Legacy policies and
+manifests without this record keep the policy-observable `policy_default`
+classification when the level is omitted. The same committed-policy provenance
+is resolved for the producer `polis build`; optional manifests are size-limited
+and are ignored if untrusted or invalid.
+
 Use `polis gates [--repo <path>] [--policy <policy-v3.json>] [--format text|json]`
 to execute the configured enabled project gates locally. The command reports
 each gate result and whether it was executed, along with the effective enabled
@@ -583,7 +611,8 @@ When to use:
   Bootstrap or preview policy before locking a change; prefer --dry-run for review.
 Prerequisites:
   Git worktree; auto/go requires a root go.mod. Custom commands must come from the
-  project's actual configuration. Non-dry-run requires an absent .polis/policy.json.
+  project's actual configuration. Non-dry-run requires absent policy.json and
+  policy-provenance.json in .polis/.
 Required inputs:
   Custom strict profile: repeated --test-argv, --coverage-argv, adapter, and report.
   Custom standard requires test argv; minimal may omit it. Do not lower guarantees
@@ -592,8 +621,9 @@ Workflow:
   Preview and review policy, then plan; use the same effective bytes for start/build.
 Reads/writes:
   Reads repository root/profile information; does not run generated project gates.
-  --dry-run prints validated JSON only. Otherwise creates .polis/policy.json and its
-  directory without overwriting or committing; review/commit only with authorization.
+  --dry-run prints validated policy JSON only. Otherwise creates .polis/policy.json
+  and .polis/policy-provenance.json without overwriting or committing; review/commit
+  both only with authorization.
 Options/defaults:
   --repo defaults to .; --profile auto detects Go only; go forces Go, custom uses argv.
   --validation-level defaults to strict; standard omits generated coverage by default,
