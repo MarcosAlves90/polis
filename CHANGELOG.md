@@ -6,11 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Added
-- Add rule-derived `source` and `reason` provenance to `polis plan` version 4 for validation level, gate configuration/state, producer action, consumer requirements, dependency edges, and guarantees in JSON and text output. `polis init` records per-gate profile-default versus explicit-override origins in a separately committed `.polis/policy-provenance.json` manifest. Only declarations whose saved digests still match retain generated-profile attribution; legacy and changed policies fall back conservatively. Required dependencies, executor deferrals, and `not_applicable` statuses retain their effective-rule origins. Project Policy schema and package formats remain unchanged.
-- Preserve explicit `--validation-level strict` and default-level intent in the optional init manifest without changing policy v3 field serialization. Share provenance resolution between plan and producer build, and bound committed Git blob reads before loading optional metadata.
-
-## [6.11.0] - 2026-10-10
+## [6.11.1] - 2026-10-10
 
 ### Added
 - Add opt-in `polis doctor --repo` diagnostics with optional `--policy` to validate repository policy, dependency order, gate working directories, output paths, and executable availability without executing project gates. Report static `PASS`, `BLOCKED`, and `FAIL` checks in text or JSON; inspect delegated `env` executables and reject ambiguous option parsing.
@@ -293,7 +289,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Aligned the Go module identity with the repository before the V4 semantic import-path migration.
 - Made Git-based CI fixtures deterministic across Windows line-ending behavior.
 
-[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.11.0...HEAD
+[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.11.1...HEAD
+[6.11.1]: https://github.com/MarcosAlves90/polis/compare/v6.11.0...v6.11.1
 [6.11.0]: https://github.com/MarcosAlves90/polis/compare/v6.10.0...v6.11.0
 [6.10.0]: https://github.com/MarcosAlves90/polis/compare/v6.9.0...v6.10.0
 [6.9.0]: https://github.com/MarcosAlves90/polis/compare/v6.8.1...v6.9.0
