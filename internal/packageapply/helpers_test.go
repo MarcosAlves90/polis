@@ -130,6 +130,75 @@ func TestWorkingTreeIDIncludesUnstagedAndUntrackedChanges(t *testing.T) {
 	}
 }
 
+func TestWorkingTreeIDWithIgnoredPolisDirectory(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".polis"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("*.polis\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), []byte("base policy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "init", "-q")
+	git(t, repo, "add", ".gitignore")
+	git(t, repo, "add", "-f", ".polis/policy.json")
+	git(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "base")
+	base := git(t, repo, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), []byte("changed policy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".polis", "artifacts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".polis", "artifacts", "ignored.polis"), []byte("ignored artifact"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := workingTreeID(context.Background(), repo, base)
+	if err != nil {
+		t.Fatalf("workingTreeID() error = %v", err)
+	}
+	git(t, repo, "add", "-u", "--", ".", ":(exclude).polis/artifacts/**")
+	git(t, repo, "add", "--", "new.txt")
+	want := git(t, repo, "write-tree")
+	if got != want {
+		t.Fatalf("workingTreeID() = %s, want %s including tracked and untracked changes", got, want)
+	}
+	entries := git(t, repo, "ls-tree", "-r", "--name-only", want)
+	if !strings.Contains(entries, ".polis/policy.json") || !strings.Contains(entries, "new.txt") {
+		t.Fatalf("working tree tree omits tracked or untracked changes: %q", entries)
+	}
+	if strings.Contains(entries, "ignored.polis") {
+		t.Fatalf("working tree tree includes ignored artifact: %q", entries)
+	}
+}
+
+func TestWorkingTreeIDIncludesUntrackedPathspecMagicFilename(t *testing.T) {
+	repo := simpleRepo(t)
+	filename := ":(exclude)unexpected.txt"
+	if err := os.WriteFile(filepath.Join(repo, filename), []byte("literal path\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "ordinary.txt"), []byte("ordinary path\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := workingTreeID(context.Background(), repo, git(t, repo, "rev-parse", "HEAD"))
+	if err != nil {
+		t.Fatalf("workingTreeID() error = %v", err)
+	}
+	git(t, repo, "--literal-pathspecs", "add", "--", filename, "ordinary.txt")
+	want := git(t, repo, "write-tree")
+	if got != want {
+		t.Fatalf("workingTreeID() = %s, want %s including literal path %q", got, want, filename)
+	}
+}
+
 func TestParseBaselineMode(t *testing.T) {
 	for _, tc := range []struct {
 		input string
