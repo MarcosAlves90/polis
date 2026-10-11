@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Changed
+- Split the V6 usage manual into a short navigation index and focused operational references; keep embedded CLI help in one canonical command-reference document.
 - Add a first-change quickstart that directs local coding agents to package-free workspace validation and remote producers to external disposable package delivery.
 - Separate remote/web-agent `.polis` package handoff from local coding-agent `workspace validate`; build outputs are external-only, disposable, and no longer retained in repositories.
 

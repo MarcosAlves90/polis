@@ -78,6 +78,12 @@ polis doctor
 
 - [First change quickstart](docs/quickstart.md)
 - [Usage and V6 workflows](docs/usage.md)
+- [CLI command reference](docs/commands.md)
+- [Policy and validation](docs/policy-and-validation.md)
+- [Development proof and delivery](docs/development-proof.md)
+- [Repository retention](docs/retention.md)
+- [Gate execution and progress](docs/gates-and-progress.md)
+- [Artifact trust](docs/artifact-trust.md)
 - [Installation guide](docs/installation.md)
 - [Offline runtime guide](spec/POLIS-OFFLINE.md)
 - [POLIS Specification V6](spec/POLIS-SPEC-v6.md)
@@ -86,6 +92,5 @@ polis doctor
 - [Changelog](CHANGELOG.md)
 
 Start with the [first change quickstart](docs/quickstart.md) to choose local
-validation or remote package handoff. The [usage guide](docs/usage.md) indexes
-the full command reference, policy profiles, strict SDD/TDD, artifact trust,
-signatures, and exit categories.
+validation or remote package handoff. The [usage index](docs/usage.md) links to
+focused operational references; normative rules remain in the specification.

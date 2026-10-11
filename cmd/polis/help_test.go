@@ -47,9 +47,9 @@ func TestAgentHelpEveryCommand(t *testing.T) {
 }
 
 func TestAgentHelpCanonicalUsage(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "usage.md"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "commands.md"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("canonical help source docs/commands.md: %v", err)
 	}
 	guide := strings.ReplaceAll(string(raw), "\r\n", "\n")
 	if got := strings.Count(guide, "<!-- command-help: "); got != len(agentHelpCommands) {

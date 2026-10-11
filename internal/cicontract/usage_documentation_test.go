@@ -50,18 +50,29 @@ func TestREADMEIsLandingPage(t *testing.T) {
 	usage := string(usageRaw)
 	for _, fragment := range []string{
 		"# Using POLIS V6",
-		"## Command reference",
-		"polis help [command]",
-		"[--executable <file>] [--runtime <GOOS/GOARCH>]",
-		"`--executable` embeds",
+		"## First change",
+		"[First change quickstart](quickstart.md)",
+		"[Command reference](commands.md#agent-command-instructions)",
+		"[Policy and validation](policy-and-validation.md)",
+		"[Development proof](development-proof.md)",
+		"[Repository retention](retention.md)",
+		"[Gate execution and progress](gates-and-progress.md)",
+		"[Artifact trust](artifact-trust.md)",
+	} {
+		if !strings.Contains(usage, fragment) {
+			t.Errorf("usage index missing reference %q", fragment)
+		}
+	}
+	for _, detailedSection := range []string{
 		"## Canonical V6 delivery flow",
 		"## Project Policy and validation",
 		"## V6 contract summary",
 		"## Strict SDD/TDD",
-		"## Exit categories",
+		"## Artifact and trust boundaries",
+		"## Agent command instructions",
 	} {
-		if !strings.Contains(usage, fragment) {
-			t.Errorf("usage guide missing internal reference section %q", fragment)
+		if strings.Contains(usage, detailedSection) {
+			t.Errorf("usage index still contains detailed reference %q", detailedSection)
 		}
 	}
 }
@@ -131,7 +142,7 @@ func TestArtifactRetentionContractForbidsPackageArchives(t *testing.T) {
 	root := repositoryRoot(t)
 	for _, relative := range []string{
 		"docs/sdd/0041-artifact-retention.md",
-		"docs/usage.md",
+		"docs/retention.md",
 		"spec/POLIS-SPEC-v6.md",
 	} {
 		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))

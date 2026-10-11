@@ -7,14 +7,14 @@ import (
 	"strings"
 )
 
-//go:embed usage.md
+//go:embed commands.md
 var usageGuide string
 
 const helpStart = "<!-- command-help: "
 const helpEnd = "```\n<!-- /command-help -->"
 
 // CommandHelpEntry derives both the command index and full instructions from
-// the usage guide. No separately maintained agent-facing copy is needed.
+// the canonical command reference. No separately maintained help copy is needed.
 type CommandHelpEntry struct {
 	Name         string
 	Usage        string
@@ -22,7 +22,7 @@ type CommandHelpEntry struct {
 	Instructions string
 }
 
-// CommandHelpEntries returns fresh entries from the immutable embedded guide.
+// CommandHelpEntries returns fresh entries from the immutable embedded command reference.
 // Invalid source documentation is a build-time programming error, not user input.
 func CommandHelpEntries() []CommandHelpEntry {
 	entries, err := parseCommandHelp(usageGuide)
