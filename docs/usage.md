@@ -3,6 +3,12 @@
 This guide covers the operational V6 workflow. Normative package and schema
 rules live in the [POLIS Specification V6](../spec/POLIS-SPEC-v6.md).
 
+## First change
+
+New to POLIS? Start with the [First change quickstart](quickstart.md) to choose
+local workspace validation or remote package delivery. This page remains the
+complete operational reference; the quickstart links back here for details.
+
 ## Repository map
 
 - `guide/` defines the engineering workflow, scope, safety, and evidence duties.

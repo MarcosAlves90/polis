@@ -76,6 +76,7 @@ polis doctor
 
 ## Documentation
 
+- [First change quickstart](docs/quickstart.md)
 - [Usage and V6 workflows](docs/usage.md)
 - [Installation guide](docs/installation.md)
 - [Offline runtime guide](spec/POLIS-OFFLINE.md)
@@ -84,5 +85,7 @@ polis doctor
 - [Architecture and design decisions](docs/sdd/)
 - [Changelog](CHANGELOG.md)
 
-The usage guide is the entry point for command reference, policy profiles,
-strict SDD/TDD, artifact trust, signatures, and exit categories.
+Start with the [first change quickstart](docs/quickstart.md) to choose local
+validation or remote package handoff. The [usage guide](docs/usage.md) indexes
+the full command reference, policy profiles, strict SDD/TDD, artifact trust,
+signatures, and exit categories.

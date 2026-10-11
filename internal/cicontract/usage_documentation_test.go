@@ -198,3 +198,41 @@ func TestSDDIdentifiersAreUnique(t *testing.T) {
 		}
 	}
 }
+
+func TestREADMEAndUsageExposeFirstChangeQuickstart(t *testing.T) {
+	root := repositoryRoot(t)
+	read := func(relative string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatalf("read %s: %v", relative, err)
+		}
+		return string(data)
+	}
+	readme := read("README.md")
+	if !strings.Contains(readme, "[First change quickstart](docs/quickstart.md)") {
+		t.Fatal("README missing first-change quickstart link")
+	}
+	usage := read("docs/usage.md")
+	if !strings.Contains(usage, "[First change quickstart](quickstart.md)") {
+		t.Fatal("usage index missing first-change quickstart link")
+	}
+	quickstart := read("docs/quickstart.md")
+	for _, fragment := range []string{
+		"# Your first POLIS change",
+		"## Choose the workflow",
+		"Local coding agent",
+		"polis start",
+		"polis capture-red",
+		"polis workspace validate",
+		"Remote/web handoff",
+		"polis build",
+		"outside the target repository",
+		"[Local workspace guide]",
+		"[Remote delivery guide]",
+	} {
+		if !strings.Contains(quickstart, fragment) {
+			t.Errorf("first-change quickstart missing %q", fragment)
+		}
+	}
+}
