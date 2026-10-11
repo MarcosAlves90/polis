@@ -9,6 +9,22 @@ rules live in the [POLIS Specification V6](../spec/POLIS-SPEC-v6.md).
 - `spec/` defines machine contracts for packages, schemas, evidence, and apply.
 - `cmd/polis` and `internal/` provide the deterministic Go implementation.
 
+## Choose the agent workflow
+
+- **Remote delivery:** use a producer with the source checkout and POLIS runtime
+  to create a `.polis` package outside the repository, then transfer it to a
+  consumer for `preflight` and `apply`. Read the
+  [remote delivery guide](workflows/web-agent-delivery.md).
+- **Local workspace:** when the coding agent already edits the target checkout,
+  run locked development proof and `polis workspace validate`. This validates
+  the live change without building a delivery package. Read the
+  [local workspace guide](workflows/local-agent-workspace.md).
+
+A chatbot that cannot access the source checkout and POLIS runtime must not claim
+that it produced or verified a `.polis` package. A delivery package (`.polis`)
+is a transferable, disposable output; delivery packages are never stored in a
+repository.
+
 ## Command reference
 
 ```bash
@@ -286,11 +302,14 @@ fail closed. This setting is independent of Project Policy and works with
 either committed or external `--policy` input.
 
 In `repository` mode, `start`, `implementation-plan`, `capture-red`, and `build`
-keep writing their explicit `--out` working results as before and also publish
-exact, content-addressed copies under `.polis/artifacts/`. Contracts, plans,
-regression proofs, bounded validation evidence, and `.polis` packages use
-separate class directories. Later producer steps can read contracts, plans,
-and proofs from their matching managed class. CLI output lists retained paths.
+may publish exact, content-addressed contracts, plans, regression proofs, and
+bounded validation evidence under `.polis/artifacts/`. **A delivery `.polis`
+package is never retained in the repository.** `polis build --out` must resolve
+physically outside the target worktree and the resulting package is a
+transferable, disposable output. Later producer steps can read contracts,
+plans, and proofs from their matching managed class. CLI output lists retained
+non-package paths. Existing historical package copies are not deleted
+automatically and may remain readable for compatibility.
 
 Retained files remain ordinary visible Git files. POLIS never stages, commits,
 or deletes them. Only `.polis/artifacts/` is omitted from producer cleanliness
@@ -750,7 +769,8 @@ Usage:
 Purpose:
   validate a locked change without a package, or compare an unsigned checkpoint's source identity
 When to use:
-  Use validate after implementation; use status to resume by comparing a saved report with the current checkout.
+  A local coding agent already in the checkout uses validate after implementation, without a package.
+  Remote delivery is a separate flow: build -> verify -> consumer preflight/apply.
 Prerequisites:
   Validate requires a Git worktree, clean real index, nonempty in-scope delta, locked strict contract,
   matching policy, required development proof, and project gate dependencies. Status requires a
@@ -760,12 +780,13 @@ Required inputs:
   Status: external --contract and an external workspace-validation-v1 --report.
 Workflow:
   start -> required proof -> implementation -> workspace validate. Workspace status can then compare
-  recorded base/tree/contract/policy identities. Use build -> verify when portable delivery is required.
+  recorded base/tree/contract/policy identities. Use build -> verify only when remote delivery is required.
 Reads/writes:
   Validate replays proof and runs enabled gates in isolated worktrees, then checks the target tree;
   it preserves HEAD/index/source and creates no .polis package. Optional --out-report writes a new
-  external checkpoint. Status reads a bounded external report and current identities only; it does
-  not execute gate commands or intentionally change the repository. Git may invoke configured clean
+  external checkpoint. Local coding agents do not need build, sign, preflight, or apply. Status reads
+  a bounded external report and current identities only; it does not execute gate commands or
+  intentionally change the repository. Git may invoke configured clean
   filters while creating its temporary-index snapshot; status is not a sandbox. Neither command
   authenticates reports.
 Options/defaults:
@@ -787,7 +808,8 @@ Examples:
 Do not use:
   Status as fresh validation, signature/producer authentication, or package verification. Version-1
   reports do not bind Red proof or plan digests; a matching source snapshot is not validation evidence.
-  Use build -> verify -> preflight/apply for portable delivery and consumer handoff.
+  local workspace validation does not use preflight or apply. Use build -> verify -> preflight/apply
+  only for remote package delivery and consumer handoff.
 ```
 <!-- /command-help -->
 
@@ -992,24 +1014,28 @@ Usage:
 Purpose:
   build a .polis delivery package
 When to use:
-  Package implemented in-scope changes after a locked baseline and required development proof.
+  A remote producer with a source checkout and POLIS runtime creates a portable package for transfer.
+  If a local coding agent already edits the target checkout, use workspace validate instead.
 Prerequisites:
   Valid Git baseline or descendant HEAD, clean real index, nonempty target delta,
   immutable captured tests, locked schema-v4/v6 contract, matching schema-v3 policy
   bytes, and dependencies for all producer-executed proof/project commands.
 Required inputs:
-  --repo, --project/--change canonical slugs, --contract, and external --out directory.
+  --repo, --project/--change canonical slugs, --contract, and --out directory physically outside
+  the resolved target worktree. In-repository paths and symlinks resolving inside are rejected.
   --regression-patch is required for Red-to-Green features/defects and forbidden for
   behavior_preserving Green-to-Green. Contracts/proofs/plans are external or managed retained inputs.
 Workflow:
-  start -> required proof -> implementation -> build -> polis verify -> inspect;
-  consumer preflight/apply is separate. Build replays proof and validates the target.
+  Remote producer: start -> required proof -> implementation -> build -> polis verify -> inspect;
+  transfer the disposable package to its consumer for separately authorized preflight/apply.
+  Local agent workflow: start -> proof -> implementation -> workspace validate; no package.
 Reads/writes:
   Reads source delta/Git/policy/contract/proof/plan; executes proof and producer gates
   in isolated repositories; writes a verified .polis package in --out (creates directory,
-  never overwrites a package). External-policy flow preserves source Git state.
-  Repository retention also publishes contracts/plans/proofs/evidence/packages under
-  .polis/artifacts/ without staging/committing. Commands may write caches or use network/services.
+  never overwrites a package) outside the target worktree. The package is disposable and is
+  never retained in the repository. Repository retention may publish contracts/plans/proofs/
+  evidence, but never packages, under .polis/artifacts/. Commands may write caches or use
+  network/services.
 Options/defaults:
   --repo/--project/--change/--contract/--out are required, no defaults.
   --policy defaults to committed unchanged .polis/policy.json; explicit policy is external.
@@ -1028,6 +1054,7 @@ Examples:
   For behavior_preserving, omit --regression-patch and use locked Green-to-Green proof.
 Do not use:
   A draft/legacy contract for new delivery, gates-only success as proof, or deferral to hide failure.
+  For a local agent validating the live checkout without a consumer handoff, use workspace validate.
 ```
 <!-- /command-help -->
 
@@ -1112,7 +1139,7 @@ Usage:
 Purpose:
   validate an artifact without applying it
 When to use:
-  Check a delivery against the intended consumer before any authorized application.
+  A package consumer checks a received delivery against the intended repository before application.
 Prerequisites:
   Clean consumer worktree/index, readable valid package, Git, and dependencies for
   packaged proof/project commands; review untrusted code/policy before execution.
@@ -1141,6 +1168,7 @@ Examples:
   polis preflight --repo /path/to/consumer --format json /outside/artifact.polis
 Do not use:
   As authorization for apply, a durable approval of later state, or a sandbox for untrusted commands.
+  local workspace validation does not use preflight.
 ```
 <!-- /command-help -->
 
@@ -1153,7 +1181,7 @@ Usage:
 Purpose:
   validate and apply an artifact transactionally
 When to use:
-  Only when the user explicitly requests application to the identified consumer.
+  A package consumer applies a received delivery only when the user explicitly requests it.
 Prerequisites:
   Explicit authorization, clean consumer worktree/index, valid package, Git, and all
   packaged proof/project dependencies. Commit modes additionally require artifact commit
@@ -1191,6 +1219,7 @@ Examples:
   With separately authorized interactive commit: add --commit-mode prompt before artifact.
 Do not use:
   For producer packaging, on dirty state, without authorization, or with silent proof/baseline overrides.
+  local workspace validation does not use apply.
 ```
 <!-- /command-help -->
 

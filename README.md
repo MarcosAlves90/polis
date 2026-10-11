@@ -17,6 +17,20 @@ signing, and safely applying code changes.
 - Preserves repository integrity through isolated validation and transactional apply.
 - Includes a portable offline runtime for coding agents without the source tree.
 
+## Choose the agent workflow
+
+- **Remote/web agent handing a change to another checkout:** a producer with the
+  source checkout and POLIS runtime builds a disposable `.polis` package outside
+  the repository; the consumer verifies, preflights, and applies it. See the
+  [remote delivery guide](docs/workflows/web-agent-delivery.md).
+- **Local coding agent already working in the checkout:** use locked development
+  proof and `polis workspace validate`; no delivery package is needed or created.
+  See the [local workspace guide](docs/workflows/local-agent-workspace.md).
+
+Chat text alone is not evidence that a package was built. A web assistant without
+checkout/runtime access can help prepare a change, but an authorized producer
+must execute POLIS to create a verifiable package.
+
 ## Installation
 
 ### Go installation (recommended)
