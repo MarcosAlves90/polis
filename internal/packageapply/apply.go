@@ -360,8 +360,17 @@ func workingTreeID(ctx context.Context, repo, baseCommit string) (string, error)
 	if _, err := gitutil.Bytes(ctx, repo, env, nil, "read-tree", baseCommit); err != nil {
 		return "", err
 	}
-	if _, err := gitutil.Bytes(ctx, repo, env, nil, "add", "-A", "--", ".", ":(exclude).polis/artifacts/**"); err != nil {
-		return "", err
+	if _, err := gitutil.Bytes(ctx, repo, env, nil, "add", "-u", "--", ".", ":(exclude).polis/artifacts/**"); err != nil {
+		return "", fmt.Errorf("stage tracked worktree paths: %w", err)
+	}
+	untracked, err := gitutil.Bytes(ctx, repo, env, nil, "ls-files", "--others", "--exclude-standard", "-z", "--", ".", ":(exclude).polis/artifacts/**")
+	if err != nil {
+		return "", fmt.Errorf("list eligible untracked worktree paths: %w", err)
+	}
+	if len(untracked) != 0 {
+		if _, err := gitutil.Bytes(ctx, repo, env, bytes.NewReader(untracked), "--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
+			return "", fmt.Errorf("stage eligible untracked worktree paths: %w", err)
+		}
 	}
 	return gitutil.Output(ctx, repo, env, nil, "write-tree")
 }

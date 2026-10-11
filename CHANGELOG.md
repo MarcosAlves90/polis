@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+- Make consumer apply's temporary target-tree calculation tolerate ignored `.polis` directories and stage non-ignored untracked filenames literally, preserving the exact tracked/untracked inclusion and artifact-exclusion rules.
+
 ## [6.11.1] - 2026-10-10
 
 ### Added

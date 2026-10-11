@@ -37,7 +37,7 @@ Make the normal consumer operation one command:
 
 - Runtime performs `git apply --check` against the clean exact baseline.
 - Runtime applies patch to the working tree without `--index`; consumer staging state therefore remains unchanged.
-- Runtime computes resulting working-tree identity using a temporary index initialized from `HEAD` and populated from the post-apply worktree.
+- Runtime computes resulting working-tree identity using a temporary index initialized from `HEAD`. It updates tracked paths separately from eligible non-ignored untracked paths, excludes `.polis/artifacts/**`, and treats enumerated untracked names literally so Git pathspec syntax in filenames cannot change the selection.
 - Computed tree MUST equal manifest `target_tree`.
 - `HEAD` MUST remain unchanged.
 
@@ -46,6 +46,7 @@ Make the normal consumer operation one command:
 - Any package, baseline, dirty-tree, isolated-apply, target-tree, or policy failure before real apply leaves consumer files unchanged.
 - Real patch application uses Git's all-file apply operation after successful `--check` and isolated validation.
 - A post-apply target-tree mismatch is a critical validation failure; runtime attempts reversal with the exact patch and reports whether rollback restored the baseline. It MUST NOT claim successful apply when rollback or verification is uncertain.
+- Rollback verification uses the same worktree-tree calculation and checks `HEAD`, the real index tree, the exact base tree, and clean repository status. Reverse-operation failure and rollback-verification failure are reported distinctly.
 
 ## Acceptance criteria
 
