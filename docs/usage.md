@@ -340,6 +340,16 @@ An explicitly authorized prompt/auto success intentionally creates a local
 commit and ref. A failed commit attempt restores `HEAD`, index, and worktree
 when rollback can be verified; an unreachable Git object may remain.
 
+After applying a package, `apply` checks the exact target tree without changing
+the real index. The temporary tree calculation includes tracked worktree changes
+and eligible non-ignored untracked files, while excluding `.polis/artifacts/`.
+Untracked names are treated as literal paths, including names that resemble Git
+pathspec syntax. Ignore rules therefore do not hide tracked changes, and ignored
+directories do not make tree verification fail merely because Git encounters
+them. If target-tree verification fails, POLIS reverses the patch and verifies
+`HEAD`, the index, the worktree tree, and repository status; it reports an
+unverified rollback rather than claiming that restoration succeeded.
+
 ## Project Policy and validation
 
 `strict` is the default and preserves the strongest current behavior. Existing
