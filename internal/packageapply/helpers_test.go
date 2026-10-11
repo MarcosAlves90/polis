@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -179,6 +180,9 @@ func TestWorkingTreeIDWithIgnoredPolisDirectory(t *testing.T) {
 }
 
 func TestWorkingTreeIDIncludesUntrackedPathspecMagicFilename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows forbids ':' in filenames, so this Git pathspec-magic filename cannot be represented")
+	}
 	repo := simpleRepo(t)
 	filename := ":(exclude)unexpected.txt"
 	if err := os.WriteFile(filepath.Join(repo, filename), []byte("literal path\n"), 0o644); err != nil {
