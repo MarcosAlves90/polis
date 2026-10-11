@@ -24,6 +24,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/implementationplan"
 	"github.com/MarcosAlves90/polis/v6/internal/isolation"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
+	"github.com/MarcosAlves90/polis/v6/internal/pathguard"
 	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
 	"github.com/MarcosAlves90/polis/v6/internal/policyload"
 	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
@@ -136,6 +137,15 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 	repo, err := resolveRepo(ctx, opts.Repo)
 	if err != nil {
 		return Result{}, err
+	}
+	if !workspaceValidation {
+		inside, err := pathguard.Contains(repo, opts.Out)
+		if err != nil {
+			return Result{}, fmt.Errorf("validate delivery package output boundary: %w", err)
+		}
+		if inside {
+			return Result{}, errors.New("delivery package output must be outside the target worktree")
+		}
 	}
 	retention, err := artifactretention.Load(ctx, repo)
 	if err != nil {
@@ -282,7 +292,6 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 	retained := []artifactretention.Artifact{
 		{Class: "contracts", Data: artifact.changeRaw},
 		{Class: "evidence", Data: artifact.evidence},
-		{Class: "packages", Source: result.Path},
 	}
 	if len(artifact.implementationPlanRaw) > 0 {
 		retained = append(retained, artifactretention.Artifact{Class: "plans", Data: artifact.implementationPlanRaw})

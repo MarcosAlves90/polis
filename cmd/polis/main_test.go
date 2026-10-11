@@ -282,9 +282,18 @@ func TestRunStatusReportsPersistedPartialAndCompleteWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(built.RetainedPaths) == 0 {
-		t.Fatal("build did not retain package state")
+		t.Fatal("build did not retain workflow evidence")
 	}
-	complete := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	for _, path := range built.RetainedPaths {
+		if strings.HasPrefix(path, ".polis/artifacts/packages/") {
+			t.Fatalf("build retained delivery package in repository: %s", path)
+		}
+	}
+	withoutExplicitPackage := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	if withoutExplicitPackage["state"] != changestatus.StateImplementationPending {
+		t.Fatalf("external package was inferred as persisted state: %v", withoutExplicitPackage)
+	}
+	complete := runCLIJSON(t, "status", "--repo", repo, "--package", built.Path, "--format", "json")
 	if complete["state"] != changestatus.StateComplete {
 		t.Fatalf("complete status=%v", complete)
 	}
@@ -297,7 +306,7 @@ func TestRunStatusReportsPersistedPartialAndCompleteWorkflow(t *testing.T) {
 		t.Fatalf("evidence status=%v", complete["evidence"])
 	}
 	assertStatusGate(t, complete, "test.complete", changestatus.StageComplete)
-	assertCLITextContains(t, []string{"status", "--repo", repo}, "POLIS STATUS: complete", "Contract:", "Baseline commit:", "Evidence: complete", "Next action: none")
+	assertCLITextContains(t, []string{"status", "--repo", repo, "--package", built.Path}, "POLIS STATUS: complete", "Contract:", "Baseline commit:", "Evidence: complete", "Next action: none")
 }
 
 func TestRunStatusReconstructsExternalWorkflowArtifacts(t *testing.T) {
@@ -486,12 +495,13 @@ func TestRunStatusReportsDeferredGatesAsConsumerValidationRequired(t *testing.T)
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := packagebuild.Build(context.Background(), packagebuild.Options{
+	built, err := packagebuild.Build(context.Background(), packagebuild.Options{
 		Repo: repo, Project: "polis", Change: "status-deferred", Out: t.TempDir(), Contract: contract, DeferredGates: []string{"coverage"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	status := runCLIJSON(t, "status", "--repo", repo, "--format", "json")
+	status := runCLIJSON(t, "status", "--repo", repo, "--package", built.Path, "--format", "json")
 	if status["state"] != changestatus.StateConsumerValidationRequired {
 		t.Fatalf("deferred status=%v", status)
 	}
@@ -1542,10 +1552,13 @@ func TestRunBuildDeferralTextAndJSONReporting(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatalf("invalid build JSON: %v\n%s", err, out.String())
 	}
-	if !result.ConsumerValidationRequired || len(result.DeferredGates) != 1 || result.DeferredGates[0] != "coverage" || result.ProducerGateStatuses["coverage"] != string(spec.StatusDeferred) || len(result.RetainedPaths) != 3 {
+	if !result.ConsumerValidationRequired || len(result.DeferredGates) != 1 || result.DeferredGates[0] != "coverage" || result.ProducerGateStatuses["coverage"] != string(spec.StatusDeferred) || len(result.RetainedPaths) != 2 {
 		t.Fatalf("build output=%+v", result)
 	}
 	for _, path := range result.RetainedPaths {
+		if strings.HasPrefix(path, ".polis/artifacts/packages/") {
+			t.Errorf("delivery package was retained in repository: %q", path)
+		}
 		if !strings.HasPrefix(path, ".polis/artifacts/") {
 			t.Errorf("unexpected retained path %q", path)
 		}
