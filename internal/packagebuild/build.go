@@ -139,12 +139,8 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 		return Result{}, err
 	}
 	if !workspaceValidation {
-		inside, err := pathguard.Contains(repo, opts.Out)
-		if err != nil {
-			return Result{}, fmt.Errorf("validate delivery package output boundary: %w", err)
-		}
-		if inside {
-			return Result{}, errors.New("delivery package output must be outside the target worktree")
+		if err := validatePackageOutputOutside(repo, opts.Out); err != nil {
+			return Result{}, err
 		}
 	}
 	retention, err := artifactretention.Load(ctx, repo)
@@ -275,6 +271,9 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 			ProducerGateStatuses: cloneGateStatuses(producerResult.Gates),
 		}, nil
 	}
+	if err := validatePackageOutputOutside(repo, opts.Out); err != nil {
+		return Result{}, err
+	}
 
 	artifact := buildArtifact{
 		opts: opts, objectFormat: objectFormat, baseCommit: baseCommit, targetTree: targetTree,
@@ -285,7 +284,7 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 	if err != nil {
 		return Result{}, err
 	}
-	result, err := finalizeArtifact(artifact, manifestRaw)
+	result, err := finalizeArtifact(repo, artifact, manifestRaw)
 	if err != nil || !retention.RepositoryEnabled() {
 		return result, err
 	}
@@ -443,9 +442,26 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func finalizeArtifact(artifact buildArtifact, manifestRaw []byte) (Result, error) {
+func validatePackageOutputOutside(repo, output string) error {
+	inside, err := pathguard.Contains(repo, output)
+	if err != nil {
+		return fmt.Errorf("validate delivery package output boundary: %w", err)
+	}
+	if inside {
+		return errors.New("delivery package output must be outside the target worktree")
+	}
+	return nil
+}
+
+func finalizeArtifact(repo string, artifact buildArtifact, manifestRaw []byte) (Result, error) {
+	if err := validatePackageOutputOutside(repo, artifact.opts.Out); err != nil {
+		return Result{}, err
+	}
 	if err := os.MkdirAll(artifact.opts.Out, 0o755); err != nil {
 		return Result{}, fmt.Errorf("create output directory: %w", err)
+	}
+	if err := validatePackageOutputOutside(repo, artifact.opts.Out); err != nil {
+		return Result{}, err
 	}
 	candidate, err := writeCandidateArchive(artifact.opts.Out, candidateArchiveContents{
 		Manifest: manifestRaw, Policy: artifact.policyRaw, Change: artifact.changeRaw,
@@ -455,6 +471,9 @@ func finalizeArtifact(artifact buildArtifact, manifestRaw []byte) (Result, error
 		return Result{}, err
 	}
 	defer os.Remove(candidate)
+	if err := validatePackageOutputOutside(repo, artifact.opts.Out); err != nil {
+		return Result{}, err
+	}
 	if _, err := packageverify.Verify(candidate); err != nil {
 		return Result{}, fmt.Errorf("verify candidate POLIS package: %w", err)
 	}
@@ -463,7 +482,24 @@ func finalizeArtifact(artifact buildArtifact, manifestRaw []byte) (Result, error
 		return Result{}, err
 	}
 	finalPath := filepath.Join(artifact.opts.Out, fmt.Sprintf("polis-%s-%s-%s.polis", artifact.opts.Project, artifact.opts.Change, archiveHash[:12]))
+	if err := validatePackageOutputOutside(repo, artifact.opts.Out); err != nil {
+		return Result{}, err
+	}
 	if err := copyExclusive(candidate, finalPath); err != nil {
+		return Result{}, err
+	}
+	created, err := os.Lstat(finalPath)
+	if err != nil {
+		return Result{}, fmt.Errorf("inspect final delivery package: %w", err)
+	}
+	if err := validatePackageOutputOutside(repo, artifact.opts.Out); err != nil {
+		if current, statErr := os.Lstat(finalPath); statErr == nil && os.SameFile(created, current) {
+			if removeErr := os.Remove(finalPath); removeErr != nil {
+				return Result{}, fmt.Errorf("%w; remove package created after output redirection: %v", err, removeErr)
+			}
+		} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return Result{}, fmt.Errorf("%w; inspect package for cleanup: %v", err, statErr)
+		}
 		return Result{}, err
 	}
 	summary := artifact.policy.ValidationSummary()

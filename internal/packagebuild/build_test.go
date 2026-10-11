@@ -370,6 +370,99 @@ func TestBuildRejectsOutputInsideWorktree(t *testing.T) {
 	}
 }
 
+func TestBuildRejectsOutputRedirectedInsideWorktreeDuringValidation(t *testing.T) {
+	repo := newV6Repo(t, false)
+	output := filepath.Join(t.TempDir(), "delivery-output")
+	if err := os.Mkdir(output, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(repo, "redirected-output")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	probe := filepath.Join(t.TempDir(), "symlink-probe")
+	if err := os.Symlink(target, probe); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
+	configureOutputRedirectGate(t, repo)
+	contract := lockedCharacterizationContract(t, repo, ".")
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("POLIS_TEST_REDIRECT_OUTPUT", "1")
+	t.Setenv("POLIS_TEST_REDIRECT_OUTPUT_PATH", output)
+	t.Setenv("POLIS_TEST_REDIRECT_OUTPUT_TARGET", target)
+
+	_, err := Build(context.Background(), Options{Repo: repo, Project: "gitrex", Change: "redirected-output", Out: output, Contract: contract})
+	if err == nil || !strings.Contains(err.Error(), "delivery package output must be outside the target worktree") {
+		t.Fatalf("Build succeeded after output path redirected inside the repository: err=%v", err)
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".polis") {
+			t.Fatalf("build left a delivery package in the target worktree: %s", filepath.Join(target, entry.Name()))
+		}
+	}
+}
+
+func TestBuildOutputRedirectGateHelper(t *testing.T) {
+	if os.Getenv("POLIS_TEST_REDIRECT_OUTPUT") != "1" {
+		return
+	}
+	output := os.Getenv("POLIS_TEST_REDIRECT_OUTPUT_PATH")
+	target := os.Getenv("POLIS_TEST_REDIRECT_OUTPUT_TARGET")
+	if output == "" || target == "" {
+		t.Fatal("redirect helper requires output and target paths")
+	}
+	if err := os.Remove(output); err != nil {
+		t.Fatalf("remove external output directory: %v", err)
+	}
+	if err := os.Symlink(target, output); err != nil {
+		t.Fatalf("redirect output to target worktree: %v", err)
+	}
+}
+
+func configureOutputRedirectGate(t *testing.T, repo string) {
+	t.Helper()
+	policyPath := filepath.Join(repo, ".polis", "policy.json")
+	raw, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := spec.DecodePolicy(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range policy.Gates {
+		if policy.Gates[i].ID == "test.complete" {
+			policy.Gates[i].Command = &spec.CommandSpec{
+				Argv: []string{executable, "-test.run=^TestBuildOutputRedirectGateHelper$"},
+				Cwd:  ".", TimeoutSeconds: 60,
+				Environment: &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit},
+			}
+		}
+	}
+	raw, err = json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policyPath, append(raw, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".polis/policy.json")
+	runGit(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "configure output redirection regression gate")
+}
+
 func TestBuildDefersCoverageInFormatV5Evidence(t *testing.T) {
 	repo := newV6Repo(t, false)
 	contract := lockedCharacterizationContract(t, repo, ".")
