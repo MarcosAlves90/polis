@@ -33,6 +33,12 @@ func Contains(root, candidate string) (bool, error) {
 	return len(rel) < len(prefix) || rel[:len(prefix)] != prefix, nil
 }
 
+// Resolve returns the canonical absolute path, resolving existing symlinks and
+// preserving any missing suffix below the nearest existing ancestor.
+func Resolve(path string) (string, error) {
+	return canonical(path)
+}
+
 func canonical(path string) (string, error) {
 	return canonicalWithAbs(path, filepath.Abs)
 }

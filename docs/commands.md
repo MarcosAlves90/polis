@@ -502,6 +502,9 @@ Reads/writes:
   never retained in the repository. Repository retention may publish contracts/plans/proofs/
   evidence, but never packages, under .polis/artifacts/. Commands may write caches or use
   network/services.
+  The caller must not move or retarget the external output directory into the target worktree while build is running.
+  POLIS revalidates the pinned directory and returns cleanup failures as build errors.
+  A process with filesystem access can still relocate the directory after the final check or after build returns. This portable CLI cannot prevent that.
 Options/defaults:
   --repo/--project/--change/--contract/--out are required, no defaults.
   --policy defaults to committed unchanged .polis/policy.json; explicit policy is external.

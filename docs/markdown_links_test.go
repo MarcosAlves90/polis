@@ -175,3 +175,19 @@ func markdownHeadingSlug(heading string) string {
 	}
 	return strings.Trim(slug.String(), "-")
 }
+
+func TestPackageOutputRelocationLimitDocumented(t *testing.T) {
+	commands, err := os.ReadFile("commands.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{
+		"The caller must not move or retarget the external output directory into the target worktree while build is running.",
+		"POLIS revalidates the pinned directory and returns cleanup failures as build errors.",
+		"A process with filesystem access can still relocate the directory after the final check or after build returns.",
+	} {
+		if !strings.Contains(string(commands), fragment) {
+			t.Errorf("Build output relocation boundary is missing %q", fragment)
+		}
+	}
+}

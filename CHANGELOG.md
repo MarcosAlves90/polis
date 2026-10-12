@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Separate remote/web-agent `.polis` package handoff from local coding-agent `workspace validate`; build outputs are external-only, disposable, and no longer retained in repositories.
 
 ### Fixed
+- Pin package output writes and cleanup to a validated directory handle; detect and clean observed symlink retargeting or directory relocation, verify the candidate through the same open file handle, and surface cleanup failures. Document that another process with filesystem access can still relocate the output after the final check or after build returns.
 - Make consumer apply's temporary target-tree calculation tolerate ignored `.polis` directories and stage non-ignored untracked filenames literally, preserving the exact tracked/untracked inclusion and artifact-exclusion rules.
 
 ## [6.11.1] - 2026-10-10
