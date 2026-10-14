@@ -254,8 +254,11 @@ func TestBuildRevalidatesPinnedOutputAfterRetention(t *testing.T) {
 func TestLatePinnedOutputValidationRemovesFinalPackageThroughHandle(t *testing.T) {
 	repo := t.TempDir()
 	base := t.TempDir()
-	output, _, candidateName, finalName := prepareCleanupTestArtifacts(t, repo, base)
+	output, candidate, candidateName, finalName := prepareCleanupTestArtifacts(t, repo, base)
 	defer output.Close()
+	if err := candidate.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := cleanupPackageOutputFiles(output, candidateName); err != nil {
 		t.Fatalf("remove candidate before simulating post-retention validation: %v", err)
 	}
@@ -278,8 +281,11 @@ func TestLatePinnedOutputValidationRemovesFinalPackageThroughHandle(t *testing.T
 func TestPackageOutputCleanupValidatesAndRemovesFinalAfterRetentionFailure(t *testing.T) {
 	repo := t.TempDir()
 	base := t.TempDir()
-	output, _, candidateName, finalName := prepareCleanupTestArtifacts(t, repo, base)
+	output, candidate, candidateName, finalName := prepareCleanupTestArtifacts(t, repo, base)
 	defer output.Close()
+	if err := candidate.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := cleanupPackageOutputFiles(output, candidateName); err != nil {
 		t.Fatalf("remove candidate before simulating retention failure: %v", err)
 	}
