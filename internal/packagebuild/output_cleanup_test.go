@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -228,5 +229,77 @@ func TestPackageOutputCleanupReportsFinalRemovalFailureAfterMove(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("cleanup retry left artifacts: %v", entries)
+	}
+}
+
+func TestBuildRevalidatesPinnedOutputAfterRetention(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve packagebuild test source")
+	}
+	source, err := os.ReadFile(filepath.Join(filepath.Dir(testFile), "build.go"))
+	if err != nil {
+		t.Fatalf("read Build implementation: %v", err)
+	}
+	buildSource := string(source)
+	retention := strings.Index(buildSource, "paths, err := retention.PublishMany(repo, retained)")
+	failure := strings.Index(buildSource, `retentionErr := fmt.Errorf("retain generated delivery artifacts: %w", err)`)
+	failureCleanup := strings.Index(buildSource, `finishPackageOutput(packageOutput, nil, "", filepath.Base(result.Path), true, retentionErr)`)
+	validation := strings.Index(buildSource, "validatePackageOutputBeforeBuildReturn(packageOutput, &result)")
+	if retention < 0 || failure <= retention || failureCleanup <= failure || validation <= failureCleanup {
+		t.Fatal("Build must validate the output and clean the package on retention failure, and validate again after successful retention publication")
+	}
+}
+
+func TestLatePinnedOutputValidationRemovesFinalPackageThroughHandle(t *testing.T) {
+	repo := t.TempDir()
+	base := t.TempDir()
+	output, _, candidateName, finalName := prepareCleanupTestArtifacts(t, repo, base)
+	defer output.Close()
+	if err := cleanupPackageOutputFiles(output, candidateName); err != nil {
+		t.Fatalf("remove candidate before simulating post-retention validation: %v", err)
+	}
+	moved := filepath.Join(repo, "moved-output")
+	if err := os.Rename(output.Path(), moved); err != nil {
+		t.Skipf("filesystem does not permit moving an open output directory: %v", err)
+	}
+	if err := finishPackageOutput(output, nil, "", finalName, true, nil); err == nil {
+		t.Fatal("late output relocation was not detected before returning success")
+	}
+	entries, err := os.ReadDir(moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("pinned-handle cleanup left package files: %v", entries)
+	}
+}
+
+func TestPackageOutputCleanupValidatesAndRemovesFinalAfterRetentionFailure(t *testing.T) {
+	repo := t.TempDir()
+	base := t.TempDir()
+	output, _, candidateName, finalName := prepareCleanupTestArtifacts(t, repo, base)
+	defer output.Close()
+	if err := cleanupPackageOutputFiles(output, candidateName); err != nil {
+		t.Fatalf("remove candidate before simulating retention failure: %v", err)
+	}
+	moved := filepath.Join(repo, "moved-output")
+	if err := os.Rename(output.Path(), moved); err != nil {
+		t.Skipf("filesystem does not permit moving an open output directory: %v", err)
+	}
+	retentionErr := errors.New("retention publication failed")
+	err := finishPackageOutput(output, nil, "", finalName, true, retentionErr)
+	if !errors.Is(err, retentionErr) {
+		t.Fatalf("retention error was lost: %v", err)
+	}
+	if !strings.Contains(err.Error(), "validate package output before returning") {
+		t.Fatalf("retention failure path did not report final output validation: %v", err)
+	}
+	entries, err := os.ReadDir(moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("retention failure cleanup left package files: %v", entries)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -286,25 +287,35 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 		return Result{}, err
 	}
 	result, err := finalizeArtifact(artifact, manifestRaw, packageOutput)
-	if err != nil || !retention.RepositoryEnabled() {
+	if err != nil {
 		return result, err
 	}
-	retained := []artifactretention.Artifact{
-		{Class: "contracts", Data: artifact.changeRaw},
-		{Class: "evidence", Data: artifact.evidence},
+	if retention.RepositoryEnabled() {
+		retained := []artifactretention.Artifact{
+			{Class: "contracts", Data: artifact.changeRaw},
+			{Class: "evidence", Data: artifact.evidence},
+		}
+		if len(artifact.implementationPlanRaw) > 0 {
+			retained = append(retained, artifactretention.Artifact{Class: "plans", Data: artifact.implementationPlanRaw})
+		}
+		if len(artifact.regressionPatch) > 0 {
+			retained = append(retained, artifactretention.Artifact{Class: "proofs", Data: artifact.regressionPatch})
+		}
+		paths, err := retention.PublishMany(repo, retained)
+		if err != nil {
+			retentionErr := fmt.Errorf("retain generated delivery artifacts: %w", err)
+			return Result{}, finishPackageOutput(packageOutput, nil, "", filepath.Base(result.Path), true, retentionErr)
+		}
+		result.RetainedPaths = paths
 	}
-	if len(artifact.implementationPlanRaw) > 0 {
-		retained = append(retained, artifactretention.Artifact{Class: "plans", Data: artifact.implementationPlanRaw})
+	if err := validatePackageOutputBeforeBuildReturn(packageOutput, &result); err != nil {
+		return result, err
 	}
-	if len(artifact.regressionPatch) > 0 {
-		retained = append(retained, artifactretention.Artifact{Class: "proofs", Data: artifact.regressionPatch})
-	}
-	paths, err := retention.PublishMany(repo, retained)
-	if err != nil {
-		return Result{}, fmt.Errorf("retain generated delivery artifacts: %w", err)
-	}
-	result.RetainedPaths = paths
 	return result, nil
+}
+
+func validatePackageOutputBeforeBuildReturn(output *packageOutput, result *Result) error {
+	return finishPackageOutput(output, nil, "", filepath.Base(result.Path), true, nil)
 }
 
 func baselineConstraintError(err error, plan policyplan.Plan, workspaceValidation bool) error {
@@ -512,9 +523,9 @@ func finishPackageOutput(output *packageOutput, candidate *os.File, candidateNam
 	if cleanupErr := cleanupPackageOutputFiles(output, candidateName); cleanupErr != nil {
 		primaryErr = errors.Join(primaryErr, cleanupErr)
 	}
-	if finalCreated && primaryErr == nil {
+	if finalCreated {
 		if err := output.ValidateRequested(); err != nil {
-			primaryErr = fmt.Errorf("validate package output before returning: %w", err)
+			primaryErr = errors.Join(primaryErr, fmt.Errorf("validate package output before returning: %w", err))
 		}
 	}
 	if finalCreated && primaryErr != nil {

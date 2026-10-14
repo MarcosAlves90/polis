@@ -246,4 +246,30 @@ func TestREADMEAndUsageExposeFirstChangeQuickstart(t *testing.T) {
 			t.Errorf("first-change quickstart missing %q", fragment)
 		}
 	}
+	doctor := strings.Index(quickstart, "polis doctor --repo .")
+	setup := strings.Index(quickstart, `POLIS_OUTSIDE="${POLIS_OUTSIDE:-$(mktemp -d)}"`)
+	if doctor < 0 || setup <= doctor {
+		t.Fatal("quickstart must run doctor before setting up the default POLIS_OUTSIDE directory")
+	}
+	if !strings.Contains(quickstart, `mkdir -p "$POLIS_OUTSIDE"`) {
+		t.Fatal("quickstart must prepare the selected POLIS_OUTSIDE directory without replacing a caller value")
+	}
+}
+
+func TestSDD0043Req007IsDeferred(t *testing.T) {
+	root := repositoryRoot(t)
+	sdd, err := os.ReadFile(filepath.Join(root, "docs", "sdd", "0043-agent-workspace-validation.md"))
+	if err != nil {
+		t.Fatalf("read SDD-0043: %v", err)
+	}
+	content := string(sdd)
+	for _, fragment := range []string{
+		"REQ-007 — Deferred",
+		"no representative apply workload is available",
+		"not implemented by this change",
+	} {
+		if !strings.Contains(content, fragment) {
+			t.Errorf("SDD-0043 does not document REQ-007 deferral: missing %q", fragment)
+		}
+	}
 }

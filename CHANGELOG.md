@@ -7,12 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Changed
+- Preserve a caller-provided `POLIS_OUTSIDE` in the first-change quickstart, run `polis doctor` before workspace setup, and make the fast-test contract reject packages outside its exact existing allowlist.
+- Mark SDD-0043 REQ-007 deferred until a representative apply workload is available; this follow-up does not claim the requirement is implemented.
 - Add an explicitly partial 21-package local test path, measured once at 10.70s on Darwin/Go 1.27.1; keep the complete CI, race, and coverage gates authoritative.
 - Split the V6 usage manual into a short navigation index and focused operational references; keep embedded CLI help in one canonical command-reference document.
 - Add a first-change quickstart that directs local coding agents to package-free workspace validation and remote producers to external disposable package delivery.
 - Separate remote/web-agent `.polis` package handoff from local coding-agent `workspace validate`; build outputs are external-only, disposable, and no longer retained in repositories.
 
 ### Fixed
+- Revalidate the pinned package output after optional retention publication and remove the final archive through the pinned handle if the last validation detects relocation.
 - Pin package output writes and cleanup to a validated directory handle; detect and clean observed symlink retargeting or directory relocation, verify the candidate through the same open file handle, and surface cleanup failures. Document that another process with filesystem access can still relocate the output after the final check or after build returns.
 - Make consumer apply's temporary target-tree calculation tolerate ignored `.polis` directories and stage non-ignored untracked filenames literally, preserving the exact tracked/untracked inclusion and artifact-exclusion rules.
 

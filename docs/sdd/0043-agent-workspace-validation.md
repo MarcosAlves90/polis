@@ -74,6 +74,10 @@ installers are outside this change.
   versioned report.
 - REQ-005 / AC-004: write only new external reports with restrictive permissions.
 - REQ-006 / AC-004: publish the report schema offline and state the trust limits.
-- REQ-007 / AC-006: expose workspace operations in the embedded agent-help index.
+- **REQ-007 — Deferred:** expose workspace operations in the embedded agent-help
+  index. Deferred because no representative apply workload is available. The
+  requirement is not implemented by this change; re-scope it when a representative
+  workload is available. Do not infer completion from the existing command
+  reference.
 - REQ-008 / AC-007: keep canonical help inventory tests aligned with added commands.
 - AC-005: retain existing package-building and verification behavior.

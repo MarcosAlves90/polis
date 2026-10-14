@@ -49,6 +49,22 @@ func TestFastLocalValidationPathIsDocumented(t *testing.T) {
 			t.Errorf("validation guide command is missing package %q", pkg)
 		}
 	}
+	actualPackages := fastTestPackages(string(script))
+	if len(actualPackages) != len(packages) {
+		t.Fatalf("fast script package allowlist has %d entries, want exactly %d: %v", len(actualPackages), len(packages), actualPackages)
+	}
+	for i, pkg := range packages {
+		if actualPackages[i] != pkg {
+			t.Fatalf("fast script package allowlist differs at entry %d: got %q, want %q (all: %v)", i, actualPackages[i], pkg, actualPackages)
+		}
+	}
+	inlineExtra := strings.Replace(string(script), "exec go test -count=1 -timeout=15m \\", "exec go test -count=1 -timeout=15m ./internal/unapproved \\", 1)
+	if inlineExtra == string(script) {
+		t.Fatal("fast script fixture no longer contains the expected go test command")
+	}
+	if got := fastTestPackages(inlineExtra); len(got) != len(packages)+1 {
+		t.Fatalf("fast package parser did not include an extra package on the command line: %v", got)
+	}
 	for _, excluded := range []string{
 		"cmd/polis", "internal/cicontract", "internal/gaterun",
 		"internal/implementationplan", "internal/packageapply",
@@ -71,4 +87,25 @@ func TestFastLocalValidationPathIsDocumented(t *testing.T) {
 			t.Errorf("CI no longer contains authoritative full gate %q", fullGate)
 		}
 	}
+}
+
+func fastTestPackages(script string) []string {
+	var packages []string
+	inCommand := false
+	for _, line := range strings.Split(script, "\n") {
+		line = strings.TrimSpace(line)
+		if !inCommand && strings.HasPrefix(line, "exec go test ") {
+			inCommand = true
+			line = strings.TrimPrefix(line, "exec ")
+		}
+		if !inCommand {
+			continue
+		}
+		for _, field := range strings.Fields(strings.TrimSuffix(line, "\\")) {
+			if strings.HasPrefix(field, "./") {
+				packages = append(packages, field)
+			}
+		}
+	}
+	return packages
 }

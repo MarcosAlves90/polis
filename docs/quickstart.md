@@ -26,11 +26,14 @@ clean committed baseline. Keep the effective Project Policy, Change Contract, Re
 patch, plan (if used), and validation report outside the worktree.
 
 ```bash
-# Use a unique existing temporary directory outside the target worktree.
-# If TMPDIR is inside the repository, set POLIS_OUTSIDE to another external path.
-POLIS_OUTSIDE="$(mktemp -d)"
-
+# Check prerequisites before creating any temporary workspace state.
 polis doctor --repo .
+
+# Preserve a caller-provided external directory; otherwise allocate a default.
+# If TMPDIR is inside the repository, set POLIS_OUTSIDE to another external path first.
+POLIS_OUTSIDE="${POLIS_OUTSIDE:-$(mktemp -d)}"
+mkdir -p "$POLIS_OUTSIDE"
+
 polis init --repo . --profile auto --dry-run > "$POLIS_OUTSIDE/policy.json"
 polis plan --repo . --policy "$POLIS_OUTSIDE/policy.json"
 ```
