@@ -3,6 +3,7 @@ package packagebuild
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1687,5 +1688,81 @@ func TestWorkspaceTargetTreeUsesTemporaryIndexWithoutMutation(t *testing.T) {
 	runGit(t, repo, "add", "staged-source.txt")
 	if _, err := WorkspaceTargetTree(context.Background(), repo, base); err == nil || !strings.Contains(err.Error(), "index contains staged changes") {
 		t.Fatalf("staged source should be unavailable, got %v", err)
+	}
+}
+
+func TestBuildRetentionPublishFailureValidatesAndCleansFinalPackage(t *testing.T) {
+	repo := newV6Repo(t, false, true)
+	retainedContract := lockedCharacterizationContract(t, repo, ".")
+	contractRaw, err := os.ReadFile(retainedContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalContract := filepath.Join(t.TempDir(), "contract.json")
+	if err := os.WriteFile(externalContract, contractRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	contractsDir := filepath.Join(repo, ".polis", "artifacts", "contracts")
+	if err := os.RemoveAll(contractsDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(contractsDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output := filepath.Join(t.TempDir(), "delivery")
+	movedOutput := filepath.Join(repo, ".polis", "moved-output")
+	var publisherCalled bool
+	var relocationErr error
+	var publishErr error
+	publisher := retainedArtifactPublisherFunc(func(state artifactretention.State, targetRepo string, artifacts []artifactretention.Artifact) ([]string, error) {
+		publisherCalled = true
+		if err := os.Rename(output, movedOutput); err != nil {
+			relocationErr = err
+			return nil, err
+		}
+		paths, err := state.PublishMany(targetRepo, artifacts)
+		publishErr = err
+		return paths, err
+	})
+	ctx := context.WithValue(context.Background(), retainedArtifactPublisherContextKey{}, publisher)
+
+	result, err := Build(ctx, Options{
+		Repo: repo, Project: "gitrex", Change: "retention-publish-failure",
+		Out: output, Contract: externalContract,
+	})
+	if relocationErr != nil {
+		t.Fatalf("relocate package output before real PublishMany: %v", relocationErr)
+	}
+	if !publisherCalled {
+		t.Fatal("Build did not invoke the injected wrapper around real PublishMany")
+	}
+	if publishErr == nil || !strings.Contains(publishErr.Error(), "path is not a directory") {
+		t.Fatalf("real PublishMany did not fail on the regular-file class path: %v", publishErr)
+	}
+	if err == nil || !errors.Is(err, publishErr) {
+		t.Fatalf("Build did not preserve the real PublishMany error: %v", err)
+	}
+	for _, diagnostic := range []string{
+		"retain generated delivery artifacts",
+		"validate package output before returning",
+	} {
+		if !strings.Contains(err.Error(), diagnostic) {
+			t.Errorf("Build error is missing %q: %v", diagnostic, err)
+		}
+	}
+	if result.Path != "" {
+		t.Fatalf("failed Build returned a package path: %s", result.Path)
+	}
+	entries, err := os.ReadDir(movedOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("pinned-handle cleanup left files in moved output: %v", entries)
 	}
 }

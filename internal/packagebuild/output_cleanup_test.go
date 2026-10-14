@@ -242,7 +242,7 @@ func TestBuildRevalidatesPinnedOutputAfterRetention(t *testing.T) {
 		t.Fatalf("read Build implementation: %v", err)
 	}
 	buildSource := string(source)
-	retention := strings.Index(buildSource, "paths, err := retention.PublishMany(repo, retained)")
+	retention := strings.Index(buildSource, "publishRetainedArtifacts(ctx, retention, repo, retained)")
 	failure := strings.Index(buildSource, `retentionErr := fmt.Errorf("retain generated delivery artifacts: %w", err)`)
 	failureCleanup := strings.Index(buildSource, `finishPackageOutput(packageOutput, nil, "", filepath.Base(result.Path), true, retentionErr)`)
 	validation := strings.Index(buildSource, "validatePackageOutputBeforeBuildReturn(packageOutput, &result)")

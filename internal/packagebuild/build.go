@@ -72,6 +72,19 @@ type Result struct {
 	ProducerGateStatuses       map[string]spec.Status
 }
 
+// retainedArtifactPublisherContextKey is a private E2E-test seam. Normal
+// callers cannot construct this key and always use artifactretention.State.
+type retainedArtifactPublisherContextKey struct{}
+
+type retainedArtifactPublisherFunc func(artifactretention.State, string, []artifactretention.Artifact) ([]string, error)
+
+func publishRetainedArtifacts(ctx context.Context, state artifactretention.State, repo string, artifacts []artifactretention.Artifact) ([]string, error) {
+	if publisher, ok := ctx.Value(retainedArtifactPublisherContextKey{}).(retainedArtifactPublisherFunc); ok && publisher != nil {
+		return publisher(state, repo, artifacts)
+	}
+	return state.PublishMany(repo, artifacts)
+}
+
 const (
 	gitRevParse = "rev-parse"
 	gitCached   = "--cached"
@@ -301,7 +314,7 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 		if len(artifact.regressionPatch) > 0 {
 			retained = append(retained, artifactretention.Artifact{Class: "proofs", Data: artifact.regressionPatch})
 		}
-		paths, err := retention.PublishMany(repo, retained)
+		paths, err := publishRetainedArtifacts(ctx, retention, repo, retained)
 		if err != nil {
 			retentionErr := fmt.Errorf("retain generated delivery artifacts: %w", err)
 			return Result{}, finishPackageOutput(packageOutput, nil, "", filepath.Base(result.Path), true, retentionErr)
