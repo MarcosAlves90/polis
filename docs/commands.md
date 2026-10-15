@@ -233,7 +233,7 @@ Usage:
   polis workspace validate --repo <path> --contract <locked-v4-or-v6.json> [--policy <policy-v3.json>] [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--out-report <new-external.json>] [--jobs <1..16>] [--format text|json]
   polis workspace status --repo <path> --contract <external-locked-v4-or-v6.json> --report <external-workspace-validation-v1.json> [--policy <policy-v3.json>] [--format text|json]
 Purpose:
-  validate a locked change without a package, or compare an unsigned checkpoint's source identity
+  `workspace validate` checks local work without a package; `workspace status` compares a checkpoint. Neither performs package delivery or application.
 When to use:
   A local coding agent already in the checkout uses validate after implementation, without a package.
   Remote delivery is a separate flow: build -> verify -> consumer preflight/apply.

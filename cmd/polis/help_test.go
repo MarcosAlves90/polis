@@ -110,6 +110,32 @@ func TestAgentHelpSafetyAndOptions(t *testing.T) {
 	}
 }
 
+func TestREQ007RootHelpNamesBothWorkspaceOperations(t *testing.T) {
+	var canonical string
+	for _, args := range [][]string{{"help"}, {"-h"}, {"--help"}} {
+		var out, errOut bytes.Buffer
+		if code := run(args, &out, &errOut); code != exitPass || errOut.Len() != 0 {
+			t.Fatalf("REQ007-ROOT-HELP-RED: args=%v code=%d stdout=%q stderr=%q", args, code, out.String(), errOut.String())
+		}
+		for _, fragment := range []string{
+			"`workspace validate`",
+			"`workspace status`",
+			"without a package",
+			"checkpoint",
+			"Neither performs package delivery or application.",
+		} {
+			if !strings.Contains(out.String(), fragment) {
+				t.Fatalf("REQ007-ROOT-HELP-RED: args=%v root help missing %q: %s", args, fragment, out.String())
+			}
+		}
+		if canonical == "" {
+			canonical = out.String()
+		} else if out.String() != canonical {
+			t.Fatalf("REQ007-ROOT-HELP-RED: root help alias differs for args=%v", args)
+		}
+	}
+}
+
 func TestAgentHelpInvalidRequests(t *testing.T) {
 	for _, args := range [][]string{{"help", "unknown"}, {"unknown", "--help"}, {"help", "apply", "extra"}, {"apply", "--help", "extra"}} {
 		var out, errOut bytes.Buffer

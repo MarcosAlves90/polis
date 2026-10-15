@@ -256,7 +256,7 @@ func TestREADMEAndUsageExposeFirstChangeQuickstart(t *testing.T) {
 	}
 }
 
-func TestSDD0043Req007IsDeferred(t *testing.T) {
+func TestSDD0043Req007IsImplemented(t *testing.T) {
 	root := repositoryRoot(t)
 	sdd, err := os.ReadFile(filepath.Join(root, "docs", "sdd", "0043-agent-workspace-validation.md"))
 	if err != nil {
@@ -264,12 +264,24 @@ func TestSDD0043Req007IsDeferred(t *testing.T) {
 	}
 	content := string(sdd)
 	for _, fragment := range []string{
-		"REQ-007 — Deferred",
-		"no representative apply workload is available",
-		"not implemented by this change",
+		"REQ-007 / AC-007",
+		"`workspace validate`",
+		"`workspace status`",
+		"build → verify → preflight → apply",
+		"not a security sandbox",
+		"no representative production apply workload",
 	} {
 		if !strings.Contains(content, fragment) {
-			t.Errorf("SDD-0043 does not document REQ-007 deferral: missing %q", fragment)
+			t.Errorf("REQ007-SDD-RED: SDD-0043 missing implemented-scope fragment %q", fragment)
 		}
+	}
+	if strings.Contains(content, "REQ-007 — Deferred") {
+		t.Error("REQ007-SDD-RED: SDD-0043 still marks REQ-007 deferred")
+	}
+	if strings.Contains(content, "REQ-008 / AC-007") {
+		t.Error("REQ007-SDD-RED: SDD-0043 reuses AC-007 for REQ-008")
+	}
+	if !strings.Contains(content, "REQ-008 / AC-008") {
+		t.Error("REQ007-SDD-RED: SDD-0043 must give REQ-008 the distinct AC-008 identifier")
 	}
 }

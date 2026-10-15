@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 - Preserve a caller-provided `POLIS_OUTSIDE` in the first-change quickstart, run `polis doctor` before workspace setup, and make the fast-test contract reject packages outside its exact existing allowlist.
-- Mark SDD-0043 REQ-007 deferred until a representative apply workload is available; this follow-up does not claim the requirement is implemented.
+- Initially defer SDD-0043 REQ-007 while no representative apply workload is available; the authorized follow-up now implements explicit root-help discovery and local-only simulated-flow coverage without claiming a production workload.
 - Add an explicitly partial 21-package local test path, measured once at 10.70s on Darwin/Go 1.27.1; keep the complete CI, race, and coverage gates authoritative.
 - Split the V6 usage manual into a short navigation index and focused operational references; keep embedded CLI help in one canonical command-reference document.
 - Add a first-change quickstart that directs local coding agents to package-free workspace validation and remote producers to external disposable package delivery.
