@@ -135,6 +135,35 @@ func Verify(filename string) (Result, error) {
 	return packageResult(validated.contracts, validated.deferredGates), nil
 }
 
+// VerifyReaderAt verifies a package from an already-open archive. Callers that
+// create a candidate through a pinned directory handle can validate that same
+// file without reopening a mutable path.
+func VerifyReaderAt(reader io.ReaderAt, size int64) (Result, error) {
+	if reader == nil {
+		return Result{}, errors.New("POLIS archive reader is required")
+	}
+	if size < 0 || size > MaxArchiveBytes {
+		return Result{}, fmt.Errorf("POLIS archive exceeds maximum size %d", MaxArchiveBytes)
+	}
+	zr, err := zip.NewReader(reader, size)
+	if err != nil {
+		return Result{}, fmt.Errorf("open POLIS archive: %w", err)
+	}
+	files, err := indexArchiveFiles(zr.File)
+	if err != nil {
+		return Result{}, err
+	}
+	contents, err := readArchiveContents(files)
+	if err != nil {
+		return Result{}, err
+	}
+	validated, err := validatePackage(contents)
+	if err != nil {
+		return Result{}, err
+	}
+	return packageResult(validated.contracts, validated.deferredGates), nil
+}
+
 func Inspect(filename string) (Inspection, error) {
 	pkg, err := Load(filename)
 	if err != nil {

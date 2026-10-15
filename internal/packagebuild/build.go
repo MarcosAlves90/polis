@@ -72,6 +72,19 @@ type Result struct {
 	ProducerGateStatuses       map[string]spec.Status
 }
 
+// retainedArtifactPublisherContextKey is a private E2E-test seam. Normal
+// callers cannot construct this key and always use artifactretention.State.
+type retainedArtifactPublisherContextKey struct{}
+
+type retainedArtifactPublisherFunc func(artifactretention.State, string, []artifactretention.Artifact) ([]string, error)
+
+func publishRetainedArtifacts(ctx context.Context, state artifactretention.State, repo string, artifacts []artifactretention.Artifact) ([]string, error) {
+	if publisher, ok := ctx.Value(retainedArtifactPublisherContextKey{}).(retainedArtifactPublisherFunc); ok && publisher != nil {
+		return publisher(state, repo, artifacts)
+	}
+	return state.PublishMany(repo, artifacts)
+}
+
 const (
 	gitRevParse = "rev-parse"
 	gitCached   = "--cached"
@@ -136,6 +149,14 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 	repo, err := resolveRepo(ctx, opts.Repo)
 	if err != nil {
 		return Result{}, err
+	}
+	var packageOutput *packageOutput
+	if !workspaceValidation {
+		packageOutput, err = preparePackageOutput(repo, opts.Out)
+		if err != nil {
+			return Result{}, err
+		}
+		defer packageOutput.Close()
 	}
 	retention, err := artifactretention.Load(ctx, repo)
 	if err != nil {
@@ -265,6 +286,9 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 			ProducerGateStatuses: cloneGateStatuses(producerResult.Gates),
 		}, nil
 	}
+	if err := packageOutput.ValidateRequested(); err != nil {
+		return Result{}, err
+	}
 
 	artifact := buildArtifact{
 		opts: opts, objectFormat: objectFormat, baseCommit: baseCommit, targetTree: targetTree,
@@ -275,27 +299,36 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 	if err != nil {
 		return Result{}, err
 	}
-	result, err := finalizeArtifact(artifact, manifestRaw)
-	if err != nil || !retention.RepositoryEnabled() {
+	result, err := finalizeArtifact(artifact, manifestRaw, packageOutput)
+	if err != nil {
 		return result, err
 	}
-	retained := []artifactretention.Artifact{
-		{Class: "contracts", Data: artifact.changeRaw},
-		{Class: "evidence", Data: artifact.evidence},
-		{Class: "packages", Source: result.Path},
+	if retention.RepositoryEnabled() {
+		retained := []artifactretention.Artifact{
+			{Class: "contracts", Data: artifact.changeRaw},
+			{Class: "evidence", Data: artifact.evidence},
+		}
+		if len(artifact.implementationPlanRaw) > 0 {
+			retained = append(retained, artifactretention.Artifact{Class: "plans", Data: artifact.implementationPlanRaw})
+		}
+		if len(artifact.regressionPatch) > 0 {
+			retained = append(retained, artifactretention.Artifact{Class: "proofs", Data: artifact.regressionPatch})
+		}
+		paths, err := publishRetainedArtifacts(ctx, retention, repo, retained)
+		if err != nil {
+			retentionErr := fmt.Errorf("retain generated delivery artifacts: %w", err)
+			return Result{}, finishPackageOutput(packageOutput, nil, "", filepath.Base(result.Path), true, retentionErr)
+		}
+		result.RetainedPaths = paths
 	}
-	if len(artifact.implementationPlanRaw) > 0 {
-		retained = append(retained, artifactretention.Artifact{Class: "plans", Data: artifact.implementationPlanRaw})
+	if err := validatePackageOutputBeforeBuildReturn(packageOutput, &result); err != nil {
+		return result, err
 	}
-	if len(artifact.regressionPatch) > 0 {
-		retained = append(retained, artifactretention.Artifact{Class: "proofs", Data: artifact.regressionPatch})
-	}
-	paths, err := retention.PublishMany(repo, retained)
-	if err != nil {
-		return Result{}, fmt.Errorf("retain generated delivery artifacts: %w", err)
-	}
-	result.RetainedPaths = paths
 	return result, nil
+}
+
+func validatePackageOutputBeforeBuildReturn(output *packageOutput, result *Result) error {
+	return finishPackageOutput(output, nil, "", filepath.Base(result.Path), true, nil)
 }
 
 func baselineConstraintError(err error, plan policyplan.Plan, workspaceValidation bool) error {
@@ -434,32 +467,56 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func finalizeArtifact(artifact buildArtifact, manifestRaw []byte) (Result, error) {
-	if err := os.MkdirAll(artifact.opts.Out, 0o755); err != nil {
+func finalizeArtifact(artifact buildArtifact, manifestRaw []byte, output *packageOutput) (result Result, returnErr error) {
+	if output == nil {
+		return Result{}, errors.New("package output directory is not prepared")
+	}
+	if err := output.ValidateRequested(); err != nil {
+		return Result{}, err
+	}
+	if err := output.Ensure(); err != nil {
 		return Result{}, fmt.Errorf("create output directory: %w", err)
 	}
-	candidate, err := writeCandidateArchive(artifact.opts.Out, candidateArchiveContents{
+	candidate, candidateName, err := writeCandidateArchive(output, candidateArchiveContents{
 		Manifest: manifestRaw, Policy: artifact.policyRaw, Change: artifact.changeRaw,
 		Regression: artifact.regressionPatch, Payload: artifact.patch, Evidence: artifact.evidence, Baseline: artifact.baseline, ImplementationPlan: artifact.implementationPlanRaw,
 	})
 	if err != nil {
 		return Result{}, err
 	}
-	defer os.Remove(candidate)
-	if _, err := packageverify.Verify(candidate); err != nil {
+	finalName := ""
+	finalCreated := false
+	defer func() {
+		returnErr = finishPackageOutput(output, candidate, candidateName, finalName, finalCreated, returnErr)
+	}()
+	if err := output.ValidateRequested(); err != nil {
+		return Result{}, err
+	}
+	candidateInfo, err := candidate.Stat()
+	if err != nil {
+		return Result{}, fmt.Errorf("inspect candidate POLIS package: %w", err)
+	}
+	if _, err := packageverify.VerifyReaderAt(candidate, candidateInfo.Size()); err != nil {
 		return Result{}, fmt.Errorf("verify candidate POLIS package: %w", err)
 	}
-	archiveHash, err := fileSHA256(candidate)
+	archiveHash, err := fileSHA256Open(candidate)
 	if err != nil {
 		return Result{}, err
 	}
-	finalPath := filepath.Join(artifact.opts.Out, fmt.Sprintf("polis-%s-%s-%s.polis", artifact.opts.Project, artifact.opts.Change, archiveHash[:12]))
-	if err := copyExclusive(candidate, finalPath); err != nil {
+	finalName = fmt.Sprintf("polis-%s-%s-%s.polis", artifact.opts.Project, artifact.opts.Change, archiveHash[:12])
+	if err := output.ValidateRequested(); err != nil {
+		return Result{}, err
+	}
+	if err := copyCandidateToOutput(candidate, output, finalName); err != nil {
+		return Result{}, err
+	}
+	finalCreated = true
+	if err := output.ValidateRequested(); err != nil {
 		return Result{}, err
 	}
 	summary := artifact.policy.ValidationSummary()
 	return Result{
-		Path:                       finalPath,
+		Path:                       output.FilePath(finalName),
 		SHA256:                     archiveHash,
 		BaseCommit:                 artifact.baseCommit,
 		TargetTree:                 artifact.targetTree,
@@ -470,6 +527,26 @@ func finalizeArtifact(artifact buildArtifact, manifestRaw []byte) (Result, error
 		ConsumerValidationRequired: artifact.plan.ConsumerValidationRequired,
 		ProducerGateStatuses:       cloneGateStatuses(artifact.producerGateStatuses),
 	}, nil
+}
+
+func finishPackageOutput(output *packageOutput, candidate *os.File, candidateName, finalName string, finalCreated bool, primaryErr error) error {
+	if candidate != nil {
+		_ = candidate.Close()
+	}
+	if cleanupErr := cleanupPackageOutputFiles(output, candidateName); cleanupErr != nil {
+		primaryErr = errors.Join(primaryErr, cleanupErr)
+	}
+	if finalCreated {
+		if err := output.ValidateRequested(); err != nil {
+			primaryErr = errors.Join(primaryErr, fmt.Errorf("validate package output before returning: %w", err))
+		}
+	}
+	if finalCreated && primaryErr != nil {
+		if cleanupErr := cleanupPackageOutputFiles(output, finalName); cleanupErr != nil {
+			primaryErr = errors.Join(primaryErr, cleanupErr)
+		}
+	}
+	return primaryErr
 }
 
 func cloneGateStatuses(gates map[string]spec.Status) map[string]spec.Status {
@@ -545,7 +622,7 @@ type candidateArchiveContents struct {
 	ImplementationPlan []byte
 }
 
-func writeCandidateArchive(out string, contents candidateArchiveContents) (string, error) {
+func writeCandidateArchive(out *packageOutput, contents candidateArchiveContents) (*os.File, string, error) {
 	members := map[string][]byte{
 		spec.MemberManifest:   contents.Manifest,
 		spec.MemberPolicy:     contents.Policy,
@@ -573,11 +650,10 @@ func writeCandidateArchive(out string, contents candidateArchiveContents) (strin
 	}
 	members[spec.MemberChecksums] = []byte(checksums.String())
 
-	f, err := os.CreateTemp(out, ".polis-candidate-*.tmp")
+	f, candidateName, err := out.CreateTemp(".polis-candidate-*.tmp")
 	if err != nil {
-		return "", fmt.Errorf("create candidate archive: %w", err)
+		return nil, "", fmt.Errorf("create candidate archive: %w", err)
 	}
-	candidate := f.Name()
 	zw := zip.NewWriter(f)
 	names = names[:0]
 	for name := range members {
@@ -591,26 +667,32 @@ func writeCandidateArchive(out string, contents candidateArchiveContents) (strin
 		if err != nil {
 			_ = zw.Close()
 			_ = f.Close()
-			_ = os.Remove(candidate)
-			return "", fmt.Errorf("create archive member %s: %w", name, err)
+			failure := fmt.Errorf("create archive member %s: %w", name, err)
+			return nil, "", errors.Join(failure, cleanupPackageOutputFiles(out, candidateName))
 		}
 		if _, err := w.Write(members[name]); err != nil {
 			_ = zw.Close()
 			_ = f.Close()
-			_ = os.Remove(candidate)
-			return "", fmt.Errorf("write archive member %s: %w", name, err)
+			failure := fmt.Errorf("write archive member %s: %w", name, err)
+			return nil, "", errors.Join(failure, cleanupPackageOutputFiles(out, candidateName))
 		}
 	}
 	if err := zw.Close(); err != nil {
 		_ = f.Close()
-		_ = os.Remove(candidate)
-		return "", fmt.Errorf("finalize candidate archive: %w", err)
+		failure := fmt.Errorf("finalize candidate archive: %w", err)
+		return nil, "", errors.Join(failure, cleanupPackageOutputFiles(out, candidateName))
 	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(candidate)
-		return "", fmt.Errorf("close candidate archive: %w", err)
+	if err := out.ValidatePinnedDirectory(); err != nil {
+		_ = f.Close()
+		failure := fmt.Errorf("candidate output directory changed: %w", err)
+		return nil, "", errors.Join(failure, cleanupPackageOutputFiles(out, candidateName))
 	}
-	return candidate, nil
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		failure := fmt.Errorf("sync candidate archive: %w", err)
+		return nil, "", errors.Join(failure, cleanupPackageOutputFiles(out, candidateName))
+	}
+	return f, candidateName, nil
 }
 
 func readExternalInput(repo, filename string, max int64) ([]byte, error) {
@@ -623,6 +705,13 @@ func fileSHA256(filename string) (string, error) {
 		return "", fmt.Errorf("open archive for hashing: %w", err)
 	}
 	defer f.Close()
+	return fileSHA256Open(f)
+}
+
+func fileSHA256Open(f *os.File) (string, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("seek archive for hashing: %w", err)
+	}
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", fmt.Errorf("hash archive: %w", err)
@@ -630,31 +719,34 @@ func fileSHA256(filename string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func copyExclusive(source, target string) error {
-	in, err := os.Open(source)
+func copyCandidateToOutput(source *os.File, output *packageOutput, name string) (returnErr error) {
+	destination, err := output.CreateFileExclusive(name, 0o644)
 	if err != nil {
-		return fmt.Errorf("open verified archive: %w", err)
-	}
-	defer in.Close()
-	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("output artifact already exists: %s", target)
-		}
-		return fmt.Errorf("create final artifact: %w", err)
+		return err
 	}
 	ok := false
 	defer func() {
-		_ = out.Close()
+		_ = destination.Close()
 		if !ok {
-			_ = os.Remove(target)
+			if cleanupErr := cleanupPackageOutputFiles(output, name); cleanupErr != nil {
+				returnErr = errors.Join(returnErr, cleanupErr)
+			}
 		}
 	}()
-	if _, err := io.Copy(out, in); err != nil {
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek verified archive: %w", err)
+	}
+	if _, err := io.Copy(destination, source); err != nil {
 		return fmt.Errorf("copy final artifact: %w", err)
 	}
-	if err := out.Close(); err != nil {
+	if err := destination.Sync(); err != nil {
+		return fmt.Errorf("sync final artifact: %w", err)
+	}
+	if err := destination.Close(); err != nil {
 		return fmt.Errorf("close final artifact: %w", err)
+	}
+	if err := output.ValidatePinnedDirectory(); err != nil {
+		return fmt.Errorf("final output directory changed: %w", err)
 	}
 	ok = true
 	return nil

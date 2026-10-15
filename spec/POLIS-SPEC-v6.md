@@ -184,6 +184,17 @@ Canonical V6 `build` uses `--policy <external-policy>` and requires:
 - a supplied `--implementation-plan` MUST validate against the same exact locked contract, baseline, effective policy, strategy, references, contained paths, and acyclic order before target construction or package creation;
 - all existing behavior, affected, policy, scope, coverage, target-tree, evidence, and package-integrity checks.
 
+The `--out` directory for `polis build` MUST resolve physically outside the
+target worktree. A path that resolves inside the worktree, including through a
+symlink or missing leaf below a symlink, MUST be rejected before creating the
+output directory, candidate archive, or final `.polis` package. A delivery package
+MUST remain outside the target worktree; it is a transferable, disposable producer
+output and MUST NOT be stored or newly retained at any path in the target
+repository. Repository artifact retention MUST reject publication of the `packages`
+class; supported retention of contracts, plans, proofs, and evidence is unchanged.
+Historical package archives MUST remain readable where supported and MUST NOT be
+automatically deleted or modified.
+
 For V6 producer `build`, the immutable baseline and the current producer `HEAD` are distinct after development begins. This section supersedes the V4 rule that treated every producer HEAD change as baseline drift:
 
 - `baseline_lock.base_commit` remains the exact artifact base commit;

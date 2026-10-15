@@ -8,9 +8,11 @@ Accepted for implementation. This SDD resolves Issue #16 against the clean
 ## Objective
 
 Allow each repository to declare, in committed state, whether POLIS-generated
-contracts, plans, proofs, validation evidence, and packages should be retained
-inside the repository. Preserve the existing external-output workflow when the
-preference is absent or explicitly external.
+contracts, plans, proofs, and validation evidence should be retained inside the
+repository. A `.polis` delivery package is a disposable transfer output and must
+remain outside the target worktree; it is never retained in a repository.
+Preserve the existing external-output workflow when the preference is absent or
+explicitly external.
 
 ## Retention manifest
 
@@ -34,9 +36,12 @@ whether Project Policy is committed or supplied through `--policy`.
 
 ## Producer behavior
 
-All current explicit `--out` locations and their path rules remain unchanged.
-After successful generation, `repository` mode stores exact output bytes under
-`.polis/artifacts/<class>/sha256-<hex-digest>.<extension>`:
+After successful generation, `repository` mode may store exact eligible
+non-package output bytes under
+`.polis/artifacts/<class>/sha256-<hex-digest>.<extension>`. The delivery package
+must remain outside the target worktree: `polis build --out` must resolve
+physically outside it and is rejected before
+creating output directories or package bytes if it resolves inside.
 
 | Producer | Class | Retained bytes |
 |---|---|---|
@@ -45,20 +50,21 @@ After successful generation, `repository` mode stores exact output bytes under
 | `polis capture-red` | `proofs` | Captured regression patch |
 | `polis build` | `contracts`, `plans`, `proofs` | Exact contract and any supplied plan and regression patch |
 | `polis build` | `evidence` | Exact bounded evidence member included in the package |
-| `polis build` | `packages` | Exact generated `.polis` archive |
 
 Existing identical content is idempotent. A path containing different bytes,
 an unsafe path, or a write failure is an error; POLIS does not overwrite
 different content, stage, commit, or delete retained files. The managed root is
 ordinary visible Git content and remains manually reviewable and stageable.
-Command output reports retained paths when copies are created or reused.
+Command output reports retained paths when copies are created or reused. Class
+`packages` cannot be newly published by the retention API.
 
 In `repository` mode, producer inputs may come from an appropriate class under
 the managed root: contracts from `contracts`, plans from `plans`, and
 regression patches from `proofs`. POLIS verifies the regular-file boundary,
 canonical content-addressed filename, digest, configured class, and size
-before parsing them. Other in-worktree inputs remain rejected; external input
-validation is unchanged.
+before parsing them. The `packages` class remains readable for historical
+content, but no current producer creates a new retained package. Other
+in-worktree inputs remain rejected; external input validation is unchanged.
 
 ## Git and package boundaries
 
@@ -79,17 +85,16 @@ No output or other repository path is exempted.
 
 Repositories with no manifest retain the current external-output behavior.
 `external` mode also preserves caller-selected external outputs and does not
-remove them. Invalid or uncommitted configuration, a mismatch with `HEAD`, an
-unsafe retained input, a symlinked managed path, or a conflicting content
-address fails before a successful command result. POLIS does not stage or
-commit outputs in either mode.
+remove them. Existing historical package files are never deleted or modified
+automatically; they may remain readable for compatibility; contracts, plans, proofs, and evidence remain eligible for repository retention. Invalid or uncommitted configuration, a mismatch with `HEAD`, an unsafe retained input, a symlinked managed path, or a conflicting content address fails before a successful command result. POLIS does not stage or commit outputs in either mode.
 
 ## Acceptance traceability
 
 - REQ-001 / AC-001: strict, committed, versioned repository preference.
 - REQ-002 / AC-002: shared behavior across supported producers and retained
   inputs.
-- REQ-003 / AC-003: retain the named classes without implicit Git mutation.
+- REQ-003 / AC-003: retain non-package classes without implicit Git mutation;
+  never create a new repository-retained `.polis` package.
 - REQ-004 / AC-004: managed files do not enter source-change proofs; baseline
   and package guarantees remain exact.
 - REQ-005 / AC-005: absent manifest preserves current external behavior.
