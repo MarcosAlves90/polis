@@ -12,7 +12,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
 )
 
-const version = "6.11.1"
+const version = "6.12.0"
 
 const captureRedCommand = "capture-red"
 const checkRedScopeCommand = "check-red-scope"

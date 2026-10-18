@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [6.12.0] - 2026-10-18
+
 ### Changed
 - Preserve a caller-provided `POLIS_OUTSIDE` in the first-change quickstart, run `polis doctor` before workspace setup, and make the fast-test contract reject packages outside its exact existing allowlist.
 - Initially defer SDD-0043 REQ-007 while no representative apply workload is available; the authorized follow-up now implements explicit root-help discovery and local-only simulated-flow coverage without claiming a production workload.
@@ -15,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Separate remote/web-agent `.polis` package handoff from local coding-agent `workspace validate`; build outputs are external-only, disposable, and no longer retained in repositories.
 
 ### Fixed
+- Verify the final published `.polis` archive against its expected SHA-256 and original file identity, rejecting modified or replaced outputs before returning success.
+- Keep package-output cleanup bound to the file identity originally created, so a replacement at the same name is not deleted by cleanup.
+- Clear package result path and checksum when finalization or post-retention validation fails, instead of returning stale metadata for an archive that was removed.
 - Revalidate the pinned package output after optional retention publication and remove the final archive through the pinned handle if the last validation detects relocation.
 - Pin package output writes and cleanup to a validated directory handle; detect and clean observed symlink retargeting or directory relocation, verify the candidate through the same open file handle, and surface cleanup failures. Document that another process with filesystem access can still relocate the output after the final check or after build returns.
 - Make consumer apply's temporary target-tree calculation tolerate ignored `.polis` directories and stage non-ignored untracked filenames literally, preserving the exact tracked/untracked inclusion and artifact-exclusion rules.
@@ -302,7 +307,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Aligned the Go module identity with the repository before the V4 semantic import-path migration.
 - Made Git-based CI fixtures deterministic across Windows line-ending behavior.
 
-[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.11.1...HEAD
+[Unreleased]: https://github.com/MarcosAlves90/polis/compare/v6.12.0...HEAD
+[6.12.0]: https://github.com/MarcosAlves90/polis/compare/v6.11.1...v6.12.0
 [6.11.1]: https://github.com/MarcosAlves90/polis/compare/v6.11.0...v6.11.1
 [6.11.0]: https://github.com/MarcosAlves90/polis/compare/v6.10.0...v6.11.0
 [6.10.0]: https://github.com/MarcosAlves90/polis/compare/v6.9.0...v6.10.0
