@@ -30,6 +30,10 @@ func removeOutputFile(*os.File, string) error {
 	return errSafePackageOutputUnsupported
 }
 
+func openOutputFileForIdentity(*os.File, string) (*os.File, error) {
+	return nil, errSafePackageOutputUnsupported
+}
+
 func isOutputNotExist(error) bool {
 	return false
 }

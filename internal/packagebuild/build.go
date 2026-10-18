@@ -301,7 +301,7 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 	}
 	result, err := finalizeArtifact(artifact, manifestRaw, packageOutput)
 	if err != nil {
-		return result, err
+		return Result{}, err
 	}
 	if retention.RepositoryEnabled() {
 		retained := []artifactretention.Artifact{
@@ -322,13 +322,15 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 		result.RetainedPaths = paths
 	}
 	if err := validatePackageOutputBeforeBuildReturn(packageOutput, &result); err != nil {
-		return result, err
+		return Result{}, err
 	}
 	return result, nil
 }
 
 func validatePackageOutputBeforeBuildReturn(output *packageOutput, result *Result) error {
-	return finishPackageOutput(output, nil, "", filepath.Base(result.Path), true, nil)
+	name := filepath.Base(result.Path)
+	verificationErr := output.ValidateFinalArtifact(name, result.SHA256)
+	return finishPackageOutput(output, nil, "", name, true, verificationErr)
 }
 
 func baselineConstraintError(err error, plan policyplan.Plan, workspaceValidation bool) error {

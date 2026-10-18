@@ -115,6 +115,14 @@ func removeOutputFile(parent *os.File, name string) error {
 	return windows.NtSetInformationFile(handle, &iosb, &deleteFlag, uint32(unsafe.Sizeof(deleteFlag)), windows.FileDispositionInformation)
 }
 
+func openOutputFileForIdentity(parent *os.File, name string) (*os.File, error) {
+	handle, err := ntCreateOutputHandle(parent, name, windows.FILE_GENERIC_READ|windows.SYNCHRONIZE, windows.FILE_OPEN, windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT, windows.FILE_ATTRIBUTE_NORMAL)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(handle), name), nil
+}
+
 func ntCreateOutputHandle(parent *os.File, name string, access, disposition, options, attributes uint32) (windows.Handle, error) {
 	objectName, err := windows.NewNTUnicodeString(name)
 	if err != nil {

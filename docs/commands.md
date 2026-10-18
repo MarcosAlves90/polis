@@ -505,6 +505,14 @@ Reads/writes:
   The caller must not move or retarget the external output directory into the target worktree while build is running.
   POLIS revalidates the pinned directory and returns cleanup failures as build errors.
   A process with filesystem access can still relocate the directory after the final check or after build returns. This portable CLI cannot prevent that.
+  POLIS also checks the final package's identity and SHA-256 before returning.
+  When cleanup detects a replaced output file, it refuses to delete that replacement.
+  Use an output directory without other concurrent writers. Another writer can
+  replace a filename between identity verification and deletion, or alter the
+  final package after the last check or after build returns. This portable CLI
+  cannot prevent such subsequent filesystem mutation.
+  Repository-retained contracts, plans, proofs, or evidence may remain after a
+  late package validation failure; they are separate from the disposable package.
 Options/defaults:
   --repo/--project/--change/--contract/--out are required, no defaults.
   --policy defaults to committed unchanged .polis/policy.json; explicit policy is external.

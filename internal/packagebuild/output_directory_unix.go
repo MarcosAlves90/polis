@@ -76,6 +76,14 @@ func removeOutputFile(parent *os.File, name string) error {
 	return unix.Unlinkat(int(parent.Fd()), name, 0)
 }
 
+func openOutputFileForIdentity(parent *os.File, name string) (*os.File, error) {
+	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), name), nil
+}
+
 func isOutputNotExist(err error) bool {
 	return errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR)
 }

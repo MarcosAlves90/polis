@@ -2,6 +2,7 @@ package packagebuild
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ type packageOutput struct {
 	dir          *os.File
 	parent       *os.File
 	suffix       []string
+	owned        map[string]os.FileInfo
 }
 
 func preparePackageOutput(repo, requested string) (*packageOutput, error) {
@@ -244,6 +246,10 @@ func (p *packageOutput) CreateTemp(pattern string) (*os.File, string, error) {
 		if err != nil {
 			return nil, "", fmt.Errorf("create candidate archive: %w", err)
 		}
+		if err := p.trackOwned(name, file); err != nil {
+			_ = file.Close()
+			return nil, "", fmt.Errorf("track candidate archive: %w", err)
+		}
 		if err := p.ValidatePinnedDirectory(); err != nil {
 			_ = file.Close()
 			return nil, "", errors.Join(fmt.Errorf("create candidate archive: %w", err), cleanupPackageOutputFiles(p, name))
@@ -267,6 +273,10 @@ func (p *packageOutput) CreateFileExclusive(name string, mode os.FileMode) (*os.
 		}
 		return nil, fmt.Errorf("create final artifact: %w", err)
 	}
+	if err := p.trackOwned(name, file); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("track final artifact: %w", err)
+	}
 	if err := p.ValidatePinnedDirectory(); err != nil {
 		_ = file.Close()
 		return nil, errors.Join(fmt.Errorf("create final artifact: %w", err), cleanupPackageOutputFiles(p, name))
@@ -281,10 +291,76 @@ func (p *packageOutput) Remove(name string) error {
 	if p.dir == nil {
 		return errors.New("package output directory is not open")
 	}
+	expected, tracked := p.owned[name]
+	if !tracked {
+		return fmt.Errorf("refuse to remove untracked package output %s", name)
+	}
+	current, err := openOutputFileForIdentity(p.dir, name)
+	if isOutputNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect package output before removal %s: %w", name, err)
+	}
+	currentInfo, err := current.Stat()
+	_ = current.Close()
+	if err != nil {
+		return fmt.Errorf("inspect package output identity %s: %w", name, err)
+	}
+	if !os.SameFile(expected, currentInfo) {
+		return fmt.Errorf("refuse to remove replaced package output %s", name)
+	}
 	if err := removeOutputFile(p.dir, name); err != nil && !isOutputNotExist(err) {
 		return fmt.Errorf("remove package output %s: %w", name, err)
 	}
 	return nil
+}
+
+func (p *packageOutput) trackOwned(name string, file *os.File) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if p.owned == nil {
+		p.owned = make(map[string]os.FileInfo)
+	}
+	p.owned[name] = info
+	return nil
+}
+
+// ValidateFinalArtifact compares the published file against the verified
+// candidate using the pinned directory, including the file's original identity.
+func (p *packageOutput) ValidateFinalArtifact(name, expectedSHA256 string) error {
+	if err := validateOutputName(name); err != nil {
+		return err
+	}
+	if err := p.ValidateRequested(); err != nil {
+		return err
+	}
+	expected, ok := p.owned[name]
+	if !ok {
+		return fmt.Errorf("final package output %s is not tracked", name)
+	}
+	file, err := openOutputFileForIdentity(p.dir, name)
+	if err != nil {
+		return fmt.Errorf("open final package for verification: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat final package for verification: %w", err)
+	}
+	if !os.SameFile(expected, info) {
+		return errors.New("final package output was replaced after copying")
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, file); err != nil {
+		return fmt.Errorf("hash final package for verification: %w", err)
+	}
+	if hex.EncodeToString(h.Sum(nil)) != expectedSHA256 {
+		return errors.New("final package output digest changed after copying")
+	}
+	return p.ValidateRequested()
 }
 
 func cleanupPackageOutputFiles(output *packageOutput, names ...string) error {

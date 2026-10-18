@@ -36,6 +36,59 @@ func TestPackageOutputCleanupReportsAndContinues(t *testing.T) {
 	}
 }
 
+func TestPackageOutputCleanupDoesNotDeleteReplacedFile(t *testing.T) {
+	for _, final := range []bool{false, true} {
+		label := "candidate"
+		if final {
+			label = "final"
+		}
+		t.Run(label, func(t *testing.T) {
+			repo := t.TempDir()
+			external := t.TempDir()
+			output, err := preparePackageOutput(repo, external)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer output.Close()
+
+			var file *os.File
+			var name string
+			if final {
+				name = "delivery.polis"
+				file, err = output.CreateFileExclusive(name, 0o644)
+			} else {
+				file, name, err = output.CreateTemp("candidate-*.tmp")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			original := filepath.Join(external, name)
+			moved := filepath.Join(external, "original-moved")
+			if err := os.Rename(original, moved); err != nil {
+				t.Fatalf("move owned output before replacement: %v", err)
+			}
+			const replacement = "unrelated file that must survive cleanup"
+			if err := os.WriteFile(original, []byte(replacement), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := cleanupPackageOutputFiles(output, name); err == nil {
+				t.Fatal("cleanup accepted an unrelated file at the original name")
+			}
+			contents, err := os.ReadFile(original)
+			if err != nil {
+				t.Fatalf("cleanup deleted an unrelated file: %v", err)
+			}
+			if string(contents) != replacement {
+				t.Fatalf("cleanup changed an unrelated file: %q", contents)
+			}
+		})
+	}
+}
+
 func TestPackageOutputCleanupReportsDeniedUnlinkAfterMove(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows ACL behavior is not modeled by POSIX mode bits")

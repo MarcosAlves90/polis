@@ -1766,3 +1766,118 @@ func TestBuildRetentionPublishFailureValidatesAndCleansFinalPackage(t *testing.T
 		t.Fatalf("pinned-handle cleanup left files in moved output: %v", entries)
 	}
 }
+
+func TestBuildSuccessfulRetentionFollowedByOutputRelocationReturnsNoResult(t *testing.T) {
+	repo := newV6Repo(t, false, true)
+	retainedContract := lockedCharacterizationContract(t, repo, ".")
+	contractRaw, err := os.ReadFile(retainedContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := filepath.Join(t.TempDir(), "contract.json")
+	if err := os.WriteFile(contract, contractRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(t.TempDir(), "delivery")
+	moved := filepath.Join(t.TempDir(), "moved-delivery")
+	var published bool
+	var relocationErr error
+	publisher := retainedArtifactPublisherFunc(func(state artifactretention.State, targetRepo string, artifacts []artifactretention.Artifact) ([]string, error) {
+		paths, err := state.PublishMany(targetRepo, artifacts)
+		if err != nil {
+			return paths, err
+		}
+		published = true
+		relocationErr = os.Rename(output, moved)
+		if relocationErr != nil {
+			return nil, relocationErr
+		}
+		return paths, nil
+	})
+	ctx := context.WithValue(context.Background(), retainedArtifactPublisherContextKey{}, publisher)
+	result, err := Build(ctx, Options{
+		Repo: repo, Project: "gitrex", Change: "post-retention-relocation",
+		Out: output, Contract: contract,
+	})
+	if relocationErr != nil {
+		t.Skipf("filesystem cannot relocate an open output directory: %v", relocationErr)
+	}
+	if !published {
+		t.Fatal("retention publisher was not reached")
+	}
+	if err == nil || !strings.Contains(err.Error(), "validate package output before returning") {
+		t.Fatalf("late output relocation was not rejected: %v", err)
+	}
+	if result.Path != "" || result.SHA256 != "" {
+		t.Fatalf("failed Build returned a package identity for removed output: %+v", result)
+	}
+	entries, err := os.ReadDir(moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("late output cleanup left files: %v", entries)
+	}
+}
+
+func TestBuildDetectsFinalArtifactTamperedAfterRetention(t *testing.T) {
+	repo := newV6Repo(t, false, true)
+	retainedContract := lockedCharacterizationContract(t, repo, ".")
+	contractRaw, err := os.ReadFile(retainedContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := filepath.Join(t.TempDir(), "contract.json")
+	if err := os.WriteFile(contract, contractRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output := filepath.Join(t.TempDir(), "delivery")
+	var tampered bool
+	publisher := retainedArtifactPublisherFunc(func(state artifactretention.State, targetRepo string, artifacts []artifactretention.Artifact) ([]string, error) {
+		paths, err := state.PublishMany(targetRepo, artifacts)
+		if err != nil {
+			return paths, err
+		}
+		entries, err := os.ReadDir(output)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), ".polis") {
+				if err := os.WriteFile(filepath.Join(output, entry.Name()), []byte("tampered final artifact"), 0o600); err != nil {
+					return nil, err
+				}
+				tampered = true
+			}
+		}
+		return paths, nil
+	})
+	ctx := context.WithValue(context.Background(), retainedArtifactPublisherContextKey{}, publisher)
+	result, err := Build(ctx, Options{
+		Repo: repo, Project: "gitrex", Change: "tampered-after-retention",
+		Out: output, Contract: contract,
+	})
+	if !tampered {
+		t.Fatal("test did not modify the final artifact")
+	}
+	if err == nil {
+		t.Fatalf("Build accepted a modified package with stale SHA256: %+v", result)
+	}
+	if result.Path != "" || result.SHA256 != "" {
+		t.Fatalf("failed Build returned a package identity: %+v", result)
+	}
+	entries, err := os.ReadDir(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("tampered output package was not cleaned up: %v", entries)
+	}
+}
