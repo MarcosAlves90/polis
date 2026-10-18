@@ -328,6 +328,32 @@ func TestGitHubReleaseScriptRejectsMissingVersionNotesBeforePublication(t *testi
 	}
 }
 
+func TestGitHubReleaseScriptDefaultNotesExcludeChangelogReferenceFooter(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("release script is a Bash operator tool")
+	}
+	fixture := newReleaseScriptFixture(t)
+	customGH := fixture.writeFakeGH("custom-gh", "custom")
+	content := "# Changelog\n\n## [5.0.0] - 2026-08-30\n\n### Added\n- Only this release.\n\n[Unreleased]: https://example.invalid/unreleased\n[5.0.0]: https://github.com/MarcosAlves90/polis/compare/v4.0.0...v5.0.0\n"
+	if err := os.WriteFile(filepath.Join(fixture.root, "CHANGELOG.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, fixture.root, "add", "CHANGELOG.md")
+	runGit(t, fixture.root, "commit", "-m", "test changelog last section")
+
+	output, err := fixture.run("--tag", "v5.0.0", "--gh", customGH, "--publish")
+	if err != nil {
+		t.Fatalf("publish with final CHANGELOG section failed: %v\n%s", err, output)
+	}
+	notes, err := os.ReadFile(fixture.ghNotes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(notes), "- Only this release.") || strings.Contains(string(notes), "[Unreleased]:") {
+		t.Fatalf("changelog link definitions leaked into release notes:\n%s", notes)
+	}
+}
+
 func TestGitHubReleaseScriptRejectsNonstandardTitle(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("release script is a Bash operator tool")

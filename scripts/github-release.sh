@@ -337,6 +337,7 @@ if [[ -z "$NOTES_FILE" ]]; then
       if (index($0, "## [" version "] - ") == 1) found=1
       next
     }
+    found && /^\[/ && /\]: / { exit }
     found { print }
     END { if (!found) exit 1 }
   ' CHANGELOG.md) || fail "CHANGELOG.md is missing the version section for $TAG"
