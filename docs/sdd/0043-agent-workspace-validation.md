@@ -74,6 +74,11 @@ installers are outside this change.
   versioned report.
 - REQ-005 / AC-004: write only new external reports with restrictive permissions.
 - REQ-006 / AC-004: publish the report schema offline and state the trust limits.
-- REQ-007 / AC-006: expose workspace operations in the embedded agent-help index.
-- REQ-008 / AC-007: keep canonical help inventory tests aligned with added commands.
+- **REQ-007 / AC-007:** Implemented for explicit root-help discovery: `polis help`, `polis -h`, and `polis --help` identify both `workspace validate` and `workspace status` and distinguish local validation/checkpoint comparison from package delivery/application. `TestREQ007RootHelpNamesBothWorkspaceOperations` verifies the canonical aliases. `TestREQ007SimulatedWorkspaceAndDeliveryFlow` covers package-free workspace validation and `build → verify → preflight → apply` across separate temporary producer/consumer repositories, asserting state isolation.
+
+## REQ-007 scope and residual limitation
+
+This implementation covers discoverability and the simulated local workflow acceptance. The test uses `t.TempDir` for disposable fixtures and controlled local Git-only policy commands; it is not a security sandbox and does not use network/credentials/real data; no representative production apply workload is provided. Production workload coverage remains a separate future validation need.
+
+- REQ-008 / AC-008: keep canonical help inventory tests aligned with added commands.
 - AC-005: retain existing package-building and verification behavior.

@@ -261,6 +261,11 @@ func (s State) PublishMany(repo string, artifacts []Artifact) ([]string, error) 
 	if len(artifacts) == 0 || !s.RepositoryEnabled() {
 		return nil, nil
 	}
+	for _, artifact := range artifacts {
+		if artifact.Class == "packages" {
+			return nil, errors.New("delivery packages must remain outside the repository")
+		}
+	}
 	root, err := filepath.Abs(repo)
 	if err != nil {
 		return nil, fmt.Errorf("resolve repository path: %w", err)

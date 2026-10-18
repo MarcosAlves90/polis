@@ -3,6 +3,7 @@ package packagebuild
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -249,7 +250,7 @@ func TestValidateWorkspacePropagatesJobsToPolicyExecution(t *testing.T) {
 	}
 }
 
-func TestBuildRetainsReusableContractEvidenceAndVerifiedPackage(t *testing.T) {
+func TestBuildRetentionDoesNotPublishPackage(t *testing.T) {
 	repo := newV6Repo(t, false, true)
 	contract := lockedCharacterizationContract(t, repo, ".")
 	if !strings.Contains(filepath.ToSlash(contract), ".polis/artifacts/contracts/") {
@@ -286,7 +287,10 @@ func TestBuildRetainsReusableContractEvidenceAndVerifiedPackage(t *testing.T) {
 	}
 	classes := map[string]bool{}
 	for _, retainedPath := range result.RetainedPaths {
-		for _, class := range []string{"contracts", "evidence", "packages"} {
+		if strings.HasPrefix(retainedPath, ".polis/artifacts/packages/") {
+			t.Fatalf("build retained delivery package in repository: %s", retainedPath)
+		}
+		for _, class := range []string{"contracts", "evidence"} {
 			if strings.HasPrefix(retainedPath, ".polis/artifacts/"+class+"/") {
 				classes[class] = true
 			}
@@ -304,18 +308,13 @@ func TestBuildRetainsReusableContractEvidenceAndVerifiedPackage(t *testing.T) {
 			if len(retainedRaw) == 0 {
 				t.Fatal("retained validation evidence is empty")
 			}
-		case strings.HasPrefix(retainedPath, ".polis/artifacts/packages/"):
-			packageRaw, err := os.ReadFile(result.Path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(retainedRaw) != string(packageRaw) {
-				t.Fatal("retained package differs from verified package output")
-			}
 		}
 	}
-	if len(classes) != 3 {
-		t.Fatalf("retained classes = %v; want contracts, evidence, and packages", classes)
+	if len(classes) != 2 || classes["packages"] {
+		t.Fatalf("retained classes = %v; want contracts and evidence without packages", classes)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".polis", "artifacts", "packages")); !os.IsNotExist(err) {
+		t.Fatalf("repository retention created package directory: stat err=%v", err)
 	}
 	if runGit(t, repo, "rev-parse", "HEAD") != beforeHead || runGit(t, repo, "write-tree") != beforeIndex {
 		t.Fatal("retaining package artifacts changed HEAD or the real index")
@@ -327,6 +326,142 @@ func TestBuildRetainsReusableContractEvidenceAndVerifiedPackage(t *testing.T) {
 	if string(afterStatus) != string(beforeStatus) {
 		t.Fatalf("source status outside managed artifacts changed: before=%q after=%q", beforeStatus, afterStatus)
 	}
+}
+
+func TestBuildRejectsOutputInsideWorktree(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		link bool
+	}{
+		{name: "direct path"},
+		{name: "symlink to repository directory", link: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := newV6Repo(t, false)
+			contract := lockedCharacterizationContract(t, repo, ".")
+			if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(repo, "delivery-output")
+			if test.link {
+				target := filepath.Join(repo, "existing-output")
+				if err := os.Mkdir(target, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, out); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+				out = filepath.Join(out, "nested")
+			}
+			_, err := Build(context.Background(), Options{Repo: repo, Project: "gitrex", Change: "output-boundary", Out: out, Contract: contract})
+			if err == nil || !strings.Contains(err.Error(), "delivery package output must be outside the target worktree") {
+				t.Fatalf("Build() error=%v", err)
+			}
+			if !test.link {
+				if _, err := os.Stat(out); !os.IsNotExist(err) {
+					t.Fatalf("rejected output directory exists: stat err=%v", err)
+				}
+				return
+			}
+			entries, err := os.ReadDir(filepath.Join(repo, "existing-output"))
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("symlink target entries=%v err=%v", entries, err)
+			}
+		})
+	}
+}
+
+func TestBuildRejectsOutputRedirectedInsideWorktreeDuringValidation(t *testing.T) {
+	repo := newV6Repo(t, false)
+	output := filepath.Join(t.TempDir(), "delivery-output")
+	if err := os.Mkdir(output, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(repo, "redirected-output")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	probe := filepath.Join(t.TempDir(), "symlink-probe")
+	if err := os.Symlink(target, probe); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
+	configureOutputRedirectGate(t, repo)
+	contract := lockedCharacterizationContract(t, repo, ".")
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("POLIS_TEST_REDIRECT_OUTPUT", "1")
+	t.Setenv("POLIS_TEST_REDIRECT_OUTPUT_PATH", output)
+	t.Setenv("POLIS_TEST_REDIRECT_OUTPUT_TARGET", target)
+
+	_, err := Build(context.Background(), Options{Repo: repo, Project: "gitrex", Change: "redirected-output", Out: output, Contract: contract})
+	if err == nil || !strings.Contains(err.Error(), "delivery package output must be outside the target worktree") {
+		t.Fatalf("Build succeeded after output path redirected inside the repository: err=%v", err)
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".polis") {
+			t.Fatalf("build left a delivery package in the target worktree: %s", filepath.Join(target, entry.Name()))
+		}
+	}
+}
+
+func TestBuildOutputRedirectGateHelper(t *testing.T) {
+	if os.Getenv("POLIS_TEST_REDIRECT_OUTPUT") != "1" {
+		return
+	}
+	output := os.Getenv("POLIS_TEST_REDIRECT_OUTPUT_PATH")
+	target := os.Getenv("POLIS_TEST_REDIRECT_OUTPUT_TARGET")
+	if output == "" || target == "" {
+		t.Fatal("redirect helper requires output and target paths")
+	}
+	if err := os.Remove(output); err != nil {
+		t.Fatalf("remove external output directory: %v", err)
+	}
+	if err := os.Symlink(target, output); err != nil {
+		t.Fatalf("redirect output to target worktree: %v", err)
+	}
+}
+
+func configureOutputRedirectGate(t *testing.T, repo string) {
+	t.Helper()
+	policyPath := filepath.Join(repo, ".polis", "policy.json")
+	raw, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := spec.DecodePolicy(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range policy.Gates {
+		if policy.Gates[i].ID == "test.complete" {
+			policy.Gates[i].Command = &spec.CommandSpec{
+				Argv: []string{executable, "-test.run=^TestBuildOutputRedirectGateHelper$"},
+				Cwd:  ".", TimeoutSeconds: 60,
+				Environment: &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit},
+			}
+		}
+	}
+	raw, err = json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policyPath, append(raw, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".polis/policy.json")
+	runGit(t, repo, "-c", "user.name=POLIS Test", "-c", "user.email=polis@example.invalid", "commit", "-qm", "configure output redirection regression gate")
 }
 
 func TestBuildDefersCoverageInFormatV5Evidence(t *testing.T) {
@@ -1553,5 +1688,196 @@ func TestWorkspaceTargetTreeUsesTemporaryIndexWithoutMutation(t *testing.T) {
 	runGit(t, repo, "add", "staged-source.txt")
 	if _, err := WorkspaceTargetTree(context.Background(), repo, base); err == nil || !strings.Contains(err.Error(), "index contains staged changes") {
 		t.Fatalf("staged source should be unavailable, got %v", err)
+	}
+}
+
+func TestBuildRetentionPublishFailureValidatesAndCleansFinalPackage(t *testing.T) {
+	repo := newV6Repo(t, false, true)
+	retainedContract := lockedCharacterizationContract(t, repo, ".")
+	contractRaw, err := os.ReadFile(retainedContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalContract := filepath.Join(t.TempDir(), "contract.json")
+	if err := os.WriteFile(externalContract, contractRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	contractsDir := filepath.Join(repo, ".polis", "artifacts", "contracts")
+	if err := os.RemoveAll(contractsDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(contractsDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output := filepath.Join(t.TempDir(), "delivery")
+	movedOutput := filepath.Join(repo, ".polis", "moved-output")
+	var publisherCalled bool
+	var relocationErr error
+	var publishErr error
+	publisher := retainedArtifactPublisherFunc(func(state artifactretention.State, targetRepo string, artifacts []artifactretention.Artifact) ([]string, error) {
+		publisherCalled = true
+		if err := os.Rename(output, movedOutput); err != nil {
+			relocationErr = err
+			return nil, err
+		}
+		paths, err := state.PublishMany(targetRepo, artifacts)
+		publishErr = err
+		return paths, err
+	})
+	ctx := context.WithValue(context.Background(), retainedArtifactPublisherContextKey{}, publisher)
+
+	result, err := Build(ctx, Options{
+		Repo: repo, Project: "gitrex", Change: "retention-publish-failure",
+		Out: output, Contract: externalContract,
+	})
+	if relocationErr != nil {
+		t.Fatalf("relocate package output before real PublishMany: %v", relocationErr)
+	}
+	if !publisherCalled {
+		t.Fatal("Build did not invoke the injected wrapper around real PublishMany")
+	}
+	if publishErr == nil || !strings.Contains(publishErr.Error(), "path is not a directory") {
+		t.Fatalf("real PublishMany did not fail on the regular-file class path: %v", publishErr)
+	}
+	if err == nil || !errors.Is(err, publishErr) {
+		t.Fatalf("Build did not preserve the real PublishMany error: %v", err)
+	}
+	for _, diagnostic := range []string{
+		"retain generated delivery artifacts",
+		"validate package output before returning",
+	} {
+		if !strings.Contains(err.Error(), diagnostic) {
+			t.Errorf("Build error is missing %q: %v", diagnostic, err)
+		}
+	}
+	if result.Path != "" {
+		t.Fatalf("failed Build returned a package path: %s", result.Path)
+	}
+	entries, err := os.ReadDir(movedOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("pinned-handle cleanup left files in moved output: %v", entries)
+	}
+}
+
+func TestBuildSuccessfulRetentionFollowedByOutputRelocationReturnsNoResult(t *testing.T) {
+	repo := newV6Repo(t, false, true)
+	retainedContract := lockedCharacterizationContract(t, repo, ".")
+	contractRaw, err := os.ReadFile(retainedContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := filepath.Join(t.TempDir(), "contract.json")
+	if err := os.WriteFile(contract, contractRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(t.TempDir(), "delivery")
+	moved := filepath.Join(t.TempDir(), "moved-delivery")
+	var published bool
+	var relocationErr error
+	publisher := retainedArtifactPublisherFunc(func(state artifactretention.State, targetRepo string, artifacts []artifactretention.Artifact) ([]string, error) {
+		paths, err := state.PublishMany(targetRepo, artifacts)
+		if err != nil {
+			return paths, err
+		}
+		published = true
+		relocationErr = os.Rename(output, moved)
+		if relocationErr != nil {
+			return nil, relocationErr
+		}
+		return paths, nil
+	})
+	ctx := context.WithValue(context.Background(), retainedArtifactPublisherContextKey{}, publisher)
+	result, err := Build(ctx, Options{
+		Repo: repo, Project: "gitrex", Change: "post-retention-relocation",
+		Out: output, Contract: contract,
+	})
+	if relocationErr != nil {
+		t.Skipf("filesystem cannot relocate an open output directory: %v", relocationErr)
+	}
+	if !published {
+		t.Fatal("retention publisher was not reached")
+	}
+	if err == nil || !strings.Contains(err.Error(), "validate package output before returning") {
+		t.Fatalf("late output relocation was not rejected: %v", err)
+	}
+	if result.Path != "" || result.SHA256 != "" {
+		t.Fatalf("failed Build returned a package identity for removed output: %+v", result)
+	}
+	entries, err := os.ReadDir(moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("late output cleanup left files: %v", entries)
+	}
+}
+
+func TestBuildDetectsFinalArtifactTamperedAfterRetention(t *testing.T) {
+	repo := newV6Repo(t, false, true)
+	retainedContract := lockedCharacterizationContract(t, repo, ".")
+	contractRaw, err := os.ReadFile(retainedContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := filepath.Join(t.TempDir(), "contract.json")
+	if err := os.WriteFile(contract, contractRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output := filepath.Join(t.TempDir(), "delivery")
+	var tampered bool
+	publisher := retainedArtifactPublisherFunc(func(state artifactretention.State, targetRepo string, artifacts []artifactretention.Artifact) ([]string, error) {
+		paths, err := state.PublishMany(targetRepo, artifacts)
+		if err != nil {
+			return paths, err
+		}
+		entries, err := os.ReadDir(output)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), ".polis") {
+				if err := os.WriteFile(filepath.Join(output, entry.Name()), []byte("tampered final artifact"), 0o600); err != nil {
+					return nil, err
+				}
+				tampered = true
+			}
+		}
+		return paths, nil
+	})
+	ctx := context.WithValue(context.Background(), retainedArtifactPublisherContextKey{}, publisher)
+	result, err := Build(ctx, Options{
+		Repo: repo, Project: "gitrex", Change: "tampered-after-retention",
+		Out: output, Contract: contract,
+	})
+	if !tampered {
+		t.Fatal("test did not modify the final artifact")
+	}
+	if err == nil {
+		t.Fatalf("Build accepted a modified package with stale SHA256: %+v", result)
+	}
+	if result.Path != "" || result.SHA256 != "" {
+		t.Fatalf("failed Build returned a package identity: %+v", result)
+	}
+	entries, err := os.ReadDir(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("tampered output package was not cleaned up: %v", entries)
 	}
 }

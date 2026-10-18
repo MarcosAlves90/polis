@@ -294,3 +294,36 @@ Ubuntu/macOS/Windows jobs, and GitGuardian:
 - Offline export — PASS; verified 14-member archive includes Change Contract v5/v6 schemas and declares `network_required: false`; `unzip -t` found no archive errors.
 - Tracked repository search for unowned schema URLs — PASS, no matches.
 - `npm run verify` — unavailable because the repository has no `package.json`.
+
+## Fast local feedback
+
+Use `./scripts/test-fast.sh` from any directory inside the repository for partial feedback on the listed documentation, schema, policy, and lower-level packages. The cross-platform equivalent is:
+
+```sh
+go test -count=1 -timeout=15m \
+  ./docs \
+  ./docs/examples \
+  ./spec \
+  ./internal/artifactretention \
+  ./internal/baselineproof \
+  ./internal/changeexec \
+  ./internal/changestatus \
+  ./internal/commandexec \
+  ./internal/devlock \
+  ./internal/devstart \
+  ./internal/diagnostic \
+  ./internal/fileutil \
+  ./internal/offlinekit \
+  ./internal/packageverify \
+  ./internal/pathguard \
+  ./internal/policyexec \
+  ./internal/policyinit \
+  ./internal/policyload \
+  ./internal/policyorigin \
+  ./internal/policyplan \
+  ./internal/signature
+```
+
+This is partial feedback only, not a substitute for the full suite or evidence of delivery readiness. It omits `cmd/polis`, `internal/cicontract`, `internal/gaterun`, `internal/implementationplan`, `internal/packageapply`, `internal/packagebuild`, and `internal/redcapture`; when changing an omitted package, run its affected tests too. All integration and security checks remain in the full path. On Darwin 27 arm64 with Go 1.27.1, this 21-package candidate completed in 10.70s in one run; that is one environment-specific measurement, not a user-approved duration target.
+
+The authoritative CI command remains `go test ./... -timeout=15m` on Linux, macOS, and Windows. Race detection and project-wide coverage remain separate full-suite gates. Do not use the fast subset to claim the omitted packages passed.

@@ -17,6 +17,20 @@ signing, and safely applying code changes.
 - Preserves repository integrity through isolated validation and transactional apply.
 - Includes a portable offline runtime for coding agents without the source tree.
 
+## Choose the agent workflow
+
+- **Remote/web agent handing a change to another checkout:** a producer with the
+  source checkout and POLIS runtime builds a disposable `.polis` package outside
+  the repository; the consumer verifies, preflights, and applies it. See the
+  [remote delivery guide](docs/workflows/web-agent-delivery.md).
+- **Local coding agent already working in the checkout:** use locked development
+  proof and `polis workspace validate`; no delivery package is needed or created.
+  See the [local workspace guide](docs/workflows/local-agent-workspace.md).
+
+Chat text alone is not evidence that a package was built. A web assistant without
+checkout/runtime access can help prepare a change, but an authorized producer
+must execute POLIS to create a verifiable package.
+
 ## Installation
 
 ### Go installation (recommended)
@@ -62,7 +76,14 @@ polis doctor
 
 ## Documentation
 
+- [First change quickstart](docs/quickstart.md)
 - [Usage and V6 workflows](docs/usage.md)
+- [CLI command reference](docs/commands.md)
+- [Policy and validation](docs/policy-and-validation.md)
+- [Development proof and delivery](docs/development-proof.md)
+- [Repository retention](docs/retention.md)
+- [Gate execution and progress](docs/gates-and-progress.md)
+- [Artifact trust](docs/artifact-trust.md)
 - [Installation guide](docs/installation.md)
 - [Offline runtime guide](spec/POLIS-OFFLINE.md)
 - [POLIS Specification V6](spec/POLIS-SPEC-v6.md)
@@ -70,5 +91,6 @@ polis doctor
 - [Architecture and design decisions](docs/sdd/)
 - [Changelog](CHANGELOG.md)
 
-The usage guide is the entry point for command reference, policy profiles,
-strict SDD/TDD, artifact trust, signatures, and exit categories.
+Start with the [first change quickstart](docs/quickstart.md) to choose local
+validation or remote package handoff. The [usage index](docs/usage.md) links to
+focused operational references; normative rules remain in the specification.

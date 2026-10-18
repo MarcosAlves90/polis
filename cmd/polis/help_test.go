@@ -47,9 +47,9 @@ func TestAgentHelpEveryCommand(t *testing.T) {
 }
 
 func TestAgentHelpCanonicalUsage(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "usage.md"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "commands.md"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("canonical help source docs/commands.md: %v", err)
 	}
 	guide := strings.ReplaceAll(string(raw), "\r\n", "\n")
 	if got := strings.Count(guide, "<!-- command-help: "); got != len(agentHelpCommands) {
@@ -83,17 +83,17 @@ func TestAgentHelpSafetyAndOptions(t *testing.T) {
 		"init":                {"--repo", "--profile", "--validation-level", "--disable-gate", "--test-argv", "--coverage-argv", "--coverage-adapter", "--coverage-report", "--coverage-threshold", "80", "--dry-run", "no --format"},
 		"plan":                {"--repo", "--policy", "--defer-gate", "--format", "does not execute"},
 		"gates":               {"--repo", "--policy", "--contract", "--gate", "--affected", "--jobs", "--environment-id", "--reuse", "--replay", "--inspect-run", "--out-run", "--format", "not built or verified", "BLOCKED", "parallel_safe"},
-		"workspace":           {"validate", "status", "--contract", "--out-report", "--jobs", "--report", "external-locked", "source_snapshot_matches", "report_authenticated=false", "current_validation_established=false", "proof_input_digests_bound=false", "delivery_artifact_built/verified=false", "without a package"},
+		"workspace":           {"validate", "status", "--contract", "--out-report", "--jobs", "--report", "external-locked", "source_snapshot_matches", "report_authenticated=false", "current_validation_established=false", "proof_input_digests_bound=false", "delivery_artifact_built/verified=false", "without a package", "local coding agent", "remote delivery"},
 		"start":               {"--repo", "--policy", "--contract", "--out", "clean", "schema-v3", "schema-v5", "no --format"},
 		"implementation-plan": {"--repo", "--policy", "--contract", "--out", "--format", "same plan bytes", "optional"},
 		"status":              {"--repo", "--policy", "--contract", "--implementation-plan", "--regression-patch", "--report", "--package", "--format", "proven", "stale_or_unproven", "missing", "unsigned workspace checkpoint", "not implementation completion"},
 		"check-red-scope":     {"--repo", "--contract", "--path", "--format", "actual patch", "no regression command"},
 		"capture-red":         {"--repo", "--contract", "--implementation-plan", "--out", "--format", "immutable", "BLOCKED", "behavior_preserving"},
-		"build":               {"--repo", "--policy", "--project", "--change", "--contract", "--regression-patch", "--implementation-plan", "--defer-gate", "--jobs", "--format", "--out", "consumer", "polis verify"},
+		"build":               {"--repo", "--policy", "--project", "--change", "--contract", "--regression-patch", "--implementation-plan", "--defer-gate", "--jobs", "--format", "--out", "consumer", "polis verify", "remote producer", "outside the target worktree", "never retained", "workspace validate instead"},
 		"verify":              {"--format", "--signature", "--trusted-key", "does not execute", "consumer"},
 		"inspect":             {"--format", "--signature", "--trusted-key", "does not execute", "traceability"},
-		"preflight":           {"--repo", "--baseline-mode", "--allow-missing-baseline-proof", "--format", "--signature", "--trusted-key", "strict", "permissive", "authorization"},
-		"apply":               {"--repo", "--baseline-mode", "--allow-missing-baseline-proof", "--commit-mode", "--format", "--signature", "--trusted-key", "none", "prompt", "auto", "authorization", "rollback"},
+		"preflight":           {"--repo", "--baseline-mode", "--allow-missing-baseline-proof", "--format", "--signature", "--trusted-key", "strict", "permissive", "authorization", "package consumer", "local workspace validation does not use preflight"},
+		"apply":               {"--repo", "--baseline-mode", "--allow-missing-baseline-proof", "--commit-mode", "--format", "--signature", "--trusted-key", "none", "prompt", "auto", "authorization", "rollback", "package consumer", "local workspace validation does not use apply"},
 		"sign":                {"--key", "--out", "--format", "does not validate", "private key"},
 		"export":              {"--out", "--format", "--executable", "--runtime", "current executable", "polis verify"},
 	}
@@ -106,6 +106,32 @@ func TestAgentHelpSafetyAndOptions(t *testing.T) {
 			if !strings.Contains(out.String(), fragment) {
 				t.Errorf("agent help missing safety/option %q for %s", fragment, name)
 			}
+		}
+	}
+}
+
+func TestREQ007RootHelpNamesBothWorkspaceOperations(t *testing.T) {
+	var canonical string
+	for _, args := range [][]string{{"help"}, {"-h"}, {"--help"}} {
+		var out, errOut bytes.Buffer
+		if code := run(args, &out, &errOut); code != exitPass || errOut.Len() != 0 {
+			t.Fatalf("REQ007-ROOT-HELP-RED: args=%v code=%d stdout=%q stderr=%q", args, code, out.String(), errOut.String())
+		}
+		for _, fragment := range []string{
+			"`workspace validate`",
+			"`workspace status`",
+			"without a package",
+			"checkpoint",
+			"Neither performs package delivery or application.",
+		} {
+			if !strings.Contains(out.String(), fragment) {
+				t.Fatalf("REQ007-ROOT-HELP-RED: args=%v root help missing %q: %s", args, fragment, out.String())
+			}
+		}
+		if canonical == "" {
+			canonical = out.String()
+		} else if out.String() != canonical {
+			t.Fatalf("REQ007-ROOT-HELP-RED: root help alias differs for args=%v", args)
 		}
 	}
 }
