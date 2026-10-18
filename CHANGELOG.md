@@ -27,6 +27,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [6.11.1] - 2026-10-10
 
 ### Added
+- Add rule-derived `source` and `reason` provenance to `polis plan` version 4 for validation level, gate configuration/state, producer action, consumer requirements, dependency edges, and guarantees in JSON and text output. `polis init` records per-gate profile-default versus explicit-override origins in a separately committed `.polis/policy-provenance.json` manifest. Only declarations whose saved digests still match retain generated-profile attribution; legacy and changed policies fall back conservatively. Required dependencies, executor deferrals, and `not_applicable` statuses retain their effective-rule origins. Project Policy schema and package formats remain unchanged.
+- Preserve explicit `--validation-level strict` and default-level intent in the optional init manifest without changing policy v3 field serialization. Share provenance resolution between plan and producer build, and bound committed Git blob reads before loading optional metadata.
+
+## [6.11.0] - 2026-10-10
+
+### Added
 - Add opt-in `polis doctor --repo` diagnostics with optional `--policy` to validate repository policy, dependency order, gate working directories, output paths, and executable availability without executing project gates. Report static `PASS`, `BLOCKED`, and `FAIL` checks in text or JSON; inspect delegated `env` executables and reject ambiguous option parsing.
 - Extend `polis status` into a unified workflow projection that accepts explicit external Policy, Change Contract, Implementation Plan, Red proof, workspace checkpoint, and package inputs while preserving automatic repository-retention discovery.
 - Add agent-oriented `proven`, `stale_or_unproven`, and `missing` status projections so resumed workflows distinguish verified evidence from historical or incomplete state.
@@ -68,6 +74,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [6.9.0] - 2026-09-28
 
 ### Added
+- Add `polis status` to summarize persisted strict-development workflow evidence and identify the next valid action without treating incomplete evidence as proof.
 - Add committed repository artifact-retention preferences and content-addressed copies for generated contracts, plans, proofs, validation evidence, and delivery packages.
 - Add `polis gates` to run configured Project Policy gates without building or verifying a delivery artifact.
 - Add `polis check-red-scope` to preflight proposed Red probe paths against a locked Change Contract without executing the probe or capturing proof.

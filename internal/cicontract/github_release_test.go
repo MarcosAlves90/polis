@@ -286,6 +286,21 @@ func TestGitHubReleaseScriptPublishPushesExactTagAndUsesVerifyTag(t *testing.T) 
 	if strings.Contains(log, "--clobber") {
 		t.Fatalf("release flow must not clobber assets:\n%s", log)
 	}
+	if !strings.Contains(log, "--title POLIS v5.0.0") || !strings.Contains(log, "--notes-file") || strings.Contains(log, "--generate-notes") {
+		t.Fatalf("release does not use canonical title and maintained notes:\n%s", log)
+	}
+	notes, err := os.ReadFile(fixture.ghNotes)
+	if err != nil {
+		t.Fatalf("read captured release notes: %v", err)
+	}
+	for _, heading := range []string{"# POLIS v5.0.0", "## Summary", "## Changes", "### Added", "## Compatibility", "## Downloads", "## References"} {
+		if !strings.Contains(string(notes), heading) {
+			t.Fatalf("standard release notes missing %q:\n%s", heading, notes)
+		}
+	}
+	if strings.Contains(string(notes), "fixture from an older version") {
+		t.Fatalf("release notes included an older CHANGELOG section:\n%s", notes)
+	}
 	for _, asset := range []string{
 		"polis-v5.0.0-offline-darwin-arm64.zip",
 		"polis-v5.0.0-offline-linux-amd64.zip",
@@ -295,6 +310,51 @@ func TestGitHubReleaseScriptPublishPushesExactTagAndUsesVerifyTag(t *testing.T) 
 		if !strings.Contains(log, asset) {
 			t.Fatalf("release did not upload %s:\n%s", asset, log)
 		}
+	}
+}
+
+func TestGitHubReleaseScriptRejectsMissingVersionNotesBeforePublication(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("release script is a Bash operator tool")
+	}
+	fixture := newReleaseScriptFixture(t)
+	customGH := fixture.writeFakeGH("custom-gh", "custom")
+	output, err := fixture.run("--tag", "v5.0.1", "--gh", customGH, "--publish")
+	if err == nil || !strings.Contains(output, "CHANGELOG.md is missing the version section for v5.0.1") {
+		t.Fatalf("missing version notes did not fail safely: err=%v output=%s", err, output)
+	}
+	if fixture.tagExists("v5.0.1") || strings.Contains(fixture.readGHLog(), "release create") {
+		t.Fatalf("missing version notes mutated release state: %s", fixture.readGHLog())
+	}
+}
+
+func TestGitHubReleaseScriptRejectsNonstandardTitle(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("release script is a Bash operator tool")
+	}
+	fixture := newReleaseScriptFixture(t)
+	output, err := fixture.run("--tag", "v5.0.0", "--title", "POLIS V5.0.0")
+	if err == nil || !strings.Contains(output, "release title must be POLIS v5.0.0") {
+		t.Fatalf("noncanonical title not rejected: err=%v output=%s", err, output)
+	}
+}
+
+func TestGitHubReleaseScriptRejectsNonstandardMaintainedNotes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("release script is a Bash operator tool")
+	}
+	fixture := newReleaseScriptFixture(t)
+	customGH := fixture.writeFakeGH("custom-gh", "custom")
+	notes := filepath.Join(t.TempDir(), "release.md")
+	if err := os.WriteFile(notes, []byte("# POLIS v5.0.0\n\n## Changes\n\nA partial description.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output, err := fixture.run("--tag", "v5.0.0", "--gh", customGH, "--notes-file", notes, "--publish")
+	if err == nil || !strings.Contains(output, "release notes missing standard heading") {
+		t.Fatalf("nonstandard notes did not fail safely: err=%v output=%s", err, output)
+	}
+	if fixture.tagExists("v5.0.0") || strings.Contains(fixture.readGHLog(), "release create") {
+		t.Fatalf("nonstandard notes mutated release state: %s", fixture.readGHLog())
 	}
 }
 
@@ -319,6 +379,7 @@ type releaseScriptFixture struct {
 	binDir   string
 	ghLog    string
 	ghState  string
+	ghNotes  string
 	ghAssets string
 	goLog    string
 	execLog  string
@@ -345,7 +406,10 @@ func newReleaseScriptFixture(t *testing.T) *releaseScriptFixture {
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("fixture\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, root, "add", "README.md")
+	if err := os.WriteFile(filepath.Join(root, "CHANGELOG.md"), []byte("# Changelog\n\n## [5.0.0] - 2026-08-30\n\n### Added\n- A test-only release fixture.\n\n## [4.9.0] - 2026-08-29\n\n### Changed\n- fixture from an older version.\n\n[5.0.0]: https://github.com/MarcosAlves90/polis/compare/v4.0.0...v5.0.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "add", "README.md", "CHANGELOG.md")
 	runGit(t, root, "commit", "-m", "fixture")
 	runGit(t, root, "branch", "-M", "main")
 	runGit(t, root, "remote", "add", "origin", remote)
@@ -358,12 +422,14 @@ func newReleaseScriptFixture(t *testing.T) *releaseScriptFixture {
 		binDir:   binDir,
 		ghLog:    filepath.Join(base, "gh.log"),
 		ghState:  filepath.Join(base, "gh.state"),
+		ghNotes:  filepath.Join(base, "gh.notes"),
 		ghAssets: filepath.Join(base, "gh.assets"),
 		goLog:    filepath.Join(base, "go.log"),
 		execLog:  filepath.Join(base, "exec.log"),
 		env: append(os.Environ(),
 			"POLIS_RELEASE_TEST_LOG="+filepath.Join(base, "gh.log"),
 			"POLIS_RELEASE_TEST_STATE="+filepath.Join(base, "gh.state"),
+			"POLIS_RELEASE_TEST_NOTES="+filepath.Join(base, "gh.notes"),
 			"POLIS_RELEASE_TEST_ASSETS="+filepath.Join(base, "gh.assets"),
 			"POLIS_RELEASE_TEST_GO_LOG="+filepath.Join(base, "go.log"),
 			"POLIS_RELEASE_TEST_EXEC_LOG="+filepath.Join(base, "exec.log"),
@@ -481,13 +547,16 @@ if [[ "${1:-}" == "release" && "${2:-}" == "create" ]]; then
   : > "$POLIS_RELEASE_TEST_STATE"
   : > "$POLIS_RELEASE_TEST_ASSETS"
   skip_next=false
+  notes_file=''
   for arg in "$@"; do
     if [[ "$skip_next" == true ]]; then
+      if [[ "$previous" == '--notes-file' ]]; then notes_file=$arg; fi
       skip_next=false
       continue
     fi
     case "$arg" in
       --repo|--title|--notes-file)
+        previous=$arg
         skip_next=true
         continue
         ;;
@@ -505,6 +574,7 @@ if [[ "${1:-}" == "release" && "${2:-}" == "create" ]]; then
       printf '%s|%s|sha256:%s\n' "$(basename "$arg")" "$size" "$digest" >> "$POLIS_RELEASE_TEST_ASSETS"
     fi
   done
+  if [[ -n "$notes_file" ]]; then cp "$notes_file" "$POLIS_RELEASE_TEST_NOTES"; fi
   exit 0
 fi
 exit 0

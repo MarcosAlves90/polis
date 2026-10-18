@@ -15,8 +15,9 @@ Options:
   --go COMMAND          Go command or executable path used to build the
                         offline POLIS assets. Defaults to POLIS_GO, then go.
   --remote NAME         Git remote used for tag inspection/push (default: origin).
-  --title TEXT          Explicit GitHub Release title.
-  --notes-file FILE     Read release notes from FILE instead of generated notes.
+  --title TEXT          Must match canonical title "POLIS TAG" when supplied.
+  --notes-file FILE     Maintained notes in the standard release format.
+                        Default: formatted CHANGELOG.md section for TAG.
   --draft               Create a draft release.
   --prerelease          Mark the release as a prerelease.
   --latest POLICY       Latest policy: automatic, true, or false (default: automatic).
@@ -261,6 +262,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$TAG" ]] || fail "--tag is required"
+[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || fail "tag must follow SemVer format vMAJOR.MINOR.PATCH[-PRERELEASE]"
+CANONICAL_TITLE="POLIS $TAG"
+[[ -z "$TITLE" || "$TITLE" == "$CANONICAL_TITLE" ]] || fail "release title must be $CANONICAL_TITLE"
+TITLE="$CANONICAL_TITLE"
 case "$LATEST" in
   automatic|true|false) ;;
   *) fail "--latest must be automatic, true, or false" ;;
@@ -322,6 +327,42 @@ TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/polis-release.XXXXXX")
 prepare_offline_assets
 UPLOADS+=("${OFFLINE_ASSETS[@]}")
 
+NOTES_SOURCE="maintained notes file"
+if [[ -z "$NOTES_FILE" ]]; then
+  NOTES_SOURCE="CHANGELOG.md version section"
+  [[ -f CHANGELOG.md ]] || fail "CHANGELOG.md is required for standardized release notes"
+  RELEASE_CHANGES=$(awk -v version="${TAG#v}" '
+    /^## \[/ {
+      if (found) exit
+      if (index($0, "## [" version "] - ") == 1) found=1
+      next
+    }
+    found { print }
+    END { if (!found) exit 1 }
+  ' CHANGELOG.md) || fail "CHANGELOG.md is missing the version section for $TAG"
+  [[ -n "${RELEASE_CHANGES//[[:space:]]/}" ]] || fail "CHANGELOG.md version section is empty for $TAG"
+  NOTES_FILE="$TMP_DIR/RELEASE_NOTES.md"
+  {
+    printf '# %s\n\n## Summary\n\nChanges in %s are recorded below.\n\n## Changes\n\n' "$CANONICAL_TITLE" "$TAG"
+    printf '%s\n\n' "$RELEASE_CHANGES"
+    printf '## Compatibility\n\nReview the changes above for compatibility and migration requirements.\n\n'
+    printf '## Downloads\n\n'
+    for upload in "${UPLOADS[@]}"; do
+      printf -- '- `%s`\n' "$(basename "$upload")"
+    done
+    printf -- '- `SHA256SUMS` (SHA-256 of the attached assets)\n\n'
+    printf '## References\n\n'
+    compare_url=$(awk -v version="${TAG#v}" 'index($0, "[" version "]: ")==1 { print $2; exit }' CHANGELOG.md)
+    if [[ -n "$compare_url" ]]; then
+      printf -- '- [Full changelog](%s)\n' "$compare_url"
+    fi
+    printf -- '- [Source tag](https://github.com/%s/tree/%s)\n' "$REPO" "$TAG"
+  } > "$NOTES_FILE"
+fi
+for required in "# $CANONICAL_TITLE" '## Summary' '## Changes' '## Compatibility' '## Downloads' '## References'; do
+  grep -Fqx "$required" "$NOTES_FILE" || fail "release notes missing standard heading: $required"
+done
+
 CHECKSUM_FILE="$TMP_DIR/SHA256SUMS"
 : > "$CHECKSUM_FILE"
 for asset in "${UPLOADS[@]}"; do
@@ -333,6 +374,8 @@ printf 'POLIS RELEASE PREFLIGHT: PASS\n'
 printf 'Repository: %s\n' "$REPO"
 printf 'Source commit: %s\n' "$SOURCE_COMMIT"
 printf 'Tag: %s\n' "$TAG"
+printf 'Release title: %s\n' "$TITLE"
+printf 'Release notes source: %s\n' "$NOTES_SOURCE"
 printf 'Git remote: %s\n' "$REMOTE"
 printf 'GitHub CLI: %s\n' "$GH"
 printf 'Go: %s\n' "$GO"
@@ -361,15 +404,7 @@ if [[ -z "$REMOTE_TAG" ]]; then
   git push "$REMOTE" "refs/tags/$TAG:refs/tags/$TAG"
 fi
 
-CREATE_ARGS=(release create "$TAG" --repo "$REPO" --verify-tag --fail-on-no-commits)
-if [[ -n "$TITLE" ]]; then
-  CREATE_ARGS+=(--title "$TITLE")
-fi
-if [[ -n "$NOTES_FILE" ]]; then
-  CREATE_ARGS+=(--notes-file "$NOTES_FILE")
-else
-  CREATE_ARGS+=(--generate-notes)
-fi
+CREATE_ARGS=(release create "$TAG" --repo "$REPO" --verify-tag --fail-on-no-commits --title "$TITLE" --notes-file "$NOTES_FILE")
 if [[ "$DRAFT" == true ]]; then
   CREATE_ARGS+=(--draft)
 fi

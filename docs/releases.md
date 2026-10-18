@@ -113,18 +113,30 @@ remain supported.
 
 ## Release notes and release type
 
-Generated GitHub release notes are the default:
+The canonical tag format is `vMAJOR.MINOR.PATCH` (optionally followed by a
+SemVer prerelease suffix), and the GitHub Release title is **always**
+`POLIS vMAJOR.MINOR.PATCH`. Existing tag objects, including their annotated
+messages and target commits, must never be rewritten to change their wording.
+
+The default release notes are extracted from the exact version section of
+`CHANGELOG.md`, not GitHub's automatically generated PR notes. They follow
+the same structure for every release: `# POLIS <tag>`, `## Summary`,
+`## Changes` (with available Keep a Changelog categories), `## Compatibility`,
+`## Downloads`, and `## References`. Missing or empty version sections fail
+preflight before any tag creation.
 
 ```bash
 ./scripts/github-release.sh --tag v6.8.1 --publish
 ```
 
-Use maintained notes instead:
+To add migration instructions or release-specific context, use a maintained
+notes file with **all six canonical headings**, and place it outside the
+source checkout to preserve the clean-worktree precondition:
 
 ```bash
 ./scripts/github-release.sh \
   --tag v6.8.1 \
-  --notes-file ./RELEASE_NOTES.md \
+  --notes-file /path/outside/repo/RELEASE_NOTES.md \
   --publish
 ```
 
@@ -133,13 +145,23 @@ Optional release metadata:
 ```bash
 ./scripts/github-release.sh \
   --tag v6.8.1-rc.1 \
-  --title "POLIS V6.8.1-rc.1" \
+  --title "POLIS v6.8.1-rc.1" \
+  --notes-file /path/outside/repo/RELEASE_NOTES-rc.md \
   --prerelease \
   --latest false \
   --publish
 ```
 
-Supported Latest policies are `automatic` (default), `true`, and `false`. `--draft` creates a draft release.
+Prereleases generally require explicit notes unless `CHANGELOG.md` contains
+an exact matching prerelease section. Any `--title` override must match the
+canonical spelling. Supported Latest policies are `automatic` (default),
+`true`, and `false`. `--draft` creates a draft release.
+
+Earlier GitHub Releases can be brought into this editorial convention by
+editing **only their title and description**. This does not change the
+existing Git tag, its annotated tag message, attached archives, checksums,
+signature, source commit, or published status. Preserve version-specific
+facts and distinguish releases that originally shipped no downloadable assets.
 
 ## Offline asset and optional assets
 
