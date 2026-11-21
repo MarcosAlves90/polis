@@ -78,7 +78,23 @@ func gatesResult(plan policyplan.Plan, execution policyexec.Result) gatesCLIResu
 		}
 		sort.Strings(report.NotRun)
 		for gate, exec := range execution.CommandFailures {
-			report.Commands = append(report.Commands, diagnostic.Command{Gate: gate, Status: string(exec.Observation.Status), Prerequisite: safeGatePrerequisite(exec.Observation.Prerequisite)})
+			observation := exec.Observation
+			stdout, stdoutPreviewTruncated := diagnostic.BoundProcessOutput(observation.Stdout)
+			stderr, stderrPreviewTruncated := diagnostic.BoundProcessOutput(observation.Stderr)
+			if observation.Status == spec.StatusBlocked {
+				// Blocked output can echo secret-bearing prerequisite details; keep metadata only.
+				stdout, stderr = "", ""
+				stdoutPreviewTruncated, stderrPreviewTruncated = false, false
+			}
+			report.Commands = append(report.Commands, diagnostic.Command{
+				Gate: gate, Argv: append([]string(nil), exec.Argv...), Cwd: exec.Cwd,
+				Status: string(observation.Status), ExitCode: observation.ExitCode, DurationMS: observation.DurationMS, TimedOut: observation.TimedOut,
+				Prerequisite:  safeGatePrerequisite(observation.Prerequisite),
+				StdoutContext: stdout, StderrContext: stderr, StdoutBytes: observation.StdoutBytes, StderrBytes: observation.StderrBytes,
+				StdoutSHA256: observation.StdoutSHA256, StderrSHA256: observation.StderrSHA256,
+				StdoutTruncated: observation.StdoutTruncated || stdoutPreviewTruncated,
+				StderrTruncated: observation.StderrTruncated || stderrPreviewTruncated,
+			})
 		}
 		sort.Slice(report.Commands, func(i, j int) bool { return report.Commands[i].Gate < report.Commands[j].Gate })
 		report = diagnostic.ClassifyGateFailure(report)
@@ -159,5 +175,9 @@ func writeGatesText(out io.Writer, report gatesCLIResult) {
 	if report.Run != nil {
 		fmt.Fprintf(out, "Run: %s (current=%t, jobs=%d)\nSelection: %s\n", report.Run.RunID, report.Run.Current, report.Run.Jobs, report.Run.SelectionReason)
 		writeGateEnvironmentText(out, report.Run.Inputs)
+	}
+	if report.Diagnostic != nil {
+		fmt.Fprintln(out, "Diagnostics:")
+		fmt.Fprint(out, report.Diagnostic.FormatText())
 	}
 }

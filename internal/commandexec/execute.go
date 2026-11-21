@@ -24,6 +24,7 @@ const MaxRetainedOutputBytes = 1 << 20
 type Observation struct {
 	Status          spec.Status
 	ExitCode        int
+	TimedOut        bool
 	DurationMS      int64
 	Stdout          string
 	Stderr          string
@@ -104,6 +105,7 @@ func Run(repoRoot string, command spec.CommandSpec) Observation {
 	if ctx.Err() == context.DeadlineExceeded {
 		obs.Status = spec.StatusFail
 		obs.ExitCode = -1
+		obs.TimedOut = true
 		return obs
 	}
 	if err == nil {

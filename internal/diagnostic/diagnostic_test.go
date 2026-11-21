@@ -86,3 +86,30 @@ func TestOperationalDiagnosticMixedFailuresDoNotMisclassify(t *testing.T) {
 		t.Fatalf("mixed gate result: %+v", got)
 	}
 }
+
+func TestFormatTextIncludesCommandOutputMetadata(t *testing.T) {
+	report := Report{Commands: []Command{{
+		Gate: "test.complete", Status: "FAIL", ExitCode: 23,
+		StdoutSHA256: "stdout-digest", StderrSHA256: "stderr-digest",
+	}}}
+	text := report.FormatText()
+	for _, fragment := range []string{
+		"Process output SHA-256: stdout=stdout-digest stderr=stderr-digest",
+		"Process output truncated: stdout=false stderr=false",
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("formatted diagnostic missing %q: %s", fragment, text)
+		}
+	}
+}
+
+func TestBoundProcessOutputSanitizesAndBoundsPreview(t *testing.T) {
+	got, truncated := BoundProcessOutput("safe\x00text")
+	if truncated || got != "safe�text" {
+		t.Fatalf("sanitized output=%q truncated=%t", got, truncated)
+	}
+	got, truncated = BoundProcessOutput(strings.Repeat("x", MaxProcessOutputBytes+1))
+	if !truncated || len(got) != MaxProcessOutputBytes {
+		t.Fatalf("bounded output length=%d truncated=%t", len(got), truncated)
+	}
+}
