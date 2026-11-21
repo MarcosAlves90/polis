@@ -2,10 +2,14 @@ package changeexec
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -32,10 +36,10 @@ func TestBaselineDoesNotAcceptMissingPrerequisiteAsRed(t *testing.T) {
 	contract := spec.ChangeContract{SchemaVersion: 1, Kind: spec.ChangeKindDefect, Behavior: cmd("true"), Affected: cmd("true"), Regression: spec.RegressionContract{Mode: spec.RegressionModeRedGreen, Command: &regression, BaselineExitCode: &code, BaselineOutputContains: []string{"missing-regression-runner"}}}
 	var evidence bytes.Buffer
 	err := ExecuteBaseline(contract, t.TempDir(), &evidence)
-	if err == nil || !strings.Contains(err.Error(), "missing executable missing-regression-runner") || !strings.Contains(err.Error(), "intended checks did not run") {
-		t.Fatalf("missing prerequisite accepted as Red: err=%v evidence=%s", err, evidence.String())
+	if err == nil || !strings.Contains(err.Error(), "missing executable (details omitted)") || !strings.Contains(err.Error(), "intended checks did not run") || strings.Contains(err.Error(), "missing-regression-runner") {
+		t.Fatalf("missing prerequisite leaked details or was accepted: err=%v evidence=%s", err, evidence.String())
 	}
-	if !strings.Contains(evidence.String(), `"gate":"regression","status":"BLOCKED"`) {
+	if !strings.Contains(evidence.String(), `"gate":"regression","status":"BLOCKED"`) || !strings.Contains(evidence.String(), "missing executable (details omitted); intended checks did not run") || strings.Contains(evidence.String(), "missing-regression-runner") {
 		t.Fatalf("blocked regression not recorded: %s", evidence.String())
 	}
 }
@@ -58,8 +62,23 @@ func TestTargetNamesMissingRegressionDependency(t *testing.T) {
 	contract := strictBehaviorPreservingContract(regression)
 	var evidence bytes.Buffer
 	err := ExecuteTarget(contract, t.TempDir(), &evidence)
-	if err == nil || !strings.Contains(err.Error(), "missing executable missing-regression-runner") || !strings.Contains(err.Error(), "intended checks did not run") {
-		t.Fatalf("missing target prerequisite not reported: %v evidence=%s", err, evidence.String())
+	if err == nil || !strings.Contains(err.Error(), "missing executable (details omitted)") || !strings.Contains(err.Error(), "intended checks did not run") || strings.Contains(err.Error(), "missing-regression-runner") || strings.Contains(evidence.String(), "missing-regression-runner") {
+		t.Fatalf("missing target prerequisite leaked details or was accepted: %v evidence=%s", err, evidence.String())
+	}
+	var failure *diagnostic.Error
+	if !errors.As(err, &failure) {
+		t.Fatalf("failure has no structured diagnostics: %v", err)
+	}
+	command := failure.Report.Commands[0]
+	if command.Prerequisite != "missing executable (details omitted)" || failure.Report.ObservedCause != "missing_executable" {
+		t.Fatalf("blocked report did not retain a safe prerequisite category: %+v", failure.Report)
+	}
+	jsonReport, err := json.Marshal(failure.Report)
+	if err != nil || strings.Contains(string(jsonReport), "missing-regression-runner") {
+		t.Fatalf("blocked JSON diagnostic leaked prerequisite details: %s err=%v", jsonReport, err)
+	}
+	if !reflect.DeepEqual(failure.Report.NotRun, []string{"behavior", "affected", "project gate validation"}) {
+		t.Fatalf("missing target diagnostic leaked details or omitted not-run gates: %+v", failure)
 	}
 }
 
@@ -200,5 +219,46 @@ func TestExecuteTargetRequiresStrictGreenGreen(t *testing.T) {
 	c := strictBehaviorPreservingContract(strictCmd("false"))
 	if err := ExecuteTarget(c, t.TempDir(), &bytes.Buffer{}); err == nil {
 		t.Fatal("strict behavior-preserving target skipped characterization Green")
+	}
+}
+
+func TestTargetGateFailureIncludesDiagnostics(t *testing.T) {
+	for _, gate := range []string{"regression", "behavior", "affected"} {
+		t.Run(gate, func(t *testing.T) {
+			command := strictCmd("sh", "-c", "printf TARGET-"+strings.ToUpper(gate)+"-DIAGNOSTIC; exit 17")
+			contract := strictFeatureContract(strictCmd("true"), 1, "unused")
+			switch gate {
+			case "regression":
+				contract.Regression.Command = &command
+			case "behavior":
+				contract.Behavior = command
+			case "affected":
+				contract.Affected = command
+			}
+			err := ExecuteTarget(contract, t.TempDir(), &bytes.Buffer{})
+			if err == nil {
+				t.Fatal("expected target gate failure")
+			}
+			failure, ok := diagnostic.As(err)
+			if !ok {
+				t.Fatalf("failure has no structured diagnostics: %v", err)
+			}
+			if failure.Report.Stage != "change contract validation" || len(failure.Report.Commands) != 1 || failure.Report.GateStatuses[gate] != string(spec.StatusFail) {
+				t.Fatalf("unexpected failure report: %+v", failure.Report)
+			}
+			commandReport := failure.Report.Commands[0]
+			if commandReport.Gate != gate || commandReport.Status != string(spec.StatusFail) || commandReport.ExitCode != 17 || commandReport.Cwd != "." || !strings.Contains(commandReport.StdoutContext, "TARGET-"+strings.ToUpper(gate)+"-DIAGNOSTIC") || commandReport.StdoutBytes <= 0 || commandReport.StdoutSHA256 == "" {
+				t.Fatalf("incomplete command diagnostics: %+v", commandReport)
+			}
+			expectedNotRun := []string{"behavior", "affected", "project gate validation"}
+			if gate == "behavior" {
+				expectedNotRun = []string{"affected", "project gate validation"}
+			} else if gate == "affected" {
+				expectedNotRun = []string{"project gate validation"}
+			}
+			if !reflect.DeepEqual(failure.Report.NotRun, expectedNotRun) {
+				t.Fatalf("unexpected not-run gates: %v", failure.Report.NotRun)
+			}
+		})
 	}
 }

@@ -229,6 +229,56 @@ func TestRunGatesReturnsFailureWithPerGateResults(t *testing.T) {
 	}
 }
 
+func TestRunGatesIncludesProcessDiagnostics(t *testing.T) {
+	repo := makeBuildRepo(t)
+	var policy spec.Policy
+	if err := json.Unmarshal(canonicalPolicyBytes(t), &policy); err != nil {
+		t.Fatal(err)
+	}
+	for i := range policy.Gates {
+		if policy.Gates[i].ID == "test.complete" {
+			policy.Gates[i].Command.Argv = []string{"git", "PROJECT-GATE-DIAGNOSTIC"}
+		}
+	}
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyPath := filepath.Join(t.TempDir(), "diagnostic-policy.json")
+	if err := os.WriteFile(policyPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, format := range []string{"json", "text"} {
+		t.Run(format, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			code := run([]string{"gates", "--repo", repo, "--policy", policyPath, "--format", format}, &out, &errOut)
+			if code == exitPass {
+				t.Fatalf("failing project gate passed: %s", out.String())
+			}
+			if format == "text" {
+				for _, fragment := range []string{"test.complete", "FAIL", "Exit code: 1", "PROJECT-GATE-DIAGNOSTIC"} {
+					if !strings.Contains(out.String(), fragment) {
+						t.Fatalf("text diagnostics missing %q: %s", fragment, out.String())
+					}
+				}
+				return
+			}
+			var report gatesCLIResult
+			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+				t.Fatalf("invalid gates JSON: %v\n%s", err, out.String())
+			}
+			if report.Diagnostic == nil || len(report.Diagnostic.Commands) != 1 {
+				t.Fatalf("missing command diagnostics: %+v", report.Diagnostic)
+			}
+			command := report.Diagnostic.Commands[0]
+			if command.Gate != "test.complete" || command.Status != string(spec.StatusFail) || command.ExitCode != 1 || command.Cwd != "." || !strings.Contains(command.StderrContext, "PROJECT-GATE-DIAGNOSTIC") || command.StderrBytes <= 0 || command.StderrSHA256 == "" {
+				t.Fatalf("incomplete process diagnostics: %+v", command)
+			}
+		})
+	}
+}
+
 func TestRunGatesDoesNotMarkCoverageCommandRunWhenReportCleanupFails(t *testing.T) {
 	repo := makeBuildRepo(t)
 	reportPath := filepath.Join(repo, ".polis", "coverage.out")

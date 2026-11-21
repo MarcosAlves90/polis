@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
+	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -27,9 +28,9 @@ func ExecuteBaseline(contract spec.ChangeContract, repoRoot string, evidence io.
 	obs := commandexec.Run(repoRoot, *contract.Regression.Command)
 	writeObservation(enc, "regression", *contract.Regression.Command, obs)
 	if obs.Status == spec.StatusBlocked {
-		reason := commandexec.BlockedReason(obs)
-		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: "regression", Status: spec.StatusBlocked, Reason: reason})
-		return fmt.Errorf("regression prerequisite blocked: %s", *reason)
+		reason := safeBlockedReason(obs)
+		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: "regression", Status: spec.StatusBlocked, Reason: &reason})
+		return fmt.Errorf("regression prerequisite blocked: %s", reason)
 	}
 	combined := obs.Stdout + "\n" + obs.Stderr
 	if obs.ExitCode != *contract.Regression.BaselineExitCode {
@@ -62,7 +63,7 @@ func ExecuteTarget(contract spec.ChangeContract, repoRoot string, evidence io.Wr
 	enc := json.NewEncoder(evidence)
 	enc.SetEscapeHTML(false)
 	if contract.RequiresRedGreen() || contract.RequiresGreenGreen() {
-		if err := runPassGate(enc, "regression", *contract.Regression.Command, repoRoot); err != nil {
+		if err := runPassGate(enc, "regression", *contract.Regression.Command, repoRoot, "behavior", "affected", "project gate validation"); err != nil {
 			return err
 		}
 	} else {
@@ -70,27 +71,76 @@ func ExecuteTarget(contract spec.ChangeContract, repoRoot string, evidence io.Wr
 		reason := spec.RegressionReasonNotDefect
 		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: "regression", Status: spec.StatusNotApplicable, Reason: &reason})
 	}
-	if err := runPassGate(enc, "behavior", contract.Behavior, repoRoot); err != nil {
+	if err := runPassGate(enc, "behavior", contract.Behavior, repoRoot, "affected", "project gate validation"); err != nil {
 		return err
 	}
-	if err := runPassGate(enc, "affected", contract.Affected, repoRoot); err != nil {
+	if err := runPassGate(enc, "affected", contract.Affected, repoRoot, "project gate validation"); err != nil {
 		return err
 	}
 	return nil
 }
 
-func runPassGate(enc *json.Encoder, gate string, command spec.CommandSpec, repoRoot string) error {
+func runPassGate(enc *json.Encoder, gate string, command spec.CommandSpec, repoRoot string, notRun ...string) error {
 	_ = enc.Encode(spec.EvidenceEvent{Event: "gate_started", Gate: gate})
 	obs := commandexec.Run(repoRoot, command)
 	writeObservation(enc, gate, command, obs)
-	_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: gate, Status: obs.Status, Reason: commandexec.BlockedReason(obs)})
+	reason := commandexec.BlockedReason(obs)
+	if obs.Status == spec.StatusBlocked {
+		safeReason := safeBlockedReason(obs)
+		reason = &safeReason
+	}
+	_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: gate, Status: obs.Status, Reason: reason})
 	if obs.Status != spec.StatusPass {
+		stdout, stdoutPreviewTruncated := diagnostic.BoundProcessOutput(obs.Stdout)
+		stderr, stderrPreviewTruncated := diagnostic.BoundProcessOutput(obs.Stderr)
 		if obs.Status == spec.StatusBlocked {
-			return fmt.Errorf("change gate %s prerequisite blocked: %s", gate, *commandexec.BlockedReason(obs))
+			// Blocked output can echo secret-bearing prerequisite details; keep metadata only.
+			stdout, stderr = "", ""
+			stdoutPreviewTruncated, stderrPreviewTruncated = false, false
 		}
-		return fmt.Errorf("change gate %s %s", gate, obs.Status)
+		commandReport := diagnostic.Command{
+			Gate: gate, Argv: append([]string(nil), command.Argv...), Cwd: command.Cwd,
+			Status: string(obs.Status), ExitCode: obs.ExitCode, DurationMS: obs.DurationMS,
+			StdoutContext: stdout, StderrContext: stderr, StdoutBytes: obs.StdoutBytes, StderrBytes: obs.StderrBytes,
+			StdoutSHA256: obs.StdoutSHA256, StderrSHA256: obs.StderrSHA256,
+			StdoutTruncated: obs.StdoutTruncated || stdoutPreviewTruncated,
+			StderrTruncated: obs.StderrTruncated || stderrPreviewTruncated,
+		}
+		if obs.Status == spec.StatusBlocked {
+			commandReport.Prerequisite = safeBlockedCategory(obs)
+		}
+		report := diagnostic.Report{
+			Stage: "change contract validation", Condition: "configured change gate did not pass",
+			GateStatuses: map[string]string{gate: string(obs.Status)}, Commands: []diagnostic.Command{commandReport}, NotRun: notRun,
+		}
+		if obs.Status == spec.StatusBlocked {
+			return &diagnostic.Error{Summary: fmt.Sprintf("change gate %s prerequisite blocked: %s", gate, safeBlockedReason(obs)), Report: diagnostic.ClassifyGateFailure(report)}
+		}
+		return &diagnostic.Error{Summary: fmt.Sprintf("change gate %s %s", gate, obs.Status), Report: diagnostic.ClassifyGateFailure(report)}
 	}
 	return nil
+}
+
+func safeBlockedReason(obs commandexec.Observation) string {
+	category := safeBlockedCategory(obs)
+	if category == "" {
+		return ""
+	}
+	return category + "; intended checks did not run"
+}
+
+func safeBlockedCategory(obs commandexec.Observation) string {
+	if obs.Status != spec.StatusBlocked {
+		return ""
+	}
+	category := "command prerequisite unavailable"
+	for _, prefix := range []string{"missing executable", "missing dependency", "missing environment condition"} {
+		if strings.HasPrefix(obs.Prerequisite, prefix+" ") {
+			category = prefix
+			break
+		}
+	}
+	return category + " (details omitted)"
 }
 
 func writeObservation(enc *json.Encoder, gate string, command spec.CommandSpec, obs commandexec.Observation) {

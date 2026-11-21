@@ -190,11 +190,10 @@ func (r Report) FormatText() string {
 			fmt.Fprintf(&out, "Prerequisite: %s\nIntended checks: not run\n", command.Prerequisite)
 		}
 		fmt.Fprintf(&out, "Process output bytes: stdout=%d stderr=%d\n", command.StdoutBytes, command.StderrBytes)
+		fmt.Fprintf(&out, "Process output SHA-256: stdout=%s stderr=%s\n", command.StdoutSHA256, command.StderrSHA256)
 		fmt.Fprintf(&out, "Stdout context: %s\n", displayOutput(command.StdoutContext))
 		fmt.Fprintf(&out, "Stderr context: %s\n", displayOutput(command.StderrContext))
-		if command.StdoutTruncated || command.StderrTruncated {
-			fmt.Fprintf(&out, "Process output truncated: stdout=%t stderr=%t\n", command.StdoutTruncated, command.StderrTruncated)
-		}
+		fmt.Fprintf(&out, "Process output truncated: stdout=%t stderr=%t\n", command.StdoutTruncated, command.StderrTruncated)
 	}
 	if len(r.NotRun) > 0 {
 		fmt.Fprintf(&out, "Not run: %s\n", strings.Join(r.NotRun, ", "))
@@ -222,6 +221,8 @@ func (r Report) Inline() string {
 	return strings.Join(parts, "; ")
 }
 
+// BoundProcessOutput sanitizes control characters and limits the displayed preview.
+// It cannot detect secrets; commands must avoid emitting credentials or redact them before output.
 func BoundProcessOutput(raw string) (string, bool) {
 	raw = strings.ToValidUTF8(raw, "�")
 	truncated := len(raw) > MaxProcessOutputBytes
