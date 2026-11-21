@@ -88,7 +88,7 @@ func gatesResult(plan policyplan.Plan, execution policyexec.Result) gatesCLIResu
 			}
 			report.Commands = append(report.Commands, diagnostic.Command{
 				Gate: gate, Argv: append([]string(nil), exec.Argv...), Cwd: exec.Cwd,
-				Status: string(observation.Status), ExitCode: observation.ExitCode, DurationMS: observation.DurationMS,
+				Status: string(observation.Status), ExitCode: observation.ExitCode, DurationMS: observation.DurationMS, TimedOut: observation.TimedOut,
 				Prerequisite:  safeGatePrerequisite(observation.Prerequisite),
 				StdoutContext: stdout, StderrContext: stderr, StdoutBytes: observation.StdoutBytes, StderrBytes: observation.StderrBytes,
 				StdoutSHA256: observation.StdoutSHA256, StderrSHA256: observation.StderrSHA256,

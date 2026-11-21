@@ -22,6 +22,7 @@ type Command struct {
 	Cwd             string   `json:"cwd"`
 	Status          string   `json:"status"`
 	ExitCode        int      `json:"exit_code"`
+	TimedOut        bool     `json:"timed_out,omitempty"`
 	DurationMS      int64    `json:"duration_ms"`
 	StdoutContext   string   `json:"stdout_context"`
 	StderrContext   string   `json:"stderr_context"`
@@ -186,6 +187,9 @@ func (r Report) FormatText() string {
 		fmt.Fprintf(&out, "Command: %s\n", formatArgv(command.Argv))
 		fmt.Fprintf(&out, "Working directory: %s\n", command.Cwd)
 		fmt.Fprintf(&out, "Process status: %s\nExit code: %d\nDuration: %d ms\n", command.Status, command.ExitCode, command.DurationMS)
+		if command.TimedOut {
+			out.WriteString("Timed out: true\n")
+		}
 		if command.Prerequisite != "" {
 			fmt.Fprintf(&out, "Prerequisite: %s\nIntended checks: not run\n", command.Prerequisite)
 		}

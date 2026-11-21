@@ -22,7 +22,7 @@ func ExecuteBaseline(contract spec.ChangeContract, repoRoot string, evidence io.
 	enc := json.NewEncoder(evidence)
 	enc.SetEscapeHTML(false)
 	if contract.RequiresGreenGreen() {
-		return runPassGate(enc, "regression", *contract.Regression.Command, repoRoot)
+		return runPassGate(enc, "regression", *contract.Regression.Command, repoRoot, "target regression", "behavior", "affected", "project gate validation")
 	}
 	_ = enc.Encode(spec.EvidenceEvent{Event: "gate_started", Gate: "regression"})
 	obs := commandexec.Run(repoRoot, *contract.Regression.Command)
@@ -100,7 +100,7 @@ func runPassGate(enc *json.Encoder, gate string, command spec.CommandSpec, repoR
 		}
 		commandReport := diagnostic.Command{
 			Gate: gate, Argv: append([]string(nil), command.Argv...), Cwd: command.Cwd,
-			Status: string(obs.Status), ExitCode: obs.ExitCode, DurationMS: obs.DurationMS,
+			Status: string(obs.Status), ExitCode: obs.ExitCode, DurationMS: obs.DurationMS, TimedOut: obs.TimedOut,
 			StdoutContext: stdout, StderrContext: stderr, StdoutBytes: obs.StdoutBytes, StderrBytes: obs.StderrBytes,
 			StdoutSHA256: obs.StdoutSHA256, StderrSHA256: obs.StderrSHA256,
 			StdoutTruncated: obs.StdoutTruncated || stdoutPreviewTruncated,
