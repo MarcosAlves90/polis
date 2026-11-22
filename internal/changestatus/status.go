@@ -18,6 +18,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
 	"github.com/MarcosAlves90/polis/v6/internal/policyload"
 	"github.com/MarcosAlves90/polis/v6/internal/redcapture"
+	"github.com/MarcosAlves90/polis/v6/internal/retentioncompleteness"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -50,24 +51,25 @@ type Options struct {
 }
 
 type Result struct {
-	Status              string            `json:"status"`
-	State               string            `json:"state"`
-	RetentionMode       string            `json:"retention_mode"`
-	Consistent          bool              `json:"consistent"`
-	Contract            *ContractSummary  `json:"contract,omitempty"`
-	Baseline            *BaselineSummary  `json:"baseline,omitempty"`
-	ImplementationPlan  StageSummary      `json:"implementation_plan"`
-	RedProof            StageSummary      `json:"red_proof"`
-	Package             PackageSummary    `json:"package"`
-	Evidence            StageSummary      `json:"evidence"`
-	Gates               []GateSummary     `json:"gates"`
-	Workspace           *WorkspaceSummary `json:"workspace,omitempty"`
-	Proven              []string          `json:"proven"`
-	StaleOrUnproven     []string          `json:"stale_or_unproven"`
-	Missing             []string          `json:"missing"`
-	NextAction          *NextAction       `json:"next_action,omitempty"`
-	CandidateContracts  []string          `json:"candidate_contracts,omitempty"`
-	Problems            []string          `json:"problems,omitempty"`
+	Status              string              `json:"status"`
+	State               string              `json:"state"`
+	RetentionMode       string              `json:"retention_mode"`
+	Consistent          bool                `json:"consistent"`
+	Contract            *ContractSummary    `json:"contract,omitempty"`
+	Baseline            *BaselineSummary    `json:"baseline,omitempty"`
+	ImplementationPlan  StageSummary        `json:"implementation_plan"`
+	RedProof            StageSummary        `json:"red_proof"`
+	Package             PackageSummary      `json:"package"`
+	Evidence            StageSummary        `json:"evidence"`
+	Gates               []GateSummary       `json:"gates"`
+	Workspace           *WorkspaceSummary   `json:"workspace,omitempty"`
+	RetentionReadiness  *RetentionReadiness `json:"retention_readiness,omitempty"`
+	Proven              []string            `json:"proven"`
+	StaleOrUnproven     []string            `json:"stale_or_unproven"`
+	Missing             []string            `json:"missing"`
+	NextAction          *NextAction         `json:"next_action,omitempty"`
+	CandidateContracts  []string            `json:"candidate_contracts,omitempty"`
+	Problems            []string            `json:"problems,omitempty"`
 	selectedContractRaw []byte
 }
 
@@ -82,6 +84,18 @@ type WorkspaceSummary struct {
 	RecordedTargetTree           string   `json:"recorded_target_tree"`
 	CurrentTargetTree            *string  `json:"current_target_tree"`
 	Differences                  []string `json:"differences"`
+}
+
+// RetentionReadiness is the fail-closed repository-retention projection. It is
+// separate from the operational workflow state: incomplete retained evidence
+// never turns an otherwise informative status into a validated workflow.
+type RetentionReadiness struct {
+	State       string   `json:"state"`
+	Detail      string   `json:"detail"`
+	TargetTree  string   `json:"target_tree,omitempty"`
+	Operation   string   `json:"operation,omitempty"`
+	RecordPaths []string `json:"record_paths,omitempty"`
+	Corrective  string   `json:"corrective"`
 }
 
 type ContractSummary struct {
@@ -147,7 +161,18 @@ type packageCandidate struct {
 	pkg  packageverify.Package
 }
 
+// Derive reconciles operational workflow evidence and adds an independent
+// repository-retention readiness projection.
 func Derive(ctx context.Context, opts Options) (Result, error) {
+	result, err := deriveWorkflow(ctx, opts)
+	if err != nil {
+		return Result{}, err
+	}
+	result.RetentionReadiness = deriveRetentionReadiness(ctx, opts, result)
+	return result, nil
+}
+
+func deriveWorkflow(ctx context.Context, opts Options) (Result, error) {
 	root, err := gitutil.ResolveRoot(ctx, opts.Repo, gitutil.ResolveRootOptions{EmptyAsDot: true, GitError: "not a Git worktree"})
 	if err != nil {
 		return Result{}, err
@@ -362,6 +387,89 @@ func Derive(ctx context.Context, opts Options) (Result, error) {
 	result.State = StateImplementationPending
 	result.NextAction = &NextAction{Action: "implement", Reason: "no verified package records completion; continue the locked implementation, then run polis build"}
 	return result, nil
+}
+
+func deriveRetentionReadiness(ctx context.Context, opts Options, result Result) *RetentionReadiness {
+	root, err := gitutil.ResolveRoot(ctx, opts.Repo, gitutil.ResolveRootOptions{EmptyAsDot: true, GitError: "not a Git worktree"})
+	if err != nil {
+		return &RetentionReadiness{State: retentioncompleteness.StatusUnavailable, Detail: err.Error(), Corrective: "inspect the repository path"}
+	}
+	retention, err := artifactretention.Load(ctx, root)
+	if err != nil {
+		return &RetentionReadiness{State: retentioncompleteness.StatusUnavailable, Detail: err.Error(), Corrective: "inspect the retention manifest"}
+	}
+	if !retention.RepositoryEnabled() {
+		return &RetentionReadiness{
+			State:      retentioncompleteness.StatusExternal,
+			Detail:     "external retention does not publish repository completeness evidence",
+			Corrective: "none",
+		}
+	}
+	if result.Contract == nil || len(result.selectedContractRaw) == 0 {
+		return &RetentionReadiness{
+			State:      retentioncompleteness.StatusEmpty,
+			Detail:     "no locked Change Contract is selected for retained readiness",
+			Corrective: "polis start",
+		}
+	}
+	contract, err := spec.DecodeChangeContract(result.selectedContractRaw)
+	if err != nil || contract.BaselineLock == nil {
+		return &RetentionReadiness{
+			State:      retentioncompleteness.StatusEmpty,
+			Detail:     "the selected Change Contract cannot be decoded for retained readiness",
+			Corrective: "polis start",
+		}
+	}
+	policyRaw, policy, err := readinessPolicy(ctx, root, opts.Policy, contract)
+	if err != nil {
+		return &RetentionReadiness{
+			State:      retentioncompleteness.StatusIncomplete,
+			Detail:     "the effective Project Policy cannot be bound to retained evidence: " + err.Error(),
+			Corrective: "polis status --policy <policy-v3.json>",
+		}
+	}
+	targetTree, err := retentioncompleteness.TargetTree(ctx, root, contract.BaselineLock.BaseCommit)
+	if err != nil {
+		return &RetentionReadiness{
+			State:      retentioncompleteness.StatusIncomplete,
+			Detail:     "the current source tree cannot be captured for retained readiness: " + err.Error(),
+			Corrective: "inspect the Git index",
+		}
+	}
+	assessment := retentioncompleteness.AssessStatus(ctx, retentioncompleteness.StatusOptions{
+		Retention: retention, Repo: root,
+		ContractRaw: result.selectedContractRaw, Contract: contract,
+		PolicyRaw: policyRaw, Policy: policy, TargetTree: targetTree,
+	})
+	readiness := &RetentionReadiness{
+		State:       assessment.State,
+		Detail:      assessment.Detail,
+		TargetTree:  targetTree,
+		RecordPaths: append([]string(nil), assessment.RecordPaths...),
+		Corrective:  assessment.Corrective,
+	}
+	if assessment.Record != nil {
+		readiness.Operation = assessment.Record.Operation
+	}
+	return readiness
+}
+
+func readinessPolicy(ctx context.Context, repo, external string, contract spec.ChangeContract) ([]byte, spec.Policy, error) {
+	var raw []byte
+	var policy spec.Policy
+	var err error
+	if external != "" {
+		raw, policy, err = policyload.LoadExternal(repo, external)
+	} else {
+		raw, policy, err = policyload.LoadCommitted(ctx, repo)
+	}
+	if err != nil {
+		return nil, spec.Policy{}, err
+	}
+	if err := devlock.ValidatePolicy(contract, raw); err != nil {
+		return nil, spec.Policy{}, err
+	}
+	return raw, policy, nil
 }
 
 // SelectedContractRaw returns the exact validated locked Change Contract bytes
@@ -741,6 +849,23 @@ func Project(result Result) Result {
 			result.Missing = append(result.Missing, "project gate "+gate.ID)
 		case "deferred":
 			result.StaleOrUnproven = append(result.StaleOrUnproven, "project gate "+gate.ID+" is deferred to consumer validation")
+		}
+	}
+
+	if result.RetentionReadiness != nil {
+		switch result.RetentionReadiness.State {
+		case retentioncompleteness.StatusComplete:
+			result.Proven = append(result.Proven, "retained validation evidence is complete for the current source tree and gate outcomes")
+		case retentioncompleteness.StatusEmpty:
+			result.Missing = append(result.Missing, "locked workflow state for retained readiness")
+		case retentioncompleteness.StatusIncomplete:
+			result.Missing = append(result.Missing, "current retained validation evidence")
+		case retentioncompleteness.StatusStale:
+			result.StaleOrUnproven = append(result.StaleOrUnproven, "retained validation evidence belongs to a different source tree or baseline")
+		case retentioncompleteness.StatusAmbiguous:
+			result.StaleOrUnproven = append(result.StaleOrUnproven, "multiple retained validation records describe the current run")
+		case retentioncompleteness.StatusUnavailable:
+			result.StaleOrUnproven = append(result.StaleOrUnproven, "retained readiness cannot be evaluated")
 		}
 	}
 

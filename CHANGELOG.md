@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- Make repository retention a fail-closed completeness requirement for full locked-change `workspace validate` and `build`: publish and reverify exact retained contract, optional plan, required Red proof, validation evidence, and a bounded `repository_validation` record before PASS, without retaining delivery packages or mutating Git state.
+- Add `polis status` retention readiness states (`empty`, `incomplete`, `stale`, `ambiguous`, `complete`) with evidence paths and corrective actions, kept separate from the operational workflow state.
+
 ## [6.12.0] - 2026-10-18
 
 ### Changed

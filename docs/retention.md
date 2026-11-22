@@ -20,14 +20,24 @@ fail closed. This setting is independent of Project Policy and works with
 either committed or external `--policy` input.
 
 In `repository` mode, `start`, `implementation-plan`, `capture-red`, and `build`
-may publish exact, content-addressed contracts, plans, regression proofs, and
-bounded validation evidence under `.polis/artifacts/`. **A delivery package is
-never retained in the repository.** The `.polis` archive is a transferable,
+publish exact, content-addressed contracts, plans, regression proofs, and
+bounded validation evidence under `.polis/artifacts/`. Full `workspace validate`
+and `build` runs also publish a bounded `repository_validation` completeness
+record and reread every referenced artifact before reporting PASS; incomplete
+or unbound evidence fails the command. **A delivery package is never retained
+in the repository.** The `.polis` archive is a transferable,
 disposable output; `polis build --out` must resolve physically outside the
 target worktree. Later producer steps can read contracts, plans, and proofs
 from their matching managed class. CLI output lists retained non-package
 paths. Existing historical package copies are not deleted automatically and
 may remain readable for compatibility.
+
+`polis status` reports repository retention readiness separately from its
+operational workflow state. Readiness is `empty`, `incomplete`, `stale`,
+`ambiguous`, or `complete`, and includes the current target tree, any matching
+record paths, and a corrective action. It never turns missing or unbound
+retained artifacts into validated completion. External mode reports external
+readiness and publishes no completeness record.
 
 Retained files remain ordinary visible Git files. POLIS never stages, commits,
 or deletes them. Only `.polis/artifacts/` is omitted from producer cleanliness
