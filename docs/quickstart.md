@@ -38,6 +38,14 @@ polis init --repo . --profile auto --dry-run > "$POLIS_OUTSIDE/policy.json"
 polis plan --repo . --policy "$POLIS_OUTSIDE/policy.json"
 ```
 
+Parallel gate execution is opt-in and optional. If you have reviewed two command
+gates for shared-state safety, regenerate the preview with explicit selections
+such as `--parallel-safe lint --parallel-safe dependency`, inspect the
+`concurrency` section of `polis plan`, and only then use `--jobs 2` on the
+validation command. `plan` previews declarations; it does not run gates or claim
+overlap. See [gate execution and progress](gates-and-progress.md) for the
+fail-closed rules, reason codes, and measured fixture results.
+
 Prepare a strict schema-v5 draft for the actual change, then lock it before editing:
 
 ```bash

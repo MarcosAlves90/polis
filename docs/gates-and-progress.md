@@ -123,6 +123,89 @@ because it owns report cleanup/measurement. Prerequisites must finish PASS
 before a dependent starts; failure blocks dependents, not unrelated gates.
 Results and evidence are emitted in stable topological plan order.
 
+### Bounded concurrency is an explicit opt-in
+
+POLIS never infers safety from a gate ID, name, category, command, or working
+directory. Review the real command and its shared state first, then generate a
+policy with only the gates you have reviewed:
+
+```bash
+polis init --repo /repo --profile go \
+  --parallel-safe lint --parallel-safe dependency --dry-run
+```
+
+`--parallel-safe` is repeatable and fail-closed. It rejects unknown IDs,
+coverage, disabled/not-applicable gates, and duplicate IDs before writing a
+policy. The generated declaration is an operator assertion, not verification:
+do not use it for commands that share files, ports, caches, credentials,
+toolchains, or report ownership. Legacy schema-v2 policies may add only this
+additive field; schema-v3 incremental fields still require schema v3.
+
+`polis plan` reports the declared, jobs-independent `concurrency` summary in
+text and JSON. It lists eligible and exclusive gates with stable reason codes,
+dependency-aware potential overlap groups, and serialization findings. Plan
+output is a preview: it never claims a gate ran or that overlap occurred.
+
+| Reason code | Meaning |
+| --- | --- |
+| `declared_parallel_safe` | Eligible because the policy explicitly declared it. |
+| `parallel_safe_not_declared` | No explicit safety declaration; exclusive. |
+| `coverage_report_exclusive` | Coverage owns its report lifecycle; never overlapped. |
+| `gate_not_applicable` | Gate is disabled or not executable in this plan. |
+| `gate_deferred_to_consumer` | Producer does not execute this gate. |
+| `mandatory_prerequisite` | Eligible gate waits for a declared prerequisite. |
+| `declared_resource_conflict` | Reserved for a declared resource conflict. |
+| `no_parallel_safe_gates` | No enabled command gate opted in. |
+| `fewer_than_two_eligible_gates` | One eligible gate cannot overlap. |
+| `no_overlapping_eligible_gates` | Eligible gates are ordered by dependencies. |
+| `jobs_equals_one` | Requested jobs bound is one. |
+| `worker_cap` | Jobs bound or selection permits no concurrent launch. |
+| `selection_serializes_eligible_gates` | Fewer than two eligible gates were selected. |
+| `eligible_gates_reused` | Eligible gates were reused and did not launch. |
+| `invalid_jobs` | Jobs bound outside 1..16; execution is BLOCKED. |
+
+`polis gates`, `polis workspace validate`, and `polis build` add a `concurrency`
+report to their command results. It joins the jobs-aware diagnosis with measured
+`overlap_observed`, `max_concurrent`, and launched-gate facts. `--jobs 2` alone
+never sets `overlap_observed=true`; only two actually concurrent launches do.
+Saved gate-run manifests and external workspace reports also carry the same
+additive optional `concurrency` field, so a stored run or checkpoint explains
+what the operator saw. Older records without the field remain valid. Evidence
+streams, retained records, and delivery/package schemas remain unchanged, as do
+PASS/FAIL/BLOCKED statuses, replay/reuse identity, coverage exclusivity,
+source-state checks, and deterministic result order.
+
+### Measured concurrency evidence
+
+The fixture benchmark uses two reviewed sleep-bound command gates with no
+shared outputs; the helper sleeps approximately three seconds per gate. It
+measures scheduler behavior only.
+
+```text
+goos: darwin
+goarch: arm64
+cpu: Apple M5
+go version go1.27.3 darwin/arm64
+GOMAXPROCS=2 GOFLAGS=-p=1
+go test ./internal/policyexec -run '^$' -bench 'BenchmarkSafeParallelJobs(One|Two)$' -benchtime=1x -count=1
+
+BenchmarkSafeParallelJobsOne-2   1  6072323958 ns/op  1.000 max-concurrent
+BenchmarkSafeParallelJobsTwo-2   1  3059266292 ns/op  2.000 max-concurrent
+```
+
+A real `polis gates` run on the same persistent Darwin arm64 host used an
+external policy selecting the same two `parallel_safe` gates:
+
+```text
+--jobs 1: 6.217s, overlap_observed=false, max_concurrent=1
+--jobs 2: 3.194s, overlap_observed=true,  max_concurrent=2
+```
+
+These are measured fixture results, not a universal speedup promise. CPU-,
+disk-, lock-, cache-, or network-bound commands can be slower at higher jobs;
+serialization is the expected result when declarations, dependencies,
+selection, reuse, or the worker cap prevent safe overlap.
+
 Source identity is checked before scheduling and at completion. A detected
 source mutation marks evidence stale rather than binding old outcomes to the
 new source. Do not edit the source concurrently; checks are not a filesystem

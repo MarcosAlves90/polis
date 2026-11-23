@@ -22,10 +22,13 @@ const (
 )
 
 type Options struct {
-	Repo              string
-	Profile           string
-	ValidationLevel   string
-	DisabledGates     []string
+	Repo            string
+	Profile         string
+	ValidationLevel string
+	DisabledGates   []string
+	// ParallelSafe lists gate IDs explicitly reviewed by the operator as safe
+	// to overlap with other eligible command gates. It is never inferred.
+	ParallelSafe      []string
 	TestArgv          []string
 	CoverageArgv      []string
 	CoverageAdapter   string
@@ -115,6 +118,9 @@ func validateProfileOptions(profile string, opts Options) error {
 	if err := validateDisabledGates(level, opts.DisabledGates); err != nil {
 		return err
 	}
+	if err := validateParallelSafeOptions(opts.ParallelSafe); err != nil {
+		return err
+	}
 	if profile == ProfileCustom {
 		return validateCustomOptions(level, opts)
 	}
@@ -161,6 +167,23 @@ func validateDisabledGates(level string, disabled []string) error {
 	return nil
 }
 
+func validateParallelSafeOptions(ids []string) error {
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if _, duplicate := seen[id]; duplicate {
+			return fmt.Errorf("parallel-safe gate %q was requested more than once", id)
+		}
+		seen[id] = struct{}{}
+		if !knownProjectGate(id) {
+			return fmt.Errorf("parallel-safe gate %q is not a known project gate", id)
+		}
+		if id == "coverage" {
+			return errors.New("parallel-safe coverage is rejected: coverage owns its report lifecycle")
+		}
+	}
+	return nil
+}
+
 func knownProjectGate(id string) bool {
 	for _, known := range spec.ProjectGateOrder {
 		if id == known {
@@ -202,7 +225,32 @@ func policyForProfile(profile string, opts Options) (spec.Policy, map[string]pol
 		applyLevelDefaults(&policy, level, decisions)
 	}
 	applyDisabledGates(&policy, opts.DisabledGates, level, decisions)
+	if err := applyParallelSafe(&policy, opts.ParallelSafe, decisions); err != nil {
+		return spec.Policy{}, nil, policyorigin.LevelRecord{}, err
+	}
 	return policy, decisions, levelOrigin, nil
+}
+
+// applyParallelSafe records only an explicit operator review. It runs after
+// level and disabled-gate defaults so a gate that is not actually executable
+// can never receive a parallel-safety assertion.
+func applyParallelSafe(policy *spec.Policy, ids []string, decisions map[string]policyorigin.Decision) error {
+	byID := make(map[string]*spec.GatePolicy, len(policy.Gates))
+	for i := range policy.Gates {
+		byID[policy.Gates[i].ID] = &policy.Gates[i]
+	}
+	for _, id := range ids {
+		gate, ok := byID[id]
+		if !ok {
+			return fmt.Errorf("parallel-safe gate %q is not present in the generated policy", id)
+		}
+		if gate.ID == "coverage" || gate.Mode != spec.GateModeCommand || gate.Command == nil {
+			return fmt.Errorf("parallel-safe gate %q must be an enabled command gate", id)
+		}
+		gate.ParallelSafe = true
+		decisions[id] = policyorigin.Decision{Source: policyorigin.SourcePolicyExplicit, Reason: "init_explicit_command"}
+	}
+	return nil
 }
 
 func applyLevelDefaults(policy *spec.Policy, level string, decisions map[string]policyorigin.Decision) {
@@ -232,6 +280,7 @@ func disableGate(policy *spec.Policy, id, reason string) {
 		}
 		policy.Gates[i].Mode = spec.GateModeNotApplicable
 		policy.Gates[i].Command = nil
+		policy.Gates[i].ParallelSafe = false
 		policy.Gates[i].Reason = &reason
 		policy.Gates[i].Adapter = ""
 		policy.Gates[i].Report = ""

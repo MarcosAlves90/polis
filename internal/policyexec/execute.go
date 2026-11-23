@@ -30,6 +30,7 @@ type Result struct {
 	Gates           map[string]spec.Status
 	CommandFailures map[string]CommandExecution
 	Outcomes        map[string]Outcome
+	Concurrency     ConcurrencyReport `json:"concurrency"`
 }
 
 func Execute(policy spec.Policy, repoRoot string, evidence io.Writer) Result {

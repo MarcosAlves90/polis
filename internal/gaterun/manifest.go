@@ -43,18 +43,19 @@ type Gate struct {
 }
 
 type Manifest struct {
-	SchemaVersion   int         `json:"schema_version"`
-	RunID           string      `json:"run_id"`
-	Nonce           string      `json:"nonce"`
-	ReplayOf        string      `json:"replay_of,omitempty"`
-	Inputs          Inputs      `json:"inputs"`
-	SelectedGates   []string    `json:"selected_gates"`
-	SelectionReason string      `json:"selection_reason"`
-	ChangedPaths    []string    `json:"changed_paths"`
-	Jobs            int         `json:"jobs"`
-	Current         bool        `json:"current"`
-	Status          spec.Status `json:"status"`
-	Gates           []Gate      `json:"gates"`
+	SchemaVersion   int                     `json:"schema_version"`
+	RunID           string                  `json:"run_id"`
+	Nonce           string                  `json:"nonce"`
+	ReplayOf        string                  `json:"replay_of,omitempty"`
+	Inputs          Inputs                  `json:"inputs"`
+	SelectedGates   []string                `json:"selected_gates"`
+	SelectionReason string                  `json:"selection_reason"`
+	ChangedPaths    []string                `json:"changed_paths"`
+	Jobs            int                     `json:"jobs"`
+	Current         bool                    `json:"current"`
+	Status          spec.Status             `json:"status"`
+	Gates           []Gate                  `json:"gates"`
+	Concurrency     *spec.ConcurrencyReport `json:"concurrency,omitempty"`
 }
 
 func (m *Manifest) seal() error {
@@ -115,6 +116,10 @@ func Load(filename string) (Manifest, error) {
 	m.RunID = id
 	if m.SchemaVersion != 1 || len(m.Nonce) != 32 || !validDigest || len(m.Gates) != len(spec.ProjectGateOrder) {
 		return m, errors.New("invalid gate-run version, inventory or digest")
+	}
+	if m.Concurrency != nil && (m.Concurrency.Jobs != m.Jobs || m.Concurrency.Jobs < 1 || m.Concurrency.Jobs > 16 ||
+		m.Concurrency.Diagnosis.Jobs != m.Jobs || m.Concurrency.Observation.MaxConcurrent < 0 || m.Concurrency.Observation.MaxConcurrent > m.Jobs) {
+		return m, errors.New("invalid gate-run concurrency report")
 	}
 	if m.Inputs.EnvironmentAssurance != "" && (m.Inputs.EnvironmentAssurance != EnvironmentAssuranceCallerAsserted || m.Inputs.EnvironmentID == "") {
 		return m, errors.New("unsupported gate-run environment assurance")

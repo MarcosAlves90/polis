@@ -61,22 +61,23 @@ type CompileOptions struct {
 }
 
 type Plan struct {
-	PlanVersion                int              `json:"plan_version"`
-	PolicySchemaVersion        int              `json:"policy_schema_version"`
-	PolicySource               string           `json:"policy_source"`
-	PolicySHA256               string           `json:"policy_sha256"`
-	Runtime                    Runtime          `json:"runtime"`
-	ValidationLevel            string           `json:"validation_level"`
-	ValidationLevelProvenance  Decision         `json:"validation_level_provenance"`
-	EnabledGates               []string         `json:"enabled_gates"`
-	DisabledGates              []string         `json:"disabled_gates"`
-	DeferredGates              []string         `json:"deferred_gates"`
-	ConsumerValidationRequired bool             `json:"consumer_validation_required"`
-	DependencyEdges            []DependencyEdge `json:"dependency_edges"`
-	ExecutionOrder             []string         `json:"execution_order"`
-	Gates                      []Gate           `json:"gates"`
-	MandatoryInvariants        []Invariant      `json:"mandatory_invariants"`
-	Guarantees                 []Guarantee      `json:"guarantees"`
+	PlanVersion                int                `json:"plan_version"`
+	PolicySchemaVersion        int                `json:"policy_schema_version"`
+	PolicySource               string             `json:"policy_source"`
+	PolicySHA256               string             `json:"policy_sha256"`
+	Runtime                    Runtime            `json:"runtime"`
+	ValidationLevel            string             `json:"validation_level"`
+	ValidationLevelProvenance  Decision           `json:"validation_level_provenance"`
+	EnabledGates               []string           `json:"enabled_gates"`
+	DisabledGates              []string           `json:"disabled_gates"`
+	DeferredGates              []string           `json:"deferred_gates"`
+	ConsumerValidationRequired bool               `json:"consumer_validation_required"`
+	DependencyEdges            []DependencyEdge   `json:"dependency_edges"`
+	ExecutionOrder             []string           `json:"execution_order"`
+	Gates                      []Gate             `json:"gates"`
+	Concurrency                ConcurrencySummary `json:"concurrency"`
+	MandatoryInvariants        []Invariant        `json:"mandatory_invariants"`
+	Guarantees                 []Guarantee        `json:"guarantees"`
 	gatePolicies               []spec.GatePolicy
 }
 
@@ -249,6 +250,7 @@ func CompileWithOptions(policy spec.Policy, opts CompileOptions) (Plan, error) {
 		gate.DependsOn = append([]string{}, dependencies[gateID]...)
 		plan.gatePolicies = append(plan.gatePolicies, gate)
 	}
+	plan.Concurrency = plan.ConcurrencySummary()
 	return plan, nil
 }
 

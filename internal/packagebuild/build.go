@@ -72,6 +72,7 @@ type Result struct {
 	DeferredGates              []string
 	ConsumerValidationRequired bool
 	ProducerGateStatuses       map[string]spec.Status
+	Concurrency                spec.ConcurrencyReport
 
 	ContractRaw           []byte `json:"-"`
 	PolicyRaw             []byte `json:"-"`
@@ -107,6 +108,7 @@ type buildArtifact struct {
 	policy                spec.Policy
 	plan                  policyplan.Plan
 	producerGateStatuses  map[string]spec.Status
+	concurrency           spec.ConcurrencyReport
 	changeRaw             []byte
 	changeContractValue   spec.ChangeContract
 	regressionPatch       []byte
@@ -293,6 +295,7 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 			EnabledGates:          append([]string(nil), summary.EnabledGates...),
 			DisabledGates:         append([]string(nil), summary.DisabledGates...),
 			ProducerGateStatuses:  cloneGateStatuses(producerResult.Gates),
+			Concurrency:           producerResult.Concurrency,
 			ContractRaw:           append([]byte(nil), changeRaw...),
 			PolicyRaw:             append([]byte(nil), policyRaw...),
 			ImplementationPlanRaw: append([]byte(nil), implementationPlanRaw...),
@@ -344,7 +347,7 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 
 	artifact := buildArtifact{
 		opts: opts, objectFormat: objectFormat, baseCommit: baseCommit, targetTree: targetTree,
-		policyRaw: policyRaw, policy: policy, plan: plan, producerGateStatuses: producerResult.Gates,
+		policyRaw: policyRaw, policy: policy, plan: plan, producerGateStatuses: producerResult.Gates, concurrency: producerResult.Concurrency,
 		changeRaw: changeRaw, changeContractValue: changeContract, regressionPatch: regressionPatch, patch: patch, evidence: evidence.Bytes(), baseline: baseline, implementationPlanRaw: implementationPlanRaw,
 	}
 	manifestRaw, err := encodeManifest(artifact)
@@ -595,6 +598,7 @@ func finalizeArtifact(artifact buildArtifact, manifestRaw []byte, output *packag
 		DeferredGates:              append([]string{}, artifact.plan.DeferredGates...),
 		ConsumerValidationRequired: artifact.plan.ConsumerValidationRequired,
 		ProducerGateStatuses:       cloneGateStatuses(artifact.producerGateStatuses),
+		Concurrency:                artifact.concurrency,
 	}, nil
 }
 

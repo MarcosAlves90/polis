@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- Make bounded parallel validation discoverable and explicitly opt-in: `polis init --parallel-safe <id>` records reviewed command gates only, `polis plan` reports declared eligibility/dependencies/overlap groups/reason codes in text and JSON, and `gates`, `workspace validate`, and `build` report measured overlap separately from the jobs bound. Gate-run manifests and external workspace reports carry an additive optional `concurrency` field; evidence, retained records, and package schemas remain unchanged.
+- Document fail-closed concurrency reason codes, setup rules, and measured Darwin/arm64 Go 1.27.3 fixture results: two sleep-bound gates took 6.072s at jobs 1 and 3.059s at jobs 2 in the Go benchmark (max concurrency 1 vs 2); a real CLI gate run took 6.217s vs 3.194s. These fixture numbers do not promise a universal speedup.
 - Make repository retention a fail-closed completeness requirement for full locked-change `workspace validate` and `build`: publish and reverify exact retained contract, optional plan, required Red proof, validation evidence, and a bounded `repository_validation` record before PASS, without retaining delivery packages or mutating Git state.
 - Add `polis status` retention readiness states (`empty`, `incomplete`, `stale`, `ambiguous`, `complete`) with evidence paths and corrective actions, kept separate from the operational workflow state.
 

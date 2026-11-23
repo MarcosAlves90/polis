@@ -137,6 +137,56 @@ Windows environment names are case-insensitive for both bootstrap lookup and exp
 
 A change to Project Policy bytes remains bound by the strict baseline's `policy_sha256`; it MUST be made through a new policy input and new `polis start`/artifact workflow. Existing locked contracts and artifacts MUST NOT be silently rewritten.
 
+### 4.2.4 Bounded, explicitly declared gate concurrency
+
+Project Policy gates are serial by default. An enabled command gate MAY declare
+`parallel_safe: true` only after the policy author has reviewed the actual
+command and asserted that concurrent execution does not contend on shared
+files, ports, caches, credentials, toolchains, or report ownership. POLIS MUST
+NOT infer safety from a gate ID, name, category, command text, working
+directory, input paths, or success history. Coverage MUST remain exclusive and
+MUST NOT declare `parallel_safe`; prerequisite edges MUST remain ordered, and
+failure of a prerequisite MUST block dependents without changing unrelated gate
+outcomes.
+
+`polis init --parallel-safe <id>` MUST be repeatable. Before writing a policy it
+MUST reject unknown IDs, coverage, disabled or not-applicable gates, and
+duplicate IDs, and MUST record reviewed opt-in provenance for each accepted
+gate. Legacy schema-v2 policies MAY add the additive `parallel_safe` field;
+schema-v3 incremental fields still require schema v3. Older strict readers MAY
+reject policies containing fields they do not know.
+
+The compiled plan MUST expose a deterministic, jobs-independent concurrency
+summary in text and JSON: eligible and exclusive gates with stable reason
+codes, dependency-aware potential overlap groups, and serialization findings.
+Plan output MUST be explicitly declaration-only and MUST NOT claim that a gate
+ran or that overlap occurred. The executor MUST use the same compiled plan and
+MUST validate the `1..16` jobs bound; an invalid bound MUST be BLOCKED.
+
+Gate execution MUST record the jobs bound, the declared diagnosis, launched
+gates, maximum observed concurrency, and whether overlap was actually observed.
+A jobs value greater than one MUST NOT set `overlap_observed=true`; only measured
+concurrent launches may do so. `gates`, `workspace validate`, and `build` MUST
+expose this report on result surfaces. New gate-run manifests and external
+workspace checkpoints MAY also carry an additive optional concurrency field with
+the same representation, so saved runs and checkpoints explain what an operator
+observed; records lacking the field MUST remain valid. Evidence events, retained
+records, and delivery package schemas MUST remain unchanged. Adding or omitting
+this presentation-only field MUST NOT alter replay/reuse identity, checksums of
+existing immutable records, deterministic final ordering, PASS/FAIL/BLOCKED
+semantics, replay/reuse behavior, source-state checks, coverage exclusivity,
+retention, or exact target-tree validation.
+
+Stable reason codes include `declared_parallel_safe`,
+`parallel_safe_not_declared`, `coverage_report_exclusive`,
+`gate_not_applicable`, `gate_deferred_to_consumer`, `mandatory_prerequisite`,
+`no_parallel_safe_gates`, `fewer_than_two_eligible_gates`,
+`no_overlapping_eligible_gates`, `jobs_equals_one`, `worker_cap`,
+`selection_serializes_eligible_gates`, `eligible_gates_reused`, and
+`invalid_jobs`. `declared_resource_conflict` is reserved for declared resource
+conflicts. Missing overlap MUST be explained rather than represented as a
+successful parallel run.
+
 ### 4.3 Committed-policy compatibility
 
 When `--policy` is omitted, V6 MAY retain the historical producer behavior that reads exact committed `.polis/policy.json` bytes. This exists for compatibility and self-hosting; it is not the canonical zero-residue workflow.

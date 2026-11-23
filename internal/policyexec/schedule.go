@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,6 +15,10 @@ import (
 )
 
 const MaxJobs = 16
+
+// ConcurrencyReport aliases the shared spec type so internal callers keep a
+// package-local name while all command surfaces serialize one stable shape.
+type ConcurrencyReport = spec.ConcurrencyReport
 
 type Outcome struct {
 	Status  spec.Status
@@ -53,10 +58,18 @@ func ValidateJobs(jobs int) error {
 
 func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Writer, opts Options) Result {
 	result := Result{Overall: spec.StatusPass, Gates: map[string]spec.Status{}, Outcomes: map[string]Outcome{}}
-	if ValidateJobs(opts.Jobs) != nil {
+	result.Concurrency = spec.ConcurrencyReport{
+		Jobs:        opts.Jobs,
+		Observation: spec.ConcurrencyObservation{LaunchedGates: []string{}},
+		Diagnosis:   spec.ConcurrencyDiagnosis{Jobs: opts.Jobs, EligibleGates: []string{}},
+	}
+	if err := ValidateJobs(opts.Jobs); err != nil {
 		result.Overall = spec.StatusBlocked
+		result.Concurrency.Diagnosis.Blockers = []spec.ConcurrencyFinding{{Reason: spec.ConcurrencyInvalidJobs, Detail: err.Error()}}
 		return result
 	}
+	result.Concurrency.Diagnosis = plan.ConcurrencyDiagnosis(policyplan.ConcurrencyOptions{Jobs: opts.Jobs, Selected: opts.Selected})
+	peakConcurrent := 0
 	gates := plan.GatePolicies()
 	pending, running := map[string]bool{}, map[string]bool{}
 	startedAt := map[string]time.Time{}
@@ -119,6 +132,10 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 			}
 			delete(pending, gate.ID)
 			running[gate.ID] = true
+			result.Concurrency.Observation.LaunchedGates = append(result.Concurrency.Observation.LaunchedGates, gate.ID)
+			if len(running) > peakConcurrent {
+				peakConcurrent = len(running)
+			}
 			startedAt[gate.ID] = time.Now()
 			progress = true
 			if opts.OnGateStart != nil {
@@ -151,6 +168,32 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 					delete(pending, gate.ID)
 				}
 			}
+		}
+	}
+	sort.Strings(result.Concurrency.Observation.LaunchedGates)
+	result.Concurrency.Observation.MaxConcurrent = peakConcurrent
+	result.Concurrency.Observation.OverlapObserved = peakConcurrent > 1
+	if !result.Concurrency.Observation.OverlapObserved && opts.Jobs > 1 {
+		reused := make([]string, 0, len(result.Concurrency.Diagnosis.EligibleGates))
+		blocked := make([]string, 0, len(result.Concurrency.Diagnosis.EligibleGates))
+		for _, id := range result.Concurrency.Diagnosis.EligibleGates {
+			outcome, ok := result.Outcomes[id]
+			if !ok {
+				continue
+			}
+			switch {
+			case outcome.Action == "reused":
+				reused = append(reused, id)
+			case outcome.Action == "blocked" && strings.HasPrefix(outcome.Reason, "prerequisite "):
+				blocked = append(blocked, id)
+			}
+		}
+		result.Concurrency.Diagnosis.AddReuseBlocker(reused)
+		if len(blocked) != 0 {
+			result.Concurrency.Diagnosis.Blockers = append(result.Concurrency.Diagnosis.Blockers,
+				spec.ConcurrencyFinding{Reason: spec.ConcurrencyPrerequisite, Gates: blocked,
+					Detail: "eligible gates were blocked by failed prerequisites and did not launch"})
+			result.Concurrency.Diagnosis.Blockers = spec.NormalizeConcurrencyFindings(result.Concurrency.Diagnosis.Blockers)
 		}
 	}
 	enc := json.NewEncoder(evidence)

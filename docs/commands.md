@@ -99,7 +99,7 @@ Do not use:
 <!-- command-help: init -->
 ```text
 Usage:
-  polis init [--repo <path>] [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--test-argv <arg> ... --coverage-argv <arg> ... --coverage-adapter <adapter> --coverage-report <path> [--coverage-threshold <percent>]] [--dry-run]
+  polis init [--repo <path>] [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--parallel-safe <id> ...] [--test-argv <arg> ... --coverage-argv <arg> ... --coverage-adapter <adapter> --coverage-report <path> [--coverage-threshold <percent>]] [--dry-run]
 Purpose:
   create or preview a Project Policy
 When to use:
@@ -125,6 +125,10 @@ Options/defaults:
   minimal omits generated quality gates. Mandatory safety/proof checks still apply.
   --disable-gate repeats project gate IDs; strict cannot disable test.complete or
   coverage; standard cannot disable test.complete. Other invalid IDs are rejected.
+  --parallel-safe repeats explicitly reviewed enabled command gate IDs and writes
+  parallel_safe only for those gates; safety is never inferred from an ID, name,
+  or category. Unknown, disabled, coverage, and duplicate IDs are rejected before
+  a policy is written. Do not use it for commands sharing resources or output.
   --test-argv/--coverage-argv repeat individual arguments, default absent (custom only).
   --coverage-adapter/--coverage-report default absent (custom only); supply both with
   coverage argv. Adapters: go-coverprofile-v1, lcov-v1, cobertura-v1.
@@ -136,6 +140,7 @@ Outcomes:
   or choose an absent output; preserve existing policy, do not weaken validation.
 Examples:
   polis init --repo /path/to/repo --profile auto --dry-run
+  polis init --repo /repo --profile go --parallel-safe lint --parallel-safe dependency --dry-run
   For non-Go projects, supply reviewed direct argv with --profile custom; no shell.
 Do not use:
   To overwrite policy, infer non-Go commands, silently reduce gates, or claim tests ran.
@@ -151,7 +156,8 @@ Usage:
 Purpose:
   compile and report the effective Project Policy
 When to use:
-  Review enabled/disabled gates, dependencies, execution order, and absent guarantees.
+  Review enabled/disabled gates, dependencies, execution order, declared concurrency
+  eligibility, serialization reasons, and absent guarantees.
 Prerequisites:
   Git worktree and valid effective policy; external policy must be outside the worktree.
 Required inputs:
@@ -164,7 +170,9 @@ Reads/writes:
   create a plan file, lock a contract, or build/verify an artifact.
 Options/defaults:
   --repo defaults to .; --policy defaults to committed .polis/policy.json.
-  --format defaults to text; json exposes the same effective plan.
+  --format defaults to text; json exposes the same effective plan, including the
+  declared concurrency summary. Plan concurrency is a declaration-only preview:
+  no project gate was run and no overlap is claimed.
   --defer-gate repeats enabled gate IDs (default none); producer-executed gates cannot
   depend on deferred gates. This previews deferral; repeat selections explicitly in build.
 Outcomes:
@@ -202,14 +210,17 @@ Workflow:
 Reads/writes:
   Reads policy/source/manifest and executes commands in the real worktree. Commands
   are not sandboxed. Optional --out-run writes a new external manifest without
-  environment values or command output; a delivery artifact is not built or verified.
+  environment values or command output; the new manifest may include an additive
+  optional concurrency report, and a delivery artifact is not built or verified.
   JSON records environment_assurance=caller_asserted for nonempty --environment-id;
   this declaration does not establish hermetic execution.
 Options/defaults:
   --repo defaults to .; --policy defaults to committed .polis/policy.json; --format
   defaults to text; --jobs defaults to 1 (range 1..16). --gate and --affected are
   mutually exclusive. Parallel overlap requires every concurrent gate to declare
-  parallel_safe. --inspect-run only accepts --format; --replay forbids selection,
+  parallel_safe; results report the declared diagnosis and measured overlap
+  separately, so --jobs greater than one never claims overlap by itself.
+  --inspect-run only accepts --format; --replay forbids selection,
   reuse and explicit jobs. --out-run must be a new external file.
 Outcomes:
   Success (0): selected/configured gates pass; this is local validation, not delivery
@@ -260,7 +271,9 @@ Options/defaults:
   --contract; Red-to-Green requires --regression-patch. Status requires external --contract and --report.
   Reports must be regular non-symlink files outside the resolved worktree. --jobs defaults to 1
   and accepts 1 through 16; only gates explicitly marked parallel_safe may overlap.
-  --format defaults to text.
+  Command results and the external checkpoint include an additive optional
+  presentation-only concurrency report; the checkpoint schema remains closed
+  and older reports without the field remain valid. --format defaults to text.
 Outcomes:
   Validate success (0) means the exact target passed locked proof and enabled non-deferred gates;
   JSON says workspace_validated=true and delivery_artifact_built/verified=false. Status success (0)
@@ -521,7 +534,8 @@ Options/defaults:
   produce format v6. --defer-gate repeats enabled gate IDs (default none); deferral cannot
   break producer dependencies and transfers required execution to consumer preflight/apply.
   --jobs defaults to 1 and accepts 1 through 16; only gates explicitly marked parallel_safe
-  may overlap, and coverage remains exclusive.
+  may overlap, and coverage remains exclusive. The build result reports observed concurrency
+  separately; package/evidence schemas are unchanged.
 Outcomes:
   Success (0): verify/inspect the exact output; deferred gates remain a consumer obligation.
   Failure (2): inspect diagnostics for scope/proof/baseline/gate/output errors. BLOCKED

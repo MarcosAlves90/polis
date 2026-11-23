@@ -591,8 +591,11 @@ func validatePolicyGateAt(index int, expectedID string, gate GatePolicy, schemaV
 	if schemaVersion < PolicySchemaVersion && gate.DependsOn != nil {
 		return fmt.Errorf("gate %q: policy schema v%d does not support depends_on", gate.ID, schemaVersion)
 	}
-	if schemaVersion < PolicySchemaVersion && (gate.InputPaths != nil || gate.ParallelSafe || gate.InputPathsComplete) {
-		return fmt.Errorf("gate %q: incremental configuration requires policy schema v3", gate.ID)
+	// parallel_safe is an additive, fail-closed execution declaration. It does
+	// not change validation guarantees, so legacy v2 policies may opt in
+	// explicitly without rewriting unrelated schema-3 incremental fields.
+	if schemaVersion < PolicySchemaVersion && (gate.InputPaths != nil || gate.InputPathsComplete) {
+		return fmt.Errorf("gate %q: incremental input configuration requires policy schema v%d", gate.ID, PolicySchemaVersion)
 	}
 	if err := gate.Validate(); err != nil {
 		return fmt.Errorf("gate %q: %w", gate.ID, err)
@@ -669,6 +672,9 @@ func (g GatePolicy) validateCommandMode() error {
 }
 
 func (g GatePolicy) validateCoverageMode() error {
+	if g.ParallelSafe {
+		return errors.New("coverage cannot declare parallel safety")
+	}
 	if g.Command == nil || g.Reason != nil || g.ThresholdPercent == nil {
 		return errors.New("coverage mode has invalid field combination")
 	}
