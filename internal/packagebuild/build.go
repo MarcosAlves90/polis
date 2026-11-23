@@ -323,6 +323,16 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 			if err != nil {
 				return Result{}, fmt.Errorf("retain current workspace validation evidence: %w", err)
 			}
+			if err := requireBuildSourceState(ctx, repo); err != nil {
+				return Result{}, err
+			}
+			postPublicationTree, _, _, err := buildTargetWithTemporaryIndex(ctx, repo, baseCommit)
+			if err != nil {
+				return Result{}, fmt.Errorf("recheck workspace target after retained publication: %w", err)
+			}
+			if postPublicationTree != targetTree {
+				return Result{}, errors.New("workspace changed during validation; no current validation result can be reported")
+			}
 			result.RetainedPaths = completion.PublicationPaths
 			result.RetainedRecordPath = completion.RecordPath
 		}

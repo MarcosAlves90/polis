@@ -251,3 +251,25 @@ func TestBuildRetentionCompletionRecordIsBoundJSON(t *testing.T) {
 		t.Fatalf("completion record omits target tree: %s", recordRaw)
 	}
 }
+
+func TestWorkspaceValidateFailsWhenSourceChangesDuringRetentionPublication(t *testing.T) {
+	fixture := newCompletenessBuildFixture(t)
+	var mutated bool
+	publisher := retainedArtifactPublisherFunc(func(state artifactretention.State, targetRepo string, artifacts []artifactretention.Artifact) ([]string, error) {
+		if !mutated {
+			if err := os.WriteFile(filepath.Join(fixture.repo, "app.txt"), []byte("changed during retention publication\n"), 0o644); err != nil {
+				return nil, err
+			}
+			mutated = true
+		}
+		return state.PublishMany(targetRepo, artifacts)
+	})
+	ctx := context.WithValue(context.Background(), retainedArtifactPublisherContextKey{}, publisher)
+	_, err := ValidateWorkspace(ctx, WorkspaceOptions{Repo: fixture.repo, Contract: fixture.contractPath})
+	if err == nil {
+		t.Fatal("ValidateWorkspace() succeeded despite source mutation during retention publication")
+	}
+	if !strings.Contains(err.Error(), "workspace changed during validation") {
+		t.Fatalf("ValidateWorkspace() error = %v, want workspace changed during validation", err)
+	}
+}
