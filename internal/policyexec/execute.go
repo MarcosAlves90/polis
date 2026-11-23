@@ -14,7 +14,10 @@ import (
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
-const maxCoverageReportBytes = 16 * 1024 * 1024
+// maxCoverageReportBytes bounds the in-memory coverage profile. The previous
+// 16 MiB cap rejected legitimate -coverpkg=./... profiles; a 32 MiB bound keeps
+// the read finite while retaining fail-closed size enforcement below.
+const maxCoverageReportBytes int64 = 32 * 1024 * 1024
 
 type CommandExecution struct {
 	Argv        []string
@@ -105,17 +108,60 @@ func readCoverageReport(repoRoot, reportPath string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve coverage report: %w", err)
 	}
-	info, err := os.Stat(resolved)
+	contained, err = pathguard.Contains(repoRoot, resolved)
+	if err != nil {
+		return nil, fmt.Errorf("resolve coverage report boundary: %w", err)
+	}
+	if !contained {
+		return nil, errors.New("coverage report resolves outside repository")
+	}
+	pathInfo, err := os.Lstat(resolved)
 	if err != nil {
 		return nil, fmt.Errorf("stat coverage report: %w", err)
 	}
-	if !info.Mode().IsRegular() {
+	if pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() {
 		return nil, errors.New("coverage report must be a regular file")
 	}
-	if info.Size() > maxCoverageReportBytes {
+	if pathInfo.Size() > maxCoverageReportBytes {
 		return nil, errors.New("coverage report exceeds maximum size")
 	}
-	return os.ReadFile(resolved)
+	file, err := os.Open(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("open coverage report: %w", err)
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect opened coverage report: %w", err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openedInfo) {
+		return nil, errors.New("coverage report changed while opening")
+	}
+	if openedInfo.Size() > maxCoverageReportBytes {
+		return nil, errors.New("coverage report exceeds maximum size")
+	}
+	currentInfo, err := os.Lstat(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("recheck coverage report: %w", err)
+	}
+	if currentInfo.Mode()&os.ModeSymlink != 0 || !currentInfo.Mode().IsRegular() || !os.SameFile(openedInfo, currentInfo) {
+		return nil, errors.New("coverage report changed while opening")
+	}
+	contained, err = pathguard.Contains(repoRoot, resolved)
+	if err != nil {
+		return nil, fmt.Errorf("resolve coverage report boundary: %w", err)
+	}
+	if !contained {
+		return nil, errors.New("coverage report resolves outside repository")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maxCoverageReportBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read coverage report: %w", err)
+	}
+	if int64(len(raw)) > maxCoverageReportBytes {
+		return nil, errors.New("coverage report exceeds maximum size")
+	}
+	return raw, nil
 }
 
 func executeCommand(enc *json.Encoder, gate string, command spec.CommandSpec, repoRoot string) commandexec.Observation {

@@ -1,6 +1,7 @@
 package policyexec
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -423,6 +424,62 @@ func TestReadCoverageReportPathSafetyAndLimits(t *testing.T) {
 	_ = f.Close()
 	if _, err := readCoverageReport(root, big); err == nil {
 		t.Fatal("expected oversized report rejection")
+	}
+}
+
+func TestReadCoverageReportAcceptsLargeValidProfile(t *testing.T) {
+	const formerLimit = 16 * 1024 * 1024
+	root := t.TempDir()
+	report := filepath.Join(root, "large.out")
+	file, err := os.Create(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := bufio.NewWriterSize(file, 256*1024)
+	header := "mode: set\n"
+	record := "example/large.go:1.1,1.2 1 1\n"
+	if _, err := writer.WriteString(header); err != nil {
+		t.Fatal(err)
+	}
+	for size := int64(len(header)); size <= formerLimit; size += int64(len(record)) {
+		if _, err := writer.WriteString(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := readCoverageReport(root, report)
+	if err != nil {
+		t.Fatalf("valid large report rejected: %v", err)
+	}
+	metric, err := spec.ParseCoverage(spec.CoverageAdapterGoCoverProfileV1, raw)
+	if err != nil {
+		t.Fatalf("parse large report: %v", err)
+	}
+	if metric.CoveredLines != 1 || metric.TotalLines != 1 || !spec.CoveragePass(metric.Percent, 80) {
+		t.Fatalf("metric=%+v", metric)
+	}
+}
+
+func TestReadCoverageReportRejectsOversizedProfile(t *testing.T) {
+	root := t.TempDir()
+	report := filepath.Join(root, "oversized.out")
+	file, err := os.Create(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxCoverageReportBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readCoverageReport(root, report); err == nil || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("expected bounded oversize rejection, got %v", err)
 	}
 }
 

@@ -80,6 +80,19 @@ func runStatus(args []string, out, errOut io.Writer) int {
 
 func writeStatusText(out io.Writer, result changestatus.Result) {
 	fmt.Fprintf(out, "POLIS STATUS: %s\nWhere: %s\nRetention: %s\nConsistent: %t\n", result.State, result.State, result.RetentionMode, result.Consistent)
+	if readiness := result.RetentionReadiness; readiness != nil {
+		fmt.Fprintf(out, "Retention readiness: %s\nRetention readiness detail: %s\n", readiness.State, readiness.Detail)
+		if readiness.TargetTree != "" {
+			fmt.Fprintf(out, "Retention readiness target: %s\n", readiness.TargetTree)
+		}
+		if readiness.Operation != "" {
+			fmt.Fprintf(out, "Retention readiness operation: %s\n", readiness.Operation)
+		}
+		for _, path := range readiness.RecordPaths {
+			fmt.Fprintf(out, "Retention readiness evidence: %s\n", path)
+		}
+		fmt.Fprintf(out, "Retention readiness action: %s\n", readiness.Corrective)
+	}
 	if result.Contract == nil {
 		fmt.Fprintln(out, "Contract: none")
 	} else {

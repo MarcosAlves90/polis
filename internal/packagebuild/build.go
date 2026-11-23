@@ -27,6 +27,7 @@ import (
 	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
 	"github.com/MarcosAlves90/polis/v6/internal/policyload"
 	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
+	"github.com/MarcosAlves90/polis/v6/internal/retentioncompleteness"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -60,6 +61,7 @@ type Result struct {
 	Path                       string
 	SHA256                     string
 	RetainedPaths              []string `json:"retained_paths,omitempty"`
+	RetainedRecordPath         string   `json:"retained_record_path,omitempty"`
 	BaseCommit                 string
 	TargetTree                 string
 	ContractSHA256             string `json:"contract_sha256,omitempty"`
@@ -70,6 +72,12 @@ type Result struct {
 	DeferredGates              []string
 	ConsumerValidationRequired bool
 	ProducerGateStatuses       map[string]spec.Status
+
+	ContractRaw           []byte `json:"-"`
+	PolicyRaw             []byte `json:"-"`
+	ImplementationPlanRaw []byte `json:"-"`
+	RegressionPatchRaw    []byte `json:"-"`
+	Evidence              []byte `json:"-"`
 }
 
 // retainedArtifactPublisherContextKey is a private E2E-test seam. Normal
@@ -100,6 +108,7 @@ type buildArtifact struct {
 	plan                  policyplan.Plan
 	producerGateStatuses  map[string]spec.Status
 	changeRaw             []byte
+	changeContractValue   spec.ChangeContract
 	regressionPatch       []byte
 	patch                 []byte
 	evidence              []byte
@@ -277,14 +286,57 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 			return Result{}, errors.New("workspace changed during validation; no current validation result can be reported")
 		}
 		summary := policy.ValidationSummary()
-		return Result{
+		result := Result{
 			BaseCommit: baseCommit, TargetTree: targetTree,
 			ContractSHA256: sha256Hex(changeRaw), PolicySHA256: sha256Hex(policyRaw),
-			ValidationLevel:      summary.Level,
-			EnabledGates:         append([]string(nil), summary.EnabledGates...),
-			DisabledGates:        append([]string(nil), summary.DisabledGates...),
-			ProducerGateStatuses: cloneGateStatuses(producerResult.Gates),
-		}, nil
+			ValidationLevel:       summary.Level,
+			EnabledGates:          append([]string(nil), summary.EnabledGates...),
+			DisabledGates:         append([]string(nil), summary.DisabledGates...),
+			ProducerGateStatuses:  cloneGateStatuses(producerResult.Gates),
+			ContractRaw:           append([]byte(nil), changeRaw...),
+			PolicyRaw:             append([]byte(nil), policyRaw...),
+			ImplementationPlanRaw: append([]byte(nil), implementationPlanRaw...),
+			RegressionPatchRaw:    append([]byte(nil), regressionPatch...),
+			Evidence:              append([]byte(nil), evidence.Bytes()...),
+		}
+		if retention.RepositoryEnabled() {
+			publisher := func(ctx context.Context, retention artifactretention.State, repo string, retained []artifactretention.Artifact) ([]string, error) {
+				return publishRetainedArtifacts(ctx, retention, repo, retained)
+			}
+			completion, err := retentioncompleteness.Complete(ctx, retention, repo, retentioncompleteness.Inputs{
+				Operation:             spec.RetainedValidationOperationWorkspace,
+				ContractRaw:           changeRaw,
+				Contract:              changeContract,
+				PolicyRaw:             policyRaw,
+				Policy:                policy,
+				ImplementationPlanRaw: implementationPlanRaw,
+				RegressionPatch:       regressionPatch,
+				Evidence:              evidence.Bytes(),
+				BaseCommit:            baseCommit,
+				TargetTree:            currentTree,
+				ValidationLevel:       summary.Level,
+				EnabledGates:          summary.EnabledGates,
+				DisabledGates:         summary.DisabledGates,
+				DeferredGates:         plan.DeferredGates,
+				ProducerGateStatuses:  producerResult.Gates,
+			}, publisher)
+			if err != nil {
+				return Result{}, fmt.Errorf("retain current workspace validation evidence: %w", err)
+			}
+			if err := requireBuildSourceState(ctx, repo); err != nil {
+				return Result{}, err
+			}
+			postPublicationTree, _, _, err := buildTargetWithTemporaryIndex(ctx, repo, baseCommit)
+			if err != nil {
+				return Result{}, fmt.Errorf("recheck workspace target after retained publication: %w", err)
+			}
+			if postPublicationTree != targetTree {
+				return Result{}, errors.New("workspace changed during validation; no current validation result can be reported")
+			}
+			result.RetainedPaths = completion.PublicationPaths
+			result.RetainedRecordPath = completion.RecordPath
+		}
+		return result, nil
 	}
 	if err := packageOutput.ValidateRequested(); err != nil {
 		return Result{}, err
@@ -293,7 +345,7 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 	artifact := buildArtifact{
 		opts: opts, objectFormat: objectFormat, baseCommit: baseCommit, targetTree: targetTree,
 		policyRaw: policyRaw, policy: policy, plan: plan, producerGateStatuses: producerResult.Gates,
-		changeRaw: changeRaw, regressionPatch: regressionPatch, patch: patch, evidence: evidence.Bytes(), baseline: baseline, implementationPlanRaw: implementationPlanRaw,
+		changeRaw: changeRaw, changeContractValue: changeContract, regressionPatch: regressionPatch, patch: patch, evidence: evidence.Bytes(), baseline: baseline, implementationPlanRaw: implementationPlanRaw,
 	}
 	manifestRaw, err := encodeManifest(artifact)
 	if err != nil {
@@ -303,23 +355,38 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 	if err != nil {
 		return Result{}, err
 	}
+	result.ContractRaw = append([]byte(nil), artifact.changeRaw...)
+	result.PolicyRaw = append([]byte(nil), artifact.policyRaw...)
+	result.ImplementationPlanRaw = append([]byte(nil), artifact.implementationPlanRaw...)
+	result.RegressionPatchRaw = append([]byte(nil), artifact.regressionPatch...)
+	result.Evidence = append([]byte(nil), artifact.evidence...)
 	if retention.RepositoryEnabled() {
-		retained := []artifactretention.Artifact{
-			{Class: "contracts", Data: artifact.changeRaw},
-			{Class: "evidence", Data: artifact.evidence},
+		publisher := func(ctx context.Context, retention artifactretention.State, repo string, retained []artifactretention.Artifact) ([]string, error) {
+			return publishRetainedArtifacts(ctx, retention, repo, retained)
 		}
-		if len(artifact.implementationPlanRaw) > 0 {
-			retained = append(retained, artifactretention.Artifact{Class: "plans", Data: artifact.implementationPlanRaw})
-		}
-		if len(artifact.regressionPatch) > 0 {
-			retained = append(retained, artifactretention.Artifact{Class: "proofs", Data: artifact.regressionPatch})
-		}
-		paths, err := publishRetainedArtifacts(ctx, retention, repo, retained)
+		completion, err := retentioncompleteness.Complete(ctx, retention, repo, retentioncompleteness.Inputs{
+			Operation:             spec.RetainedValidationOperationBuild,
+			ContractRaw:           artifact.changeRaw,
+			Contract:              artifact.changeContractValue,
+			PolicyRaw:             artifact.policyRaw,
+			Policy:                artifact.policy,
+			ImplementationPlanRaw: artifact.implementationPlanRaw,
+			RegressionPatch:       artifact.regressionPatch,
+			Evidence:              artifact.evidence,
+			BaseCommit:            artifact.baseCommit,
+			TargetTree:            artifact.targetTree,
+			ValidationLevel:       artifact.policy.ValidationSummary().Level,
+			EnabledGates:          artifact.policy.ValidationSummary().EnabledGates,
+			DisabledGates:         artifact.policy.ValidationSummary().DisabledGates,
+			DeferredGates:         artifact.plan.DeferredGates,
+			ProducerGateStatuses:  artifact.producerGateStatuses,
+		}, publisher)
 		if err != nil {
 			retentionErr := fmt.Errorf("retain generated delivery artifacts: %w", err)
 			return Result{}, finishPackageOutput(packageOutput, nil, "", filepath.Base(result.Path), true, retentionErr)
 		}
-		result.RetainedPaths = paths
+		result.RetainedPaths = completion.PublicationPaths
+		result.RetainedRecordPath = completion.RecordPath
 	}
 	if err := validatePackageOutputBeforeBuildReturn(packageOutput, &result); err != nil {
 		return Result{}, err

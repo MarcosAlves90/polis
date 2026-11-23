@@ -36,12 +36,16 @@ whether Project Policy is committed or supplied through `--policy`.
 
 ## Producer behavior
 
-After successful generation, `repository` mode may store exact eligible
+After successful generation, `repository` mode stores exact eligible
 non-package output bytes under
-`.polis/artifacts/<class>/sha256-<hex-digest>.<extension>`. The delivery package
+`.polis/artifacts/<class>/sha256-<hex-digest>.<extension>`. For the full
+locked-change operations `workspace validate` and `build`, publication and
+post-write verification are fail-closed prerequisites of a PASS result; a
+missing, unreadable, tampered, stale, or identity-mismatched copy is a command
+failure, not an optional diagnostic. The delivery package
 must remain outside the target worktree: `polis build --out` must resolve
-physically outside it and is rejected before
-creating output directories or package bytes if it resolves inside.
+physically outside it and is rejected before creating output directories or
+package bytes if it resolves inside.
 
 | Producer | Class | Retained bytes |
 |---|---|---|
@@ -65,6 +69,29 @@ canonical content-addressed filename, digest, configured class, and size
 before parsing them. The `packages` class remains readable for historical
 content, but no current producer creates a new retained package. Other
 in-worktree inputs remain rejected; external input validation is unchanged.
+
+## Retained validation completeness
+
+Repository mode adds a bounded, versioned `repository_validation` record to the
+`evidence` class. A full `workspace validate` or `build` publishes the exact
+locked contract, the optional selected plan, the required Red proof when
+applicable, the exact bounded validation evidence, and then the record. The
+record carries schema version 1, the operation, `PASS` status, Git object
+format, base commit/tree, policy and specification digests, target tree,
+contract/plan/proof/evidence content digests, effective validation level,
+enabled/disabled/deferred gate inventories, all producer gate outcomes, and the
+content-addressed retained paths. It is local evidence only, never a signed
+delivery artifact, and it is not a new retained package class.
+
+After publication, POLIS rereads every named artifact through the safe
+content-addressed reader and checks exact bytes, digests, regular-file bounds,
+schema validity, and binding to the same baseline, contract, policy, plan,
+proof, target tree, and gate outcomes. Any failure blocks the successful
+command result. `status` reports repository readiness separately from the
+operational workflow state as `empty`, `incomplete`, `stale`, `ambiguous`, or
+`complete`, with a corrective action. Missing or unbound artifacts are never
+presented as validated completion. External mode and partial commands do not
+publish this record.
 
 ## Git and package boundaries
 
@@ -98,3 +125,5 @@ automatically; they may remain readable for compatibility; contracts, plans, pro
 - REQ-004 / AC-004: managed files do not enter source-change proofs; baseline
   and package guarantees remain exact.
 - REQ-005 / AC-005: absent manifest preserves current external behavior.
+- Issue #38 / REQ-001..REQ-005: fail-closed retained completion record, exact
+  post-write verification, and distinct status readiness states.
