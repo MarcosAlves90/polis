@@ -377,6 +377,25 @@ func TestIssue44PR48BlockingSinkDoesNotBlockValidation(t *testing.T) {
 	reporter.Close()
 }
 
+func TestIssue44PR48StreamingCLIWritesAreRaceFree(t *testing.T) {
+	repo := makeBuildRepo(t)
+	policyPath := issue44PolicyWithHelper(t, "stream")
+	t.Setenv("ISSUE44_CLI_HELPER", "stream")
+	var out, errOut bytes.Buffer
+	args := []string{"gates", "--repo", repo, "--policy", policyPath, "--format", "json", "--stream-output"}
+	if code := run(args, &out, &errOut); code != exitPass {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	records := issue44LiveRecords(t, errOut.String())
+	if len(records) == 0 {
+		t.Fatal("stderr contained no live presentation records")
+	}
+	last := records[len(records)-1]
+	if last["event"] != "completed" || last["scope"] != "command" {
+		t.Fatalf("final stderr record must remain command completion: %v", last)
+	}
+}
+
 func pr48StageEvents(t *testing.T, stderr string) []string {
 	t.Helper()
 	var events []string

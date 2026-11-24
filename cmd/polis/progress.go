@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
@@ -11,9 +13,88 @@ import (
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
+const presentationCloseWait = 200 * time.Millisecond
+
 type commandProgress struct {
 	action string
 	why    string
+}
+
+// queuedPresentationWriter owns every write to the CLI stderr destination.
+// Callers only append bytes to an in-memory queue, so a blocked destination
+// cannot stall validation callbacks or the live sink dispatcher. A single
+// delivery goroutine writes to the underlying destination, preserving order
+// and preventing concurrent mutation of writers such as bytes.Buffer.
+type queuedPresentationWriter struct {
+	out       io.Writer
+	mu        sync.Mutex
+	pending   bytes.Buffer
+	wake      chan struct{}
+	done      chan struct{}
+	closed    bool
+	closeOnce sync.Once
+}
+
+func newQueuedPresentationWriter(out io.Writer) *queuedPresentationWriter {
+	q := &queuedPresentationWriter{out: out, wake: make(chan struct{}, 1), done: make(chan struct{})}
+	go q.deliver()
+	return q
+}
+
+func (q *queuedPresentationWriter) Write(p []byte) (int, error) {
+	q.mu.Lock()
+	if q.closed {
+		q.mu.Unlock()
+		return 0, io.ErrClosedPipe
+	}
+	_, _ = q.pending.Write(p)
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
+	q.mu.Unlock()
+	return len(p), nil
+}
+
+func (q *queuedPresentationWriter) deliver() {
+	defer close(q.done)
+	for range q.wake {
+		for {
+			q.mu.Lock()
+			if q.pending.Len() == 0 {
+				closed := q.closed
+				q.mu.Unlock()
+				if closed {
+					return
+				}
+				break
+			}
+			chunk := append([]byte(nil), q.pending.Bytes()...)
+			q.pending.Reset()
+			closed := q.closed
+			q.mu.Unlock()
+			_, _ = q.out.Write(chunk)
+			if closed {
+				return
+			}
+		}
+	}
+}
+
+func (q *queuedPresentationWriter) Close() {
+	q.closeOnce.Do(func() {
+		q.mu.Lock()
+		q.closed = true
+		q.mu.Unlock()
+		select {
+		case q.wake <- struct{}{}:
+		default:
+		}
+		select {
+		case <-q.done:
+		case <-time.After(presentationCloseWait):
+		}
+	})
 }
 
 var commandProgressByName = map[string]commandProgress{

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
@@ -96,18 +97,19 @@ type liveDelivery struct {
 // waiting on a sink; a single delivery worker owns all sink writes so a slow or
 // blocked stderr/events-file writer cannot delay validation or gate callbacks.
 type liveReporter struct {
-	enabled   bool
-	format    string
-	runID     string
-	errOut    io.Writer
-	events    *os.File
-	mu        sync.Mutex
-	emitMu    sync.Mutex
-	commands  map[string]spec.CommandSpec
-	closed    bool
-	abandoned bool
-	sink      chan liveDelivery
-	sinkDone  chan struct{}
+	enabled    bool
+	format     string
+	runID      string
+	errOut     io.Writer
+	events     *os.File
+	mu         sync.Mutex
+	emitMu     sync.Mutex
+	deliveryMu sync.Mutex
+	commands   map[string]spec.CommandSpec
+	closed     bool
+	abandoned  atomic.Bool
+	sink       chan liveDelivery
+	sinkDone   chan struct{}
 }
 
 func newLiveReporter(enabled bool, format, eventsFile, repoRoot string, errOut io.Writer) (*liveReporter, error) {
@@ -211,9 +213,7 @@ func (r *liveReporter) Close() {
 		return
 	case <-time.After(liveSinkCloseWait):
 	}
-	r.mu.Lock()
-	r.abandoned = true
-	r.mu.Unlock()
+	r.abandoned.Store(true)
 }
 
 func (r *liveReporter) offer(delivery liveDelivery) bool {
@@ -231,15 +231,15 @@ func (r *liveReporter) offer(delivery liveDelivery) bool {
 }
 
 func (r *liveReporter) sinkAbandoned() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.abandoned
+	return r.abandoned.Load()
 }
 
 func (r *liveReporter) deliver() {
 	defer close(r.sinkDone)
 	for delivery := range r.sink {
+		r.deliveryMu.Lock()
 		if r.sinkAbandoned() {
+			r.deliveryMu.Unlock()
 			continue
 		}
 		if r.format == "json" {
@@ -250,6 +250,7 @@ func (r *liveReporter) deliver() {
 		if r.events != nil && !r.sinkAbandoned() {
 			_, _ = io.WriteString(r.events, delivery.line)
 		}
+		r.deliveryMu.Unlock()
 	}
 	if r.events != nil {
 		_ = r.events.Close()
