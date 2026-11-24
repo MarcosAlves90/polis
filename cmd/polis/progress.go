@@ -41,7 +41,9 @@ func writeProgress(w io.Writer, format, action, why string) {
 		return
 	}
 	if format == "json" {
-		writeJSON(w, map[string]any{"type": "progress", "action": action, "why": why})
+		record := map[string]any{"type": "progress", "action": action, "why": why}
+		annotateLiveRecord(record)
+		writeJSON(w, record)
 		return
 	}
 	fmt.Fprintf(w, "POLIS PROGRESS: action=%q why=%q\n", action, why)
@@ -58,6 +60,7 @@ func progressLifecycleEvent(w io.Writer, format, event, scope, id, action, why, 
 			record["status"] = status
 			record["duration_ms"] = durationMS
 		}
+		annotateLiveRecord(record)
 		writeJSON(w, record)
 		return
 	}

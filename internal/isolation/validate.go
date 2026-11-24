@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/MarcosAlves90/polis/v6/internal/changeexec"
+	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
 	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
 	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
@@ -40,6 +41,10 @@ type Validation struct {
 	Jobs                  int
 	OnGateStart           func(spec.GatePolicy)
 	OnGateComplete        func(spec.GatePolicy, policyexec.Outcome, int64)
+	OnGateResult          func(spec.GatePolicy, policyexec.Outcome, int64)
+	OnOutput              commandexec.OutputObserver
+	OnChangeStart         func(string, spec.CommandSpec)
+	OnChangeResult        func(string, spec.CommandSpec, spec.Status, int64)
 }
 
 func Validate(ctx context.Context, validation Validation) error {
@@ -48,6 +53,10 @@ func Validate(ctx context.Context, validation Validation) error {
 		return err
 	}
 	return validateTarget(ctx, validation, redPaths)
+}
+
+func (v Validation) changeHooks(ctx context.Context) changeexec.Hooks {
+	return changeexec.Hooks{Context: ctx, OnOutput: v.OnOutput, OnStart: v.OnChangeStart, OnResult: v.OnChangeResult}
 }
 
 func validateRegression(ctx context.Context, validation Validation) (map[string]string, error) {
@@ -71,7 +80,7 @@ func validateRegression(ctx context.Context, validation Validation) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	if err := changeexec.ExecuteBaseline(validation.Change, worktree, validation.Evidence); err != nil {
+	if err := changeexec.ExecuteBaselineWithHooks(validation.Change, worktree, validation.Evidence, validation.changeHooks(ctx)); err != nil {
 		return nil, fmt.Errorf("regression baseline validation: %w", err)
 	}
 	return redProof, nil
@@ -160,7 +169,7 @@ func validateTarget(ctx context.Context, validation Validation, redProof map[str
 	if err := validation.Change.ValidateChangedPaths(changedPaths); err != nil {
 		return fmt.Errorf("consumer change scope validation: %w", err)
 	}
-	if err := changeexec.ExecuteTarget(validation.Change, worktree, validation.Evidence); err != nil {
+	if err := changeexec.ExecuteTargetWithHooks(validation.Change, worktree, validation.Evidence, validation.changeHooks(ctx)); err != nil {
 		return err
 	}
 	jobs := validation.Jobs
@@ -169,9 +178,9 @@ func validateTarget(ctx context.Context, validation Validation, redProof map[str
 	}
 	var result policyexec.Result
 	if validation.ExecutionPlan != nil {
-		result = policyexec.ExecutePlanWithOptions(*validation.ExecutionPlan, worktree, validation.Evidence, policyexec.Options{Jobs: jobs, OnGateStart: validation.OnGateStart, OnGateComplete: validation.OnGateComplete})
+		result = policyexec.ExecutePlanWithOptions(*validation.ExecutionPlan, worktree, validation.Evidence, policyexec.Options{Jobs: jobs, Context: ctx, OnOutput: validation.OnOutput, OnGateStart: validation.OnGateStart, OnGateComplete: validation.OnGateComplete, OnGateResult: validation.OnGateResult})
 	} else {
-		result = policyexec.ExecuteWithOptions(validation.Policy, worktree, validation.Evidence, policyexec.Options{Jobs: jobs, OnGateStart: validation.OnGateStart, OnGateComplete: validation.OnGateComplete})
+		result = policyexec.ExecuteWithOptions(validation.Policy, worktree, validation.Evidence, policyexec.Options{Jobs: jobs, Context: ctx, OnOutput: validation.OnOutput, OnGateStart: validation.OnGateStart, OnGateComplete: validation.OnGateComplete, OnGateResult: validation.OnGateResult})
 	}
 	if validation.PolicyResult != nil {
 		*validation.PolicyResult = result

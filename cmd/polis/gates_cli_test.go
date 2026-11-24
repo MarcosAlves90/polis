@@ -109,7 +109,7 @@ func TestRunGatesExplainsUnrunChecksAndPreservesAssertions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := makeBuildRepo(t)
 			var policy spec.Policy
-			if err := json.Unmarshal(canonicalPolicyBytes(t), &policy); err != nil {
+			if err := json.Unmarshal(committedPolicyBytes(t), &policy); err != nil {
 				t.Fatal(err)
 			}
 			for i := range policy.Gates {
@@ -176,7 +176,7 @@ func TestRunGatesReturnsFailureWithPerGateResults(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			repo := makeBuildRepo(t)
 			policy := spec.Policy{}
-			if err := json.Unmarshal(canonicalPolicyBytes(t), &policy); err != nil {
+			if err := json.Unmarshal(committedPolicyBytes(t), &policy); err != nil {
 				t.Fatal(err)
 			}
 			for i := range policy.Gates {
@@ -232,7 +232,7 @@ func TestRunGatesReturnsFailureWithPerGateResults(t *testing.T) {
 func TestRunGatesIncludesProcessDiagnostics(t *testing.T) {
 	repo := makeBuildRepo(t)
 	var policy spec.Policy
-	if err := json.Unmarshal(canonicalPolicyBytes(t), &policy); err != nil {
+	if err := json.Unmarshal(committedPolicyBytes(t), &policy); err != nil {
 		t.Fatal(err)
 	}
 	for i := range policy.Gates {

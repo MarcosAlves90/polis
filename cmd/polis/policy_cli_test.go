@@ -158,7 +158,7 @@ func TestRunPlanRejectsInvalidDeferredGateFlags(t *testing.T) {
 func TestRunPlanReportsExternalPolicySourceWithoutPath(t *testing.T) {
 	repo := makeBuildRepo(t)
 	policyPath := filepath.Join(t.TempDir(), "policy-v3.json")
-	if err := os.WriteFile(policyPath, canonicalPolicyBytes(t), 0o600); err != nil {
+	if err := os.WriteFile(policyPath, committedPolicyBytes(t), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer

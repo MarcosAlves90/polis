@@ -215,7 +215,7 @@ func TestRunCaptureRedCreatesPatch(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, ".polis"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), canonicalPolicyBytes(t), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), committedPolicyBytes(t), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("baseline\n"), 0o644); err != nil {

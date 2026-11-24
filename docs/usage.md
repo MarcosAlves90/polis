@@ -20,7 +20,7 @@ The [Command reference](commands.md#agent-command-instructions) is the single ca
 - [Policy and validation](policy-and-validation.md)
 - [Development proof](development-proof.md)
 - [Repository retention](retention.md)
-- [Gate execution and progress](gates-and-progress.md)
+- [Gate execution and progress](gates-and-progress.md), including opt-in live subprocess output, incremental gate results, and external JSON Lines follow files
 - [Artifact trust](artifact-trust.md)
 
 ## Repository map

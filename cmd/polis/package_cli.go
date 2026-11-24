@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/packageapply"
 	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
@@ -165,6 +166,8 @@ func runBuild(args []string, out, errOut io.Writer) int {
 	implementationPlanPath := fs.String("implementation-plan", "", "optional contract-bound Implementation Plan JSON outside the worktree or retained by repository mode")
 	jobs := fs.Int("jobs", 1, "maximum concurrent parallel-safe gates (1..16)")
 	format := fs.String("format", "text", outputFormatHelp)
+	streamOutput := fs.Bool("stream-output", false, "stream live gate output and incremental results to stderr")
+	eventsFile := fs.String("events-file", "", "new external JSON Lines file for live events (requires --stream-output)")
 	var deferredGates argvFlag
 	fs.Var(&deferredGates, "defer-gate", "defer enabled gate validation to the consumer; repeat for each gate")
 	if err := fs.Parse(args); err != nil {
@@ -179,13 +182,34 @@ func runBuild(args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 	writeProgress(errOut, *format, "validate the locked change and assemble the delivery package", "producer gates and package integrity must pass before a .polis artifact is emitted")
-	result, err := packagebuild.Build(context.Background(), packagebuild.Options{
+	ctx := context.Background()
+	root, err := gitutil.ResolveRoot(ctx, *repo, gitutil.ResolveRootOptions{PathError: "resolve repo path", GitError: "not a Git worktree", RootError: "resolve Git root"})
+	if err != nil {
+		return writeFailure(errOut, *format, "POLIS BUILD", exitValidationFailed, err)
+	}
+	reporter, err := newLiveReporter(*streamOutput, *format, *eventsFile, root, errOut)
+	if err != nil {
+		return writeFailure(errOut, *format, "POLIS BUILD", exitUsage, err)
+	}
+	defer reporter.Close()
+	baselineStage := reporter.Stage("locked_baseline_proof", "verify the locked baseline and producer gates", "the embedded baseline and strict plan must match the locked target")
+	packageStage := reporter.Stage("artifact_packaging", "assemble the delivery artifact", "package integrity is claimed only after all validation passes")
+	defer packageStage("FAIL")
+	defer baselineStage("FAIL")
+	result, err := packagebuild.Build(ctx, packagebuild.Options{
 		Repo: *repo, Policy: *policy, Project: *project, Change: *change, Out: *outDir, Contract: *contract, RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlanPath, DeferredGates: deferredGates, Jobs: *jobs,
-		OnGateStart: gateStartProgress(errOut, *format), OnGateComplete: gateCompleteProgress(errOut, *format),
+		OnGateStart:    liveGateStart(reporter, gateStartProgress(errOut, *format), *format, errOut),
+		OnGateComplete: gateCompleteProgress(errOut, *format),
+		OnGateResult:   reporter.GateResult,
+		OnOutput:       liveOutput(reporter),
+		OnChangeStart:  liveChangeStart(reporter),
+		OnChangeResult: reporter.ChangeResult,
 	})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS BUILD", exitUsage, err)
 	}
+	baselineStage("PASS")
+	packageStage("PASS")
 	if *format == "json" {
 		payload := map[string]any{"status": "PASS", "artifact": result.Path, "sha256": result.SHA256, "base_commit": result.BaseCommit, "target_tree": result.TargetTree, "validation_level": result.ValidationLevel, "enabled_gates": result.EnabledGates, "disabled_gates": result.DisabledGates, "deferred_gates": result.DeferredGates, "consumer_validation_required": result.ConsumerValidationRequired, "producer_gate_statuses": result.ProducerGateStatuses, "concurrency": result.Concurrency}
 		if len(result.RetainedPaths) > 0 {

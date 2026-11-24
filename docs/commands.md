@@ -191,7 +191,7 @@ Do not use:
 <!-- command-help: gates -->
 ```text
 Usage:
-  polis gates [--repo <path>] [--policy <policy-v3.json>] [--contract <locked.json>] [--gate <id> ... | --affected] [--jobs <1..16>] [--environment-id <nonsecret-version>] [--reuse <run.json> | --replay <run.json> | --inspect-run <run.json>] [--out-run <external-new.json>] [--format text|json]
+  polis gates [--repo <path>] [--policy <policy-v3.json>] [--contract <locked.json>] [--gate <id> ... | --affected] [--jobs <1..16>] [--environment-id <nonsecret-version>] [--reuse <run.json> | --replay <run.json> | --inspect-run <run.json>] [--out-run <external-new.json>] [--stream-output] [--events-file <new-external.jsonl>] [--format text|json]
 Purpose:
   run configured project gates selectively with provenance without building a delivery artifact
 When to use:
@@ -222,6 +222,15 @@ Options/defaults:
   separately, so --jobs greater than one never claims overlap by itself.
   --inspect-run only accepts --format; --replay forbids selection,
   reuse and explicit jobs. --out-run must be a new external file.
+  --stream-output is off by default. When enabled, sanitized live output,
+  stage transitions and completed gate results are written to stderr as
+  presentation-only `polis-live-v1` JSON Lines with `--format json`, or as
+  `POLIS STAGE:`, `POLIS LIVE:` and `POLIS RESULT:` text lines otherwise.
+  Final stdout text/JSON is unchanged. Optional --events-file mirrors the
+  JSON Lines to a new regular non-symlink file outside the target worktree,
+  created with 0600 permissions and never overwritten. Raw output can contain
+  secrets; opt in only when the consumer is trusted and delete the file when
+  no longer needed. Observer failures and drops never change a gate outcome.
 Outcomes:
   Success (0): selected/configured gates pass; this is local validation, not delivery
   proof. BLOCKED (4): intended checks did not run or prerequisites failed. Failure (6):
@@ -230,6 +239,7 @@ Examples:
   polis gates --repo /repo --gate coverage --gate lint --jobs 2 --environment-id toolchain-v1 --out-run /outside/run.json
   polis gates --repo /repo --affected --reuse /outside/run.json --environment-id toolchain-v1
   polis gates --inspect-run /outside/run.json --format json
+  polis gates --repo /repo --format json --stream-output --events-file /outside/live.jsonl
 Do not use:
   As artifact verification, strict development proof, or a read-only check of untrusted
   code. Never place secret values in environment identifiers, manifests, or arguments.
@@ -241,7 +251,7 @@ Do not use:
 <!-- command-help: workspace -->
 ```text
 Usage:
-  polis workspace validate --repo <path> --contract <locked-v4-or-v6.json> [--policy <policy-v3.json>] [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--out-report <new-external.json>] [--jobs <1..16>] [--format text|json]
+  polis workspace validate --repo <path> --contract <locked-v4-or-v6.json> [--policy <policy-v3.json>] [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--out-report <new-external.json>] [--jobs <1..16>] [--stream-output] [--events-file <new-external.jsonl>] [--format text|json]
   polis workspace status --repo <path> --contract <external-locked-v4-or-v6.json> --report <external-workspace-validation-v1.json> [--policy <policy-v3.json>] [--format text|json]
 Purpose:
   `workspace validate` checks local work without a package; `workspace status` compares a checkpoint. Neither performs package delivery or application.
@@ -274,6 +284,13 @@ Options/defaults:
   Command results and the external checkpoint include an additive optional
   presentation-only concurrency report; the checkpoint schema remains closed
   and older reports without the field remain valid. --format defaults to text.
+  --stream-output is off by default and emits presentation-only `polis-live-v1`
+  JSON Lines on stderr with `--format json`, or sanitized `POLIS STAGE:`,
+  `POLIS LIVE:` and `POLIS RESULT:` text lines otherwise. Optional
+  --events-file mirrors the JSON Lines to a new 0600 regular file outside the
+  worktree; it never enters the checkpoint, evidence or Git state. Raw output
+  can contain secrets and is never redacted; use a trusted consumer and remove
+  the file when finished. Observer failures never change validation outcomes.
 Outcomes:
   Validate success (0) means the exact target passed locked proof and enabled non-deferred gates;
   JSON says workspace_validated=true and delivery_artifact_built/verified=false. Status success (0)
@@ -284,6 +301,7 @@ Outcomes:
 Examples:
   polis workspace validate --repo /repo --contract /outside/locked-v6.json --regression-patch /outside/red.patch --out-report /outside/workspace.json --format json
   polis workspace status --repo /repo --contract /outside/locked-v6.json --report /outside/workspace.json --format json
+  polis workspace validate --repo /repo --contract /outside/locked-v6.json --format json --stream-output --events-file /outside/workspace-live.jsonl
 Do not use:
   Status as fresh validation, signature/producer authentication, or package verification. Version-1
   reports do not bind Red proof or plan digests; a matching source snapshot is not validation evidence.
@@ -489,7 +507,7 @@ Do not use:
 <!-- command-help: build -->
 ```text
 Usage:
-  polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--defer-gate <id> ...] [--jobs <1..16>] [--format text|json] --out <directory>
+  polis build --repo <path> [--policy <policy-v3.json>] --project <slug> --change <slug> --contract <change.json> [--regression-patch <red.patch>] [--implementation-plan <plan.json>] [--defer-gate <id> ...] [--jobs <1..16>] [--stream-output] [--events-file <new-external.jsonl>] [--format text|json] --out <directory>
 Purpose:
   build a .polis delivery package
 When to use:
@@ -536,12 +554,20 @@ Options/defaults:
   --jobs defaults to 1 and accepts 1 through 16; only gates explicitly marked parallel_safe
   may overlap, and coverage remains exclusive. The build result reports observed concurrency
   separately; package/evidence schemas are unchanged.
+  --stream-output is off by default and emits presentation-only `polis-live-v1`
+  JSON Lines on stderr with `--format json`, or sanitized `POLIS STAGE:`,
+  `POLIS LIVE:` and `POLIS RESULT:` text lines otherwise. Optional
+  --events-file mirrors the JSON Lines to a new 0600 regular file outside the
+  target worktree; it is never packaged, retained, or used as build evidence.
+  Raw output can contain secrets and is never redacted; use a trusted consumer
+  and remove the file when finished. Observer failures never change the build outcome.
 Outcomes:
   Success (0): verify/inspect the exact output; deferred gates remain a consumer obligation.
   Failure (2): inspect diagnostics for scope/proof/baseline/gate/output errors. BLOCKED
   checks did not run; restore dependencies. Do not weaken policy or recapture altered tests.
 Examples:
   polis build --repo /path/to/repo --policy /outside/policy-v3.json --project app --change fix --contract /outside/locked-v6.json --regression-patch /outside/regression.patch --out /outside/output
+  polis build --repo /path/to/repo --project app --change fix --contract /outside/locked-v6.json --format json --stream-output --events-file /outside/build-live.jsonl --out /outside/output
   For behavior_preserving, omit --regression-patch and use locked Green-to-Green proof.
 Do not use:
   A draft/legacy contract for new delivery, gates-only success as proof, or deferral to hide failure.

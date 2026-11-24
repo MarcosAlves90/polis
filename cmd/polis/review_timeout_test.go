@@ -22,7 +22,7 @@ func TestReviewProjectTimeout(t *testing.T) {
 	t.Setenv("POLIS_REVIEW_TIMEOUT_HELPER", "1")
 	repo := makeBuildRepo(t)
 	var policy spec.Policy
-	if err := json.Unmarshal(canonicalPolicyBytes(t), &policy); err != nil {
+	if err := json.Unmarshal(committedPolicyBytes(t), &policy); err != nil {
 		t.Fatal(err)
 	}
 	for i := range policy.Gates {

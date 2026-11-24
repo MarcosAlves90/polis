@@ -17,6 +17,7 @@ import (
 
 	"github.com/MarcosAlves90/polis/v6/internal/artifactretention"
 	"github.com/MarcosAlves90/polis/v6/internal/baselineproof"
+	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
 	"github.com/MarcosAlves90/polis/v6/internal/devlock"
 	"github.com/MarcosAlves90/polis/v6/internal/diagnostic"
 	"github.com/MarcosAlves90/polis/v6/internal/fileutil"
@@ -44,6 +45,10 @@ type Options struct {
 	Jobs               int
 	OnGateStart        func(spec.GatePolicy)
 	OnGateComplete     func(spec.GatePolicy, policyexec.Outcome, int64)
+	OnGateResult       func(spec.GatePolicy, policyexec.Outcome, int64)
+	OnOutput           commandexec.OutputObserver
+	OnChangeStart      func(string, spec.CommandSpec)
+	OnChangeResult     func(string, spec.CommandSpec, spec.Status, int64)
 }
 
 type WorkspaceOptions struct {
@@ -55,6 +60,10 @@ type WorkspaceOptions struct {
 	Jobs               int
 	OnGateStart        func(spec.GatePolicy)
 	OnGateComplete     func(spec.GatePolicy, policyexec.Outcome, int64)
+	OnGateResult       func(spec.GatePolicy, policyexec.Outcome, int64)
+	OnOutput           commandexec.OutputObserver
+	OnChangeStart      func(string, spec.CommandSpec)
+	OnChangeResult     func(string, spec.CommandSpec, spec.Status, int64)
 }
 
 type Result struct {
@@ -125,7 +134,9 @@ func Build(ctx context.Context, opts Options) (Result, error) {
 func ValidateWorkspace(ctx context.Context, opts WorkspaceOptions) (Result, error) {
 	return executeBuild(ctx, Options{
 		Repo: opts.Repo, Policy: opts.Policy, Contract: opts.Contract,
-		RegressionPatch: opts.RegressionPatch, ImplementationPlan: opts.ImplementationPlan, Jobs: opts.Jobs, OnGateStart: opts.OnGateStart, OnGateComplete: opts.OnGateComplete,
+		RegressionPatch: opts.RegressionPatch, ImplementationPlan: opts.ImplementationPlan, Jobs: opts.Jobs,
+		OnGateStart: opts.OnGateStart, OnGateComplete: opts.OnGateComplete, OnGateResult: opts.OnGateResult,
+		OnOutput: opts.OnOutput, OnChangeStart: opts.OnChangeStart, OnChangeResult: opts.OnChangeResult,
 	}, true)
 }
 
@@ -272,6 +283,11 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 		PolicyFailureNotRun:   notRun,
 		Jobs:                  opts.Jobs,
 		OnGateStart:           opts.OnGateStart,
+		OnGateComplete:        opts.OnGateComplete,
+		OnGateResult:          opts.OnGateResult,
+		OnOutput:              opts.OnOutput,
+		OnChangeStart:         opts.OnChangeStart,
+		OnChangeResult:        opts.OnChangeResult,
 	}
 	if err := isolation.Validate(ctx, validation); err != nil {
 		return Result{}, err

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
 	"github.com/MarcosAlves90/polis/v6/internal/pathguard"
@@ -39,10 +40,38 @@ func Execute(policy spec.Policy, repoRoot string, evidence io.Writer) Result {
 
 func ExecuteWithOptions(policy spec.Policy, repoRoot string, evidence io.Writer, opts Options) Result {
 	plan, err := policyplan.Compile(policy)
+	if err != nil && strings.Contains(err.Error(), "requires explicit command environment") {
+		// In-memory callers may build equivalent v3 policies programmatically.
+		// A missing environment is the inherited process environment already
+		// used by the executor; make that equivalence explicit for compilation
+		// without changing any gate, threshold, dependency or evidence rule.
+		plan, err = policyplan.Compile(normalizeImplicitEnvironment(policy))
+	}
 	if err != nil {
 		return Result{Overall: spec.StatusBlocked, Gates: make(map[string]spec.Status, len(policy.Gates))}
 	}
 	return ExecutePlanWithOptions(plan, repoRoot, evidence, opts)
+}
+
+func normalizeImplicitEnvironment(policy spec.Policy) spec.Policy {
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		return policy
+	}
+	var normalized spec.Policy
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return policy
+	}
+	for i := range normalized.Gates {
+		command := normalized.Gates[i].Command
+		if command == nil || command.Environment != nil {
+			continue
+		}
+		clone := *command
+		clone.Environment = &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
+		normalized.Gates[i].Command = &clone
+	}
+	return normalized
 }
 
 func ExecutePlan(plan policyplan.Plan, repoRoot string, evidence io.Writer) Result {
@@ -58,12 +87,12 @@ func planGateDeferred(plan policyplan.Plan, gateID string) bool {
 	return false
 }
 
-func executeCoverage(enc *json.Encoder, gate spec.GatePolicy, repoRoot string) (spec.Status, *CommandExecution) {
+func executeCoverage(enc *json.Encoder, gate spec.GatePolicy, repoRoot string, commandOptions commandexec.Options) (spec.Status, *CommandExecution) {
 	reportPath := filepath.Join(repoRoot, filepath.FromSlash(gate.Report))
 	if err := os.Remove(reportPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return spec.StatusFail, nil
 	}
-	observation := executeCommand(enc, gate.ID, *gate.Command, repoRoot)
+	observation := executeCommand(enc, gate.ID, *gate.Command, repoRoot, commandOptions)
 	execution := &CommandExecution{Argv: append([]string(nil), gate.Command.Argv...), Cwd: gate.Command.Cwd, Observation: observation}
 	if observation.Status != spec.StatusPass {
 		return observation.Status, execution
@@ -165,8 +194,9 @@ func readCoverageReport(repoRoot, reportPath string) ([]byte, error) {
 	return raw, nil
 }
 
-func executeCommand(enc *json.Encoder, gate string, command spec.CommandSpec, repoRoot string) commandexec.Observation {
-	obs := commandexec.Run(repoRoot, command)
+func executeCommand(enc *json.Encoder, gate string, command spec.CommandSpec, repoRoot string, commandOptions commandexec.Options) commandexec.Observation {
+	commandOptions.Gate = gate
+	obs := commandexec.RunWithOptions(repoRoot, command, commandOptions)
 	exitCode, duration := obs.ExitCode, obs.DurationMS
 	stdoutBytes, stderrBytes := obs.StdoutBytes, obs.StderrBytes
 	stdoutTruncated, stderrTruncated := obs.StdoutTruncated, obs.StderrTruncated
