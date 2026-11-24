@@ -43,8 +43,11 @@ func TestConcurrencyReviewNoOverlapWhenFirstFinishesFirst(t *testing.T) {
 				}
 				time.Sleep(5 * time.Millisecond)
 			}
-			// Let the first command exit and its completion timestamp settle.
-			time.Sleep(50 * time.Millisecond)
+			// The marker is written just before the first helper exits. Race
+			// instrumentation can delay that exit substantially, so allow the
+			// first command (and its completion timestamp) to settle before the
+			// second gate's goroutine starts.
+			time.Sleep(2 * time.Second)
 		},
 	})
 	if result.Overall != spec.StatusPass {
