@@ -28,7 +28,7 @@ func TestGatesReportsDoNotLeakOutputDerivedSecrets(t *testing.T) {
 	t.Setenv("POLIS_TEST_SECRET", "sentinel-cli-environment-secret")
 	t.Setenv("GOCOVERDIR", t.TempDir())
 	var policy spec.Policy
-	if err := json.Unmarshal(canonicalPolicyBytes(t), &policy); err != nil {
+	if err := json.Unmarshal(committedPolicyBytes(t), &policy); err != nil {
 		t.Fatal(err)
 	}
 	policy.Gates[0].Command.Argv = []string{os.Args[0], "-test.run=^TestGateSecretDiagnosticHelper$", "--", "secret-diagnostic"}
@@ -54,7 +54,7 @@ func TestGatesReportsDoNotLeakOutputDerivedSecrets(t *testing.T) {
 
 func TestInspectRunEscapesTerminalControlCharacters(t *testing.T) {
 	var policy spec.Policy
-	if err := json.Unmarshal(canonicalPolicyBytes(t), &policy); err != nil {
+	if err := json.Unmarshal(committedPolicyBytes(t), &policy); err != nil {
 		t.Fatal(err)
 	}
 	manifest := gaterun.Manifest{

@@ -32,6 +32,56 @@ structured failure remains the final stderr JSON record, *after* command
 completion; consumers should use the last non-progress record as the result.
 Progress does not include raw command output, environment values, or secrets.
 
+## Live output streaming (explicit opt-in)
+
+`polis gates`, `polis workspace validate`, and `polis build` accept
+`--stream-output` to expose what a running command is actually doing before it
+exits. The default remains safe metadata-only progress: without the flag there
+are no live output, stage or incremental result events, and final stdout remains
+byte-for-byte unchanged.
+
+With `--format json`, live records are newline-delimited JSON on stderr using
+the `polis-live-v1` schema. Every record carries `schema_version`, a per-command
+`run_id`, a monotonically increasing `sequence`, and an RFC3339 `timestamp`:
+
+```json
+{"schema_version":"polis-live-v1","run_id":"...","sequence":7,"timestamp":"...","type":"progress","event":"started","scope":"stage","id":"project_gate_execution","action":"execute the selected gate plan","why":"each configured gate must report a current result for the selected source"}
+{"schema_version":"polis-live-v1","run_id":"...","sequence":8,"timestamp":"...","type":"output","event":"chunk","scope":"gate","id":"test.complete","stream":"stdout","data":"=== RUN TestExample\n","encoding":"utf-8","bytes":19,"chunk_sequence":1,"truncated":false,"dropped_chunks":0,"dropped_bytes":0}
+{"schema_version":"polis-live-v1","run_id":"...","sequence":9,"timestamp":"...","type":"result","event":"completed","scope":"gate","id":"test.complete","status":"FAIL","action":"executed","reason":"","duration_ms":12431,"command":{"argv":["go","test","./..."],"cwd":".","environment_mode":"inherit","environment_pass":[]}}
+```
+
+`chunk_sequence` is ordered per gate and stream; `sequence` orders the whole
+event stream. `data` is sanitized UTF-8 text escaped by JSON encoding, never a
+raw terminal byte stream. `truncated`, `dropped_chunks`, and `dropped_bytes`
+account for the bounded 16 KiB chunk queue. Observer write failures are counted
+but never change PASS/FAIL/BLOCKED, never block the child, and never enter
+checksummed evidence. A `result` record reports the actual observed status;
+`PASS` on one gate never claims final workflow success. Stages use the real
+command stage names, for example `red_green_regression`,
+`isolated_target_preparation`, `project_gate_execution`,
+`source_state_recheck`, `locked_baseline_proof`, and `artifact_packaging`.
+Skipped stages are not reported. POLIS does not infer individual test cases from
+arbitrary output; only authentic runner output attributed to its owning gate is
+streamed.
+
+With text output, the same events use sanitized `POLIS STAGE:`, `POLIS LIVE:`,
+and `POLIS RESULT:` prefixes on stderr. Terminal control sequences are removed
+or escaped; newline-containing data remains quoted. Final text/JSON results
+stay on stdout, and final structured failures still follow command completion
+in JSON mode.
+
+For agent hosts that only return command output at process exit, add
+`--events-file /outside/live.jsonl`. The file must be a new regular non-symlink
+file outside the resolved target worktree, is created with `0600` permissions,
+and mirrors the same JSON Lines regardless of `--format`. Invalid paths fail
+with usage exit 2 before commands execute; later write errors affect only the
+optional log. Raw subprocess output can contain credentials or other secrets
+and is **not redacted**. Treat both stderr captures and the events file as
+sensitive, use a trusted consumer, and delete the file when no longer needed.
+Live events are presentation-only and never enter final reports, replay
+manifests, coverage reports, package schemas, Git state, or `.polis` retained
+artifacts.
+
 ## Incremental gate runs and replay
 
 `polis gates` now includes a versioned run manifest in JSON output. Use

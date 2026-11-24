@@ -45,6 +45,8 @@ func runWorkspaceValidate(args []string, out, errOut io.Writer) int {
 	outReport := fs.String("out-report", "", "new external workspace validation report; never overwritten")
 	jobs := fs.Int("jobs", 1, "maximum concurrent parallel-safe gates (1..16)")
 	format := fs.String("format", "text", outputFormatHelp)
+	streamOutput := fs.Bool("stream-output", false, "stream live gate output and incremental results to stderr")
+	eventsFile := fs.String("events-file", "", "new external JSON Lines file for live events (requires --stream-output)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -62,10 +64,22 @@ func runWorkspaceValidate(args []string, out, errOut io.Writer) int {
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS WORKSPACE VALIDATE", exitValidationFailed, err)
 	}
+	reporter, err := newLiveReporter(*streamOutput, *format, *eventsFile, root, errOut)
+	if err != nil {
+		return writeFailure(errOut, *format, "POLIS WORKSPACE VALIDATE", exitUsage, err)
+	}
+	defer reporter.Close()
 	writeProgress(errOut, *format, "validate the current workspace against the locked contract", "the current source tree and producer gates must match the contract without creating a delivery artifact")
 	result, err := packagebuild.ValidateWorkspace(ctx, packagebuild.WorkspaceOptions{
 		Repo: root, Policy: *policy, Contract: *contract,
-		RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlan, Jobs: *jobs, OnGateStart: gateStartProgress(errOut, *format), OnGateComplete: gateCompleteProgress(errOut, *format),
+		RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlan, Jobs: *jobs,
+		OnStageStart:   reporter.Stage,
+		OnGateStart:    liveGateStart(reporter, gateStartProgress(errOut, *format), *format, errOut),
+		OnGateComplete: gateCompleteProgress(errOut, *format),
+		OnGateResult:   reporter.GateResult,
+		OnOutput:       liveOutput(reporter),
+		OnChangeStart:  liveChangeStart(reporter),
+		OnChangeResult: reporter.ChangeResult,
 	})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS WORKSPACE VALIDATE", exitValidationFailed, err)

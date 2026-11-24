@@ -35,6 +35,9 @@ type Observation struct {
 	StdoutTruncated bool
 	StderrTruncated bool
 	Prerequisite    string
+	// Live accounts the optional presentation path. It is never serialized into
+	// evidence because observed drops are not validation outcomes.
+	Live StreamStats `json:"-"`
 }
 
 var (
@@ -75,40 +78,70 @@ func (w *boundedDigestWriter) string() string { return string(w.buf) }
 func (w *boundedDigestWriter) digest() string { return hex.EncodeToString(w.h.Sum(nil)) }
 
 func Run(repoRoot string, command spec.CommandSpec) Observation {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(command.TimeoutSeconds)*time.Second)
+	return RunWithOptions(repoRoot, command, Options{})
+}
+
+// RunWithOptions observes a command without changing its capture semantics.
+// The optional context may cancel the child; the optional observer receives
+// sanitized chunks while the child is still running and is never allowed to
+// block the child or alter the result.
+func RunWithOptions(repoRoot string, command spec.CommandSpec, opts Options) Observation {
+	parent := opts.Context
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, time.Duration(command.TimeoutSeconds)*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, command.Argv[0], command.Argv[1:]...)
 	cmd.Dir = filepath.Join(repoRoot, filepath.FromSlash(command.Cwd))
-	stdout, stderr := newBoundedDigestWriter(), newBoundedDigestWriter()
+	dispatcher := newLiveDispatcher(opts.OnOutput)
+	stdoutDigest, stderrDigest := newBoundedDigestWriter(), newBoundedDigestWriter()
+	stdoutWriter := &liveWriter{digest: stdoutDigest, dispatcher: dispatcher, gate: opts.Gate, stream: StreamStdout}
+	stderrWriter := &liveWriter{digest: stderrDigest, dispatcher: dispatcher, gate: opts.Gate, stream: StreamStderr}
 	if command.Environment != nil {
 		childEnvironment, err := environmentFor(*command.Environment)
 		if err != nil {
-			return Observation{
+			obs := Observation{
 				Status:       spec.StatusBlocked,
 				ExitCode:     -1,
-				StdoutSHA256: stdout.digest(),
-				StderrSHA256: stderr.digest(),
+				StdoutSHA256: stdoutDigest.digest(),
+				StderrSHA256: stderrDigest.digest(),
 				Prerequisite: "invalid clean environment: " + err.Error(),
 			}
+			dispatcher.close()
+			obs.Live = combineStreamStats(stdoutWriter, stderrWriter, dispatcher)
+			return obs
 		}
 		cmd.Env = childEnvironment
 	}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
 	started := time.Now()
 	err := cmd.Run()
 	obs := Observation{
 		Status: spec.StatusPass, ExitCode: 0, DurationMS: time.Since(started).Milliseconds(),
-		Stdout: stdout.string(), Stderr: stderr.string(), StdoutBytes: stdout.total, StderrBytes: stderr.total,
-		StdoutSHA256: stdout.digest(), StderrSHA256: stderr.digest(), StdoutTruncated: stdout.truncated, StderrTruncated: stderr.truncated,
+		Stdout: stdoutDigest.string(), Stderr: stderrDigest.string(), StdoutBytes: stdoutDigest.total, StderrBytes: stderrDigest.total,
+		StdoutSHA256: stdoutDigest.digest(), StderrSHA256: stderrDigest.digest(), StdoutTruncated: stdoutDigest.truncated, StderrTruncated: stderrDigest.truncated,
 	}
 	if ctx.Err() == context.DeadlineExceeded {
 		obs.Status = spec.StatusFail
 		obs.ExitCode = -1
 		obs.TimedOut = true
+		dispatcher.close()
+		obs.Live = combineStreamStats(stdoutWriter, stderrWriter, dispatcher)
+		return obs
+	}
+	if parent.Err() != nil && ctx.Err() == context.Canceled {
+		obs.Status = spec.StatusBlocked
+		obs.ExitCode = -1
+		obs.Prerequisite = "validation context cancelled"
+		dispatcher.close()
+		obs.Live = combineStreamStats(stdoutWriter, stderrWriter, dispatcher)
 		return obs
 	}
 	if err == nil {
+		dispatcher.close()
+		obs.Live = combineStreamStats(stdoutWriter, stderrWriter, dispatcher)
 		return obs
 	}
 	var exitErr *exec.ExitError
@@ -120,6 +153,8 @@ func Run(repoRoot string, command spec.CommandSpec) Observation {
 		} else {
 			obs.Status = spec.StatusFail
 		}
+		dispatcher.close()
+		obs.Live = combineStreamStats(stdoutWriter, stderrWriter, dispatcher)
 		return obs
 	}
 	obs.Status = spec.StatusBlocked
@@ -135,11 +170,13 @@ func Run(repoRoot string, command spec.CommandSpec) Observation {
 	if obs.Stderr != "" {
 		message = "\n" + message
 	}
-	_, _ = stderr.Write([]byte(message))
-	obs.Stderr = stderr.string()
-	obs.StderrBytes = stderr.total
-	obs.StderrSHA256 = stderr.digest()
-	obs.StderrTruncated = stderr.truncated
+	_, _ = stderrWriter.Write([]byte(message))
+	obs.Stderr = stderrDigest.string()
+	obs.StderrBytes = stderrDigest.total
+	obs.StderrSHA256 = stderrDigest.digest()
+	obs.StderrTruncated = stderrDigest.truncated
+	dispatcher.close()
+	obs.Live = combineStreamStats(stdoutWriter, stderrWriter, dispatcher)
 	return obs
 }
 

@@ -30,7 +30,7 @@ func concurrencyCLIRepo(t *testing.T) string {
 func externalParallelCLIPolicy(t *testing.T) string {
 	t.Helper()
 	var policy spec.Policy
-	if err := json.Unmarshal(canonicalPolicyBytes(t), &policy); err != nil {
+	if err := json.Unmarshal(committedPolicyBytes(t), &policy); err != nil {
 		t.Fatal(err)
 	}
 	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}

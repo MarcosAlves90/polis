@@ -36,6 +36,27 @@ polis status --repo "$REPO" --policy "$POLIS_OUTSIDE_DIR/policy.json" --contract
 
 `status` reports workflow evidence and checkpoint identity; an unsigned report is historical data, not fresh validation or proof of implementation completion. Run `workspace validate` again for current gate evidence.
 
+## Watch a long validation
+
+For long test/coverage gates, add `--stream-output` to `gates` or `workspace
+validate`. With `--format json`, stderr carries `polis-live-v1` JSON Lines for
+real stages, completed gate results, and sanitized stdout/stderr chunks while
+the child is still running. The final JSON on stdout is unchanged. If the agent
+host buffers stderr until process exit, also point `--events-file` at a **new**
+path outside `REPO`; POLIS creates it with `0600` permissions and never reuses
+an existing file or follows a symlink.
+
+```bash
+polis workspace validate --repo "$REPO" --policy "$POLIS_OUTSIDE_DIR/policy.json" --contract "$POLIS_OUTSIDE_DIR/locked-v6.json" --regression-patch "$POLIS_OUTSIDE_DIR/regression.patch" --format json --stream-output --events-file "$POLIS_OUTSIDE_DIR/workspace-live.jsonl"
+# In another terminal: tail -f "$POLIS_OUTSIDE_DIR/workspace-live.jsonl"
+```
+
+Raw command output can include secrets and is not redacted. Treat stderr and
+the events file as sensitive, keep them outside the repository evidence path,
+and delete the follow file when finished. An intermediate `result` with
+`status:"FAIL"` is provisional: wait for the unchanged final stdout result and
+command completion before acting.
+
 ## Commands not used by this path
 
 No `.polis` delivery package is required or created. `polis build` and `polis sign` are not part of this workflow; `polis preflight` and `polis apply` are not part of this workflow. Do not package the local worktree merely to establish that its locked change and gates pass. Keep task-owned outputs external and disposable.

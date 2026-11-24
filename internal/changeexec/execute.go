@@ -1,6 +1,7 @@
 package changeexec
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,20 @@ import (
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
+// Hooks are presentation-only. They never change command execution, evidence
+// or the resulting gate status.
+type Hooks struct {
+	Context  context.Context
+	OnOutput commandexec.OutputObserver
+	OnStart  func(gate string, command spec.CommandSpec)
+	OnResult func(gate string, command spec.CommandSpec, status spec.Status, durationMS int64)
+}
+
 func ExecuteBaseline(contract spec.ChangeContract, repoRoot string, evidence io.Writer) error {
+	return ExecuteBaselineWithHooks(contract, repoRoot, evidence, Hooks{})
+}
+
+func ExecuteBaselineWithHooks(contract spec.ChangeContract, repoRoot string, evidence io.Writer, hooks Hooks) error {
 	if err := contract.Validate(); err != nil {
 		return err
 	}
@@ -22,11 +36,14 @@ func ExecuteBaseline(contract spec.ChangeContract, repoRoot string, evidence io.
 	enc := json.NewEncoder(evidence)
 	enc.SetEscapeHTML(false)
 	if contract.RequiresGreenGreen() {
-		return runPassGate(enc, "regression", *contract.Regression.Command, repoRoot, "target regression", "behavior", "affected", "project gate validation")
+		return runPassGate(enc, "regression", *contract.Regression.Command, repoRoot, hooks, "target regression", "behavior", "affected", "project gate validation")
 	}
+	command := *contract.Regression.Command
+	hooks.start("regression", command)
 	_ = enc.Encode(spec.EvidenceEvent{Event: "gate_started", Gate: "regression"})
-	obs := commandexec.Run(repoRoot, *contract.Regression.Command)
-	writeObservation(enc, "regression", *contract.Regression.Command, obs)
+	obs := commandexec.RunWithOptions(repoRoot, command, commandexec.Options{Context: hooks.Context, Gate: "regression", OnOutput: hooks.OnOutput})
+	writeObservation(enc, "regression", command, obs)
+	hooks.result("regression", command, obs.Status, obs.DurationMS)
 	if obs.Status == spec.StatusBlocked {
 		reason := safeBlockedReason(obs)
 		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: "regression", Status: spec.StatusBlocked, Reason: &reason})
@@ -57,13 +74,17 @@ func ExecuteBaseline(contract spec.ChangeContract, repoRoot string, evidence io.
 }
 
 func ExecuteTarget(contract spec.ChangeContract, repoRoot string, evidence io.Writer) error {
+	return ExecuteTargetWithHooks(contract, repoRoot, evidence, Hooks{})
+}
+
+func ExecuteTargetWithHooks(contract spec.ChangeContract, repoRoot string, evidence io.Writer, hooks Hooks) error {
 	if err := contract.Validate(); err != nil {
 		return err
 	}
 	enc := json.NewEncoder(evidence)
 	enc.SetEscapeHTML(false)
 	if contract.RequiresRedGreen() || contract.RequiresGreenGreen() {
-		if err := runPassGate(enc, "regression", *contract.Regression.Command, repoRoot, "behavior", "affected", "project gate validation"); err != nil {
+		if err := runPassGate(enc, "regression", *contract.Regression.Command, repoRoot, hooks, "behavior", "affected", "project gate validation"); err != nil {
 			return err
 		}
 	} else {
@@ -71,18 +92,19 @@ func ExecuteTarget(contract spec.ChangeContract, repoRoot string, evidence io.Wr
 		reason := spec.RegressionReasonNotDefect
 		_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: "regression", Status: spec.StatusNotApplicable, Reason: &reason})
 	}
-	if err := runPassGate(enc, "behavior", contract.Behavior, repoRoot, "affected", "project gate validation"); err != nil {
+	if err := runPassGate(enc, "behavior", contract.Behavior, repoRoot, hooks, "affected", "project gate validation"); err != nil {
 		return err
 	}
-	if err := runPassGate(enc, "affected", contract.Affected, repoRoot, "project gate validation"); err != nil {
+	if err := runPassGate(enc, "affected", contract.Affected, repoRoot, hooks, "project gate validation"); err != nil {
 		return err
 	}
 	return nil
 }
 
-func runPassGate(enc *json.Encoder, gate string, command spec.CommandSpec, repoRoot string, notRun ...string) error {
+func runPassGate(enc *json.Encoder, gate string, command spec.CommandSpec, repoRoot string, hooks Hooks, notRun ...string) error {
+	hooks.start(gate, command)
 	_ = enc.Encode(spec.EvidenceEvent{Event: "gate_started", Gate: gate})
-	obs := commandexec.Run(repoRoot, command)
+	obs := commandexec.RunWithOptions(repoRoot, command, commandexec.Options{Context: hooks.Context, Gate: gate, OnOutput: hooks.OnOutput})
 	writeObservation(enc, gate, command, obs)
 	reason := commandexec.BlockedReason(obs)
 	if obs.Status == spec.StatusBlocked {
@@ -90,6 +112,7 @@ func runPassGate(enc *json.Encoder, gate string, command spec.CommandSpec, repoR
 		reason = &safeReason
 	}
 	_ = enc.Encode(spec.EvidenceEvent{Event: "gate_finished", Gate: gate, Status: obs.Status, Reason: reason})
+	hooks.result(gate, command, obs.Status, obs.DurationMS)
 	if obs.Status != spec.StatusPass {
 		stdout, stdoutPreviewTruncated := diagnostic.BoundProcessOutput(obs.Stdout)
 		stderr, stderrPreviewTruncated := diagnostic.BoundProcessOutput(obs.Stderr)
@@ -119,6 +142,18 @@ func runPassGate(enc *json.Encoder, gate string, command spec.CommandSpec, repoR
 		return &diagnostic.Error{Summary: fmt.Sprintf("change gate %s %s", gate, obs.Status), Report: diagnostic.ClassifyGateFailure(report)}
 	}
 	return nil
+}
+
+func (h Hooks) start(gate string, command spec.CommandSpec) {
+	if h.OnStart != nil {
+		h.OnStart(gate, command)
+	}
+}
+
+func (h Hooks) result(gate string, command spec.CommandSpec, status spec.Status, durationMS int64) {
+	if h.OnResult != nil {
+		h.OnResult(gate, command, status, durationMS)
+	}
 }
 
 func safeBlockedReason(obs commandexec.Observation) string {

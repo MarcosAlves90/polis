@@ -27,7 +27,21 @@ func cliFixturePassCommand() []string {
 	return []string{"git", "rev-parse", "--is-inside-work-tree"}
 }
 
+// canonicalPolicyBytes is the external-policy fixture used by the live-output
+// regression tests. It declares the standard validation level so those tests
+// may mark coverage not_applicable without weakening the strict committed
+// policy fixture used everywhere else.
 func canonicalPolicyBytes(t *testing.T) []byte {
+	t.Helper()
+	return policyFixtureBytes(t, spec.ValidationLevelStandard)
+}
+
+func committedPolicyBytes(t *testing.T) []byte {
+	t.Helper()
+	return policyFixtureBytes(t, "")
+}
+
+func policyFixtureBytes(t *testing.T, validationLevel string) []byte {
 	t.Helper()
 	reason := "not applicable in cli verification fixture"
 	env := &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
@@ -42,7 +56,7 @@ func canonicalPolicyBytes(t *testing.T) []byte {
 			gates = append(gates, spec.GatePolicy{ID: id, Mode: spec.GateModeNotApplicable, Reason: &reason})
 		}
 	}
-	b, err := json.Marshal(spec.Policy{SchemaVersion: spec.PolicySchemaVersion, Gates: gates})
+	b, err := json.Marshal(spec.Policy{SchemaVersion: spec.PolicySchemaVersion, ValidationLevel: validationLevel, Gates: gates})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +290,7 @@ func makeBuildRepo(t *testing.T) string {
 	if err := os.MkdirAll(filepath.Join(repo, ".polis"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), canonicalPolicyBytes(t), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, ".polis", "policy.json"), committedPolicyBytes(t), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, ".polis", "coverage.out"), []byte("mode: set\nexample.com/polisfixture/calc.go:1.1,1.2 1 1\n"), 0o644); err != nil {
@@ -520,7 +534,7 @@ func TestIssue12CaptureRedScopeHasEquivalentTextAndJSONDiagnostics(t *testing.T)
 func issue12FailingPolicyPath(t *testing.T) string {
 	t.Helper()
 	var policy spec.Policy
-	if err := json.Unmarshal(canonicalPolicyBytes(t), &policy); err != nil {
+	if err := json.Unmarshal(committedPolicyBytes(t), &policy); err != nil {
 		t.Fatal(err)
 	}
 	executable, err := os.Executable()

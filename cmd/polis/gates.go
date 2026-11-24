@@ -29,6 +29,8 @@ func runRecordedGates(args []string, out, errOut io.Writer) int {
 	inspect := fs.String("inspect-run", "", "inspect a recorded run without executing commands")
 	outRun := fs.String("out-run", "", "new external gate-run manifest file (never overwritten)")
 	affected := fs.Bool("affected", false, "derive gates from captured Git changes and policy input_paths")
+	streamOutput := fs.Bool("stream-output", false, "stream live gate output and incremental results to stderr")
+	eventsFile := fs.String("events-file", "", "new external JSON Lines file for live events (requires --stream-output)")
 	var selected argvFlag
 	fs.Var(&selected, "gate", "select an enabled gate (repeatable); includes prerequisites")
 	if err := fs.Parse(args); err != nil {
@@ -80,17 +82,30 @@ func runRecordedGates(args []string, out, errOut io.Writer) int {
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS GATES", exitValidationFailed, err)
 	}
+	reporter, err := newLiveReporter(*streamOutput, *format, *eventsFile, root, errOut)
+	if err != nil {
+		return writeFailure(errOut, *format, "POLIS GATES", exitUsage, err)
+	}
+	defer reporter.Close()
 	writeProgress(errOut, *format, "compile the effective gate plan", "selection, dependencies, reuse, and execution order come from the current Project Policy")
 	plan, err := policyplan.Load(ctx, policyplan.Options{Repo: root, Policy: *policy})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS GATES", exitValidationFailed, err)
 	}
+	gateStage := reporter.Stage("project_gate_execution", "execute the selected gate plan", "each configured gate must report a current result for the selected source")
+	defer gateStage("FAIL")
 	writeProgress(errOut, *format, "execute the selected gate plan", "each runnable gate must produce a current validation result for the selected source and environment")
 	manifest, result, err := gaterun.Run(ctx, root, plan, gaterun.Options{Version: version, Contract: *contract,
-		EnvironmentID: *environmentID, Jobs: *jobs, Selected: selected, Affected: *affected, Reuse: *reuse, Replay: *replay, Out: *outRun, OnGateStart: gateStartProgress(errOut, *format), OnGateComplete: gateCompleteProgress(errOut, *format)})
+		EnvironmentID: *environmentID, Jobs: *jobs, Selected: selected, Affected: *affected, Reuse: *reuse, Replay: *replay, Out: *outRun,
+		OnGateStart:    liveGateStart(reporter, gateStartProgress(errOut, *format), *format, errOut),
+		OnGateComplete: gateCompleteProgress(errOut, *format),
+		OnGateResult:   reporter.GateResult,
+		OnOutput:       liveOutput(reporter),
+	})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS GATES", exitValidationFailed, err)
 	}
+	gateStage("PASS")
 	report := gatesResult(plan, result)
 	report.Run = &manifest
 	for i := range report.GateResults {

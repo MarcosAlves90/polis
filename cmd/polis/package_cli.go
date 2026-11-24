@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/MarcosAlves90/polis/v6/internal/gitutil"
 	"github.com/MarcosAlves90/polis/v6/internal/packageapply"
 	"github.com/MarcosAlves90/polis/v6/internal/packagebuild"
 	"github.com/MarcosAlves90/polis/v6/internal/packageverify"
@@ -165,6 +166,8 @@ func runBuild(args []string, out, errOut io.Writer) int {
 	implementationPlanPath := fs.String("implementation-plan", "", "optional contract-bound Implementation Plan JSON outside the worktree or retained by repository mode")
 	jobs := fs.Int("jobs", 1, "maximum concurrent parallel-safe gates (1..16)")
 	format := fs.String("format", "text", outputFormatHelp)
+	streamOutput := fs.Bool("stream-output", false, "stream live gate output and incremental results to stderr")
+	eventsFile := fs.String("events-file", "", "new external JSON Lines file for live events (requires --stream-output)")
 	var deferredGates argvFlag
 	fs.Var(&deferredGates, "defer-gate", "defer enabled gate validation to the consumer; repeat for each gate")
 	if err := fs.Parse(args); err != nil {
@@ -179,9 +182,25 @@ func runBuild(args []string, out, errOut io.Writer) int {
 		return exitUsage
 	}
 	writeProgress(errOut, *format, "validate the locked change and assemble the delivery package", "producer gates and package integrity must pass before a .polis artifact is emitted")
-	result, err := packagebuild.Build(context.Background(), packagebuild.Options{
+	ctx := context.Background()
+	root, err := gitutil.ResolveRoot(ctx, *repo, gitutil.ResolveRootOptions{PathError: "resolve repo path", GitError: "not a Git worktree", RootError: "resolve Git root"})
+	if err != nil {
+		return writeFailure(errOut, *format, "POLIS BUILD", exitValidationFailed, err)
+	}
+	reporter, err := newLiveReporter(*streamOutput, *format, *eventsFile, root, errOut)
+	if err != nil {
+		return writeFailure(errOut, *format, "POLIS BUILD", exitUsage, err)
+	}
+	defer reporter.Close()
+	result, err := packagebuild.Build(ctx, packagebuild.Options{
 		Repo: *repo, Policy: *policy, Project: *project, Change: *change, Out: *outDir, Contract: *contract, RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlanPath, DeferredGates: deferredGates, Jobs: *jobs,
-		OnGateStart: gateStartProgress(errOut, *format), OnGateComplete: gateCompleteProgress(errOut, *format),
+		OnStageStart:   reporter.Stage,
+		OnGateStart:    liveGateStart(reporter, gateStartProgress(errOut, *format), *format, errOut),
+		OnGateComplete: gateCompleteProgress(errOut, *format),
+		OnGateResult:   reporter.GateResult,
+		OnOutput:       liveOutput(reporter),
+		OnChangeStart:  liveChangeStart(reporter),
+		OnChangeResult: reporter.ChangeResult,
 	})
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS BUILD", exitUsage, err)

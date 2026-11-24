@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
 	"github.com/MarcosAlves90/polis/v6/internal/policyplan"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
@@ -110,6 +111,37 @@ func helperCommand(t *testing.T, mode string, timeout int) *spec.CommandSpec {
 		Argv:           []string{os.Args[0], "-test.run=TestPolicyExecHelper", "--", mode},
 		Cwd:            ".",
 		TimeoutSeconds: timeout,
+		Environment:    &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit},
+	}
+}
+
+func TestIssue44PR48ProgrammaticInvalidPolicyStaysBlocked(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		name := "without streaming"
+		if streaming {
+			name = "with streaming"
+		}
+		t.Run(name, func(t *testing.T) {
+			policy := testPolicy(t, "pass")
+			policy.SchemaVersion = spec.PolicySchemaVersion
+			for i := range policy.Gates {
+				if policy.Gates[i].Command != nil {
+					policy.Gates[i].Command.Environment = nil
+				}
+			}
+			options := Options{Jobs: 1}
+			if streaming {
+				options.OnOutput = func(commandexec.OutputChunk) error { return nil }
+			}
+			var evidence bytes.Buffer
+			result := ExecuteWithOptions(policy, t.TempDir(), &evidence, options)
+			if result.Overall != spec.StatusBlocked {
+				t.Fatalf("invalid programmatic policy executed: overall=%s evidence=%s", result.Overall, evidence.String())
+			}
+			if len(result.Gates) != 0 || strings.Contains(evidence.String(), `"event":"command_finished"`) {
+				t.Fatalf("gate executed despite invalid policy: result=%+v evidence=%s", result, evidence.String())
+			}
+		})
 	}
 }
 

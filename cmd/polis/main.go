@@ -87,9 +87,15 @@ func run(args []string, out, errOut io.Writer) (exitCode int) {
 		fmt.Fprintln(errOut, rootUsageLine())
 		return exitUsage
 	}
+	if streamingRequested(args) {
+		startLiveContext()
+		defer clearLiveContext()
+	}
 	if progress, id, ok := commandProgressDetails(args); ok {
-		w := &commandProgressWriter{out: errOut, format: commandProgressFormat(args), id: id, progress: progress, start: time.Now()}
-		progressLifecycleEvent(errOut, w.format, "started", "command", id, progress.action, progress.why, "", 0)
+		presentation := newQueuedPresentationWriter(errOut)
+		defer presentation.Close()
+		w := &commandProgressWriter{out: presentation, format: commandProgressFormat(args), id: id, progress: progress, start: time.Now()}
+		progressLifecycleEvent(presentation, w.format, "started", "command", id, progress.action, progress.why, "", 0)
 		errOut = w
 		defer func() { w.finish(exitCode) }()
 	}
@@ -223,6 +229,7 @@ func writeFailure(w io.Writer, format, label string, code int, err error) int {
 			report = structured.Report
 		}
 		payload["diagnostic"] = classifyFailure(label, code, report)
+		annotateLiveRecord(payload)
 		writeJSON(w, payload)
 	} else if hasDiagnostic {
 		summary := structured.Summary

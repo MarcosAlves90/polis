@@ -2,6 +2,7 @@ package policyexec
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,6 +41,12 @@ type Options struct {
 	// OnGateComplete is invoked serially after a launched gate finishes. It is
 	// presentation-only and reports observed monotonic elapsed time in milliseconds.
 	OnGateComplete func(spec.GatePolicy, Outcome, int64)
+	// OnGateResult is invoked serially as soon as any gate result is known,
+	// including reused, omitted and blocked gates. It is presentation-only.
+	OnGateResult func(spec.GatePolicy, Outcome, int64)
+	// OnOutput receives live, sanitized command output attributed to each gate.
+	Context  context.Context
+	OnOutput commandexec.OutputObserver
 }
 
 type completion struct {
@@ -100,6 +107,19 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 				result.CommandFailures = map[string]CommandExecution{}
 			}
 			result.CommandFailures[c.id] = *c.outcome.Command
+		}
+		if opts.OnGateResult != nil {
+			for _, gate := range gates {
+				if gate.ID != c.id {
+					continue
+				}
+				elapsed := int64(0)
+				if !c.executionStartedAt.IsZero() {
+					elapsed = c.finishedAt.Sub(c.executionStartedAt).Milliseconds()
+				}
+				opts.OnGateResult(gate, c.outcome, elapsed)
+				break
+			}
 		}
 	}
 	for _, gate := range gates {
@@ -164,7 +184,8 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 			go func(gate spec.GatePolicy) {
 				var buf bytes.Buffer
 				executionStarted := time.Now()
-				outcome := executeGate(gate, repo, &buf)
+				commandOptions := commandexec.Options{Context: opts.Context, Gate: gate.ID, OnOutput: opts.OnOutput}
+				outcome := executeGate(gate, repo, &buf, commandOptions)
 				finished <- completion{id: gate.ID, outcome: outcome, evidence: buf.Bytes(),
 					executionStartedAt: executionStarted, finishedAt: time.Now()}
 			}(gate)
@@ -307,15 +328,15 @@ func outcomeEvidence(id string, o Outcome) []byte {
 	return b.Bytes()
 }
 
-func executeGate(gate spec.GatePolicy, repo string, evidence io.Writer) Outcome {
+func executeGate(gate spec.GatePolicy, repo string, evidence io.Writer, commandOptions commandexec.Options) Outcome {
 	enc := json.NewEncoder(evidence)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(spec.EvidenceEvent{Event: "gate_started", Gate: gate.ID})
 	o := Outcome{Status: spec.StatusPass, Action: "executed"}
 	if gate.Mode == spec.GateModeCoverage {
-		o.Status, o.Command = executeCoverage(enc, gate, repo)
+		o.Status, o.Command = executeCoverage(enc, gate, repo, commandOptions)
 	} else {
-		obs := executeCommand(enc, gate.ID, *gate.Command, repo)
+		obs := executeCommand(enc, gate.ID, *gate.Command, repo, commandOptions)
 		o.Status = obs.Status
 		o.Command = &CommandExecution{Argv: append([]string{}, gate.Command.Argv...), Cwd: gate.Command.Cwd, Observation: obs}
 	}
