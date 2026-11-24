@@ -32,6 +32,10 @@ import (
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
+// StageStart reports a validation stage actually being entered. The returned
+// function completes that stage exactly once with PASS or FAIL.
+type StageStart = func(id, action, why string) func(string)
+
 type Options struct {
 	Repo               string
 	Policy             string
@@ -43,6 +47,7 @@ type Options struct {
 	ImplementationPlan string
 	DeferredGates      []string
 	Jobs               int
+	OnStageStart       StageStart
 	OnGateStart        func(spec.GatePolicy)
 	OnGateComplete     func(spec.GatePolicy, policyexec.Outcome, int64)
 	OnGateResult       func(spec.GatePolicy, policyexec.Outcome, int64)
@@ -58,6 +63,7 @@ type WorkspaceOptions struct {
 	RegressionPatch    string
 	ImplementationPlan string
 	Jobs               int
+	OnStageStart       StageStart
 	OnGateStart        func(spec.GatePolicy)
 	OnGateComplete     func(spec.GatePolicy, policyexec.Outcome, int64)
 	OnGateResult       func(spec.GatePolicy, policyexec.Outcome, int64)
@@ -88,6 +94,36 @@ type Result struct {
 	ImplementationPlanRaw []byte `json:"-"`
 	RegressionPatchRaw    []byte `json:"-"`
 	Evidence              []byte `json:"-"`
+}
+
+// stageTracker completes a stage exactly once. The default FAIL status keeps
+// an announced stage truthful on every early error path.
+type stageTracker struct {
+	end    func(string)
+	status string
+}
+
+func startStage(onStart StageStart, id, action, why string) *stageTracker {
+	tracker := &stageTracker{status: "FAIL", end: func(string) {}}
+	if onStart == nil {
+		return tracker
+	}
+	if end := onStart(id, action, why); end != nil {
+		tracker.end = end
+	}
+	return tracker
+}
+
+func (s *stageTracker) pass() {
+	if s != nil {
+		s.status = "PASS"
+	}
+}
+
+func (s *stageTracker) finish() {
+	if s != nil {
+		s.end(s.status)
+	}
 }
 
 // retainedArtifactPublisherContextKey is a private E2E-test seam. Normal
@@ -135,7 +171,8 @@ func ValidateWorkspace(ctx context.Context, opts WorkspaceOptions) (Result, erro
 	return executeBuild(ctx, Options{
 		Repo: opts.Repo, Policy: opts.Policy, Contract: opts.Contract,
 		RegressionPatch: opts.RegressionPatch, ImplementationPlan: opts.ImplementationPlan, Jobs: opts.Jobs,
-		OnGateStart: opts.OnGateStart, OnGateComplete: opts.OnGateComplete, OnGateResult: opts.OnGateResult,
+		OnStageStart: opts.OnStageStart,
+		OnGateStart:  opts.OnGateStart, OnGateComplete: opts.OnGateComplete, OnGateResult: opts.OnGateResult,
 		OnOutput: opts.OnOutput, OnChangeStart: opts.OnChangeStart, OnChangeResult: opts.OnChangeResult,
 	}, true)
 }
@@ -245,172 +282,215 @@ func executeBuild(ctx context.Context, opts Options, workspaceValidation bool) (
 	if err := changeContract.ValidateChangedPaths(changedPaths); err != nil {
 		return Result{}, fmt.Errorf("change scope validation: %w", err)
 	}
-	baseline, err := baselineproof.Build(ctx, repo, baseCommit, spec.MaxBaselineMemberBytes)
-	if err != nil {
-		return Result{}, baselineConstraintError(fmt.Errorf("build embedded baseline: %w", err), plan, workspaceValidation)
-	}
-	baselineRepo, cleanupBaseline, err := baselineproof.Materialize(ctx, baseline, objectFormat, baseCommit, changeContract.BaselineLock.BaseTree)
-	if err != nil {
-		return Result{}, baselineConstraintError(fmt.Errorf("materialize embedded baseline for producer replay: %w", err), plan, workspaceValidation)
-	}
-	defer cleanupBaseline()
-
 	var evidence bytes.Buffer
 	var producerResult policyexec.Result
+	var baseline []byte
 	notRun := []string{"artifact packaging"}
 	if workspaceValidation {
 		notRun = nil
 	}
-	validation := isolation.Validation{
-		BaselineRepo:          baselineRepo,
-		BaselineCommit:        baseCommit,
-		TargetRepo:            repo,
-		TargetTree:            targetTree,
-		Patch:                 patch,
-		RegressionPatch:       regressionPatch,
-		Change:                changeContract,
-		Policy:                policy,
-		ExecutionPlan:         &plan,
-		PolicyResult:          &producerResult,
-		Evidence:              &evidence,
-		RedWorktreePattern:    "polis-red-worktree-*",
-		TargetWorktreePattern: "polis-worktree-*",
-		CreateWorktreeError:   "create isolated worktree",
-		TargetApplyCheckError: "isolated git apply --check failed",
-		TargetApplyError:      "isolated git apply --index failed",
-		PolicyFailureLabel:    "project policy validation",
-		PolicyFailureStage:    "project gate validation",
-		PolicyFailureNotRun:   notRun,
-		Jobs:                  opts.Jobs,
-		OnGateStart:           opts.OnGateStart,
-		OnGateComplete:        opts.OnGateComplete,
-		OnGateResult:          opts.OnGateResult,
-		OnOutput:              opts.OnOutput,
-		OnChangeStart:         opts.OnChangeStart,
-		OnChangeResult:        opts.OnChangeResult,
+	var isolationStageStart StageStart
+	if workspaceValidation {
+		isolationStageStart = opts.OnStageStart
 	}
-	if err := isolation.Validate(ctx, validation); err != nil {
-		return Result{}, err
+	var baselineStage *stageTracker
+	if !workspaceValidation {
+		baselineStage = startStage(opts.OnStageStart, "locked_baseline_proof",
+			"verify the locked baseline and producer gates",
+			"the embedded baseline and strict plan must match the locked target")
+	}
+	baselineErr := func() error {
+		baseline, err = baselineproof.Build(ctx, repo, baseCommit, spec.MaxBaselineMemberBytes)
+		if err != nil {
+			return baselineConstraintError(fmt.Errorf("build embedded baseline: %w", err), plan, workspaceValidation)
+		}
+		baselineRepo, cleanupBaseline, err := baselineproof.Materialize(ctx, baseline, objectFormat, baseCommit, changeContract.BaselineLock.BaseTree)
+		if err != nil {
+			return baselineConstraintError(fmt.Errorf("materialize embedded baseline for producer replay: %w", err), plan, workspaceValidation)
+		}
+		defer cleanupBaseline()
+		validation := isolation.Validation{
+			BaselineRepo:          baselineRepo,
+			BaselineCommit:        baseCommit,
+			TargetRepo:            repo,
+			TargetTree:            targetTree,
+			Patch:                 patch,
+			RegressionPatch:       regressionPatch,
+			Change:                changeContract,
+			Policy:                policy,
+			ExecutionPlan:         &plan,
+			PolicyResult:          &producerResult,
+			Evidence:              &evidence,
+			RedWorktreePattern:    "polis-red-worktree-*",
+			TargetWorktreePattern: "polis-worktree-*",
+			CreateWorktreeError:   "create isolated worktree",
+			TargetApplyCheckError: "isolated git apply --check failed",
+			TargetApplyError:      "isolated git apply --index failed",
+			PolicyFailureLabel:    "project policy validation",
+			PolicyFailureStage:    "project gate validation",
+			PolicyFailureNotRun:   notRun,
+			Jobs:                  opts.Jobs,
+			OnStageStart:          isolationStageStart,
+			OnGateStart:           opts.OnGateStart,
+			OnGateComplete:        opts.OnGateComplete,
+			OnGateResult:          opts.OnGateResult,
+			OnOutput:              opts.OnOutput,
+			OnChangeStart:         opts.OnChangeStart,
+			OnChangeResult:        opts.OnChangeResult,
+		}
+		if err := isolation.Validate(ctx, validation); err != nil {
+			return err
+		}
+		baselineStage.pass()
+		return nil
+	}()
+	if baselineStage != nil {
+		baselineStage.finish()
+	}
+	if baselineErr != nil {
+		return Result{}, baselineErr
 	}
 	if workspaceValidation {
-		if err := requireBuildSourceState(ctx, repo); err != nil {
+		sourceStage := startStage(opts.OnStageStart, "source_state_recheck",
+			"recheck the workspace source state",
+			"the validated tree must still match the current worktree")
+		workspaceResult, workspaceErr := func() (Result, error) {
+			if err := requireBuildSourceState(ctx, repo); err != nil {
+				return Result{}, err
+			}
+			currentTree, _, _, err := buildTargetWithTemporaryIndex(ctx, repo, baseCommit)
+			if err != nil {
+				return Result{}, fmt.Errorf("recheck workspace target after validation: %w", err)
+			}
+			if currentTree != targetTree {
+				return Result{}, errors.New("workspace changed during validation; no current validation result can be reported")
+			}
+			summary := policy.ValidationSummary()
+			result := Result{
+				BaseCommit: baseCommit, TargetTree: targetTree,
+				ContractSHA256: sha256Hex(changeRaw), PolicySHA256: sha256Hex(policyRaw),
+				ValidationLevel:       summary.Level,
+				EnabledGates:          append([]string(nil), summary.EnabledGates...),
+				DisabledGates:         append([]string(nil), summary.DisabledGates...),
+				ProducerGateStatuses:  cloneGateStatuses(producerResult.Gates),
+				Concurrency:           producerResult.Concurrency,
+				ContractRaw:           append([]byte(nil), changeRaw...),
+				PolicyRaw:             append([]byte(nil), policyRaw...),
+				ImplementationPlanRaw: append([]byte(nil), implementationPlanRaw...),
+				RegressionPatchRaw:    append([]byte(nil), regressionPatch...),
+				Evidence:              append([]byte(nil), evidence.Bytes()...),
+			}
+			if retention.RepositoryEnabled() {
+				publisher := func(ctx context.Context, retention artifactretention.State, repo string, retained []artifactretention.Artifact) ([]string, error) {
+					return publishRetainedArtifacts(ctx, retention, repo, retained)
+				}
+				completion, err := retentioncompleteness.Complete(ctx, retention, repo, retentioncompleteness.Inputs{
+					Operation:             spec.RetainedValidationOperationWorkspace,
+					ContractRaw:           changeRaw,
+					Contract:              changeContract,
+					PolicyRaw:             policyRaw,
+					Policy:                policy,
+					ImplementationPlanRaw: implementationPlanRaw,
+					RegressionPatch:       regressionPatch,
+					Evidence:              evidence.Bytes(),
+					BaseCommit:            baseCommit,
+					TargetTree:            currentTree,
+					ValidationLevel:       summary.Level,
+					EnabledGates:          summary.EnabledGates,
+					DisabledGates:         summary.DisabledGates,
+					DeferredGates:         plan.DeferredGates,
+					ProducerGateStatuses:  producerResult.Gates,
+				}, publisher)
+				if err != nil {
+					return Result{}, fmt.Errorf("retain current workspace validation evidence: %w", err)
+				}
+				if err := requireBuildSourceState(ctx, repo); err != nil {
+					return Result{}, err
+				}
+				postPublicationTree, _, _, err := buildTargetWithTemporaryIndex(ctx, repo, baseCommit)
+				if err != nil {
+					return Result{}, fmt.Errorf("recheck workspace target after retained publication: %w", err)
+				}
+				if postPublicationTree != targetTree {
+					return Result{}, errors.New("workspace changed during validation; no current validation result can be reported")
+				}
+				result.RetainedPaths = completion.PublicationPaths
+				result.RetainedRecordPath = completion.RecordPath
+			}
+			sourceStage.pass()
+			return result, nil
+		}()
+		sourceStage.finish()
+		if workspaceErr != nil {
+			return Result{}, workspaceErr
+		}
+		return workspaceResult, nil
+	}
+
+	packageStage := startStage(opts.OnStageStart, "artifact_packaging",
+		"assemble the delivery artifact",
+		"package integrity is claimed only after all validation passes")
+	buildResult, buildErr := func() (Result, error) {
+		if err := packageOutput.ValidateRequested(); err != nil {
 			return Result{}, err
 		}
-		currentTree, _, _, err := buildTargetWithTemporaryIndex(ctx, repo, baseCommit)
+		artifact := buildArtifact{
+			opts: opts, objectFormat: objectFormat, baseCommit: baseCommit, targetTree: targetTree,
+			policyRaw: policyRaw, policy: policy, plan: plan, producerGateStatuses: producerResult.Gates, concurrency: producerResult.Concurrency,
+			changeRaw: changeRaw, changeContractValue: changeContract, regressionPatch: regressionPatch, patch: patch, evidence: evidence.Bytes(), baseline: baseline, implementationPlanRaw: implementationPlanRaw,
+		}
+		manifestRaw, err := encodeManifest(artifact)
 		if err != nil {
-			return Result{}, fmt.Errorf("recheck workspace target after validation: %w", err)
+			return Result{}, err
 		}
-		if currentTree != targetTree {
-			return Result{}, errors.New("workspace changed during validation; no current validation result can be reported")
+		result, err := finalizeArtifact(artifact, manifestRaw, packageOutput)
+		if err != nil {
+			return Result{}, err
 		}
-		summary := policy.ValidationSummary()
-		result := Result{
-			BaseCommit: baseCommit, TargetTree: targetTree,
-			ContractSHA256: sha256Hex(changeRaw), PolicySHA256: sha256Hex(policyRaw),
-			ValidationLevel:       summary.Level,
-			EnabledGates:          append([]string(nil), summary.EnabledGates...),
-			DisabledGates:         append([]string(nil), summary.DisabledGates...),
-			ProducerGateStatuses:  cloneGateStatuses(producerResult.Gates),
-			Concurrency:           producerResult.Concurrency,
-			ContractRaw:           append([]byte(nil), changeRaw...),
-			PolicyRaw:             append([]byte(nil), policyRaw...),
-			ImplementationPlanRaw: append([]byte(nil), implementationPlanRaw...),
-			RegressionPatchRaw:    append([]byte(nil), regressionPatch...),
-			Evidence:              append([]byte(nil), evidence.Bytes()...),
-		}
+		result.ContractRaw = append([]byte(nil), artifact.changeRaw...)
+		result.PolicyRaw = append([]byte(nil), artifact.policyRaw...)
+		result.ImplementationPlanRaw = append([]byte(nil), artifact.implementationPlanRaw...)
+		result.RegressionPatchRaw = append([]byte(nil), artifact.regressionPatch...)
+		result.Evidence = append([]byte(nil), artifact.evidence...)
 		if retention.RepositoryEnabled() {
 			publisher := func(ctx context.Context, retention artifactretention.State, repo string, retained []artifactretention.Artifact) ([]string, error) {
 				return publishRetainedArtifacts(ctx, retention, repo, retained)
 			}
 			completion, err := retentioncompleteness.Complete(ctx, retention, repo, retentioncompleteness.Inputs{
-				Operation:             spec.RetainedValidationOperationWorkspace,
-				ContractRaw:           changeRaw,
-				Contract:              changeContract,
-				PolicyRaw:             policyRaw,
-				Policy:                policy,
-				ImplementationPlanRaw: implementationPlanRaw,
-				RegressionPatch:       regressionPatch,
-				Evidence:              evidence.Bytes(),
-				BaseCommit:            baseCommit,
-				TargetTree:            currentTree,
-				ValidationLevel:       summary.Level,
-				EnabledGates:          summary.EnabledGates,
-				DisabledGates:         summary.DisabledGates,
-				DeferredGates:         plan.DeferredGates,
-				ProducerGateStatuses:  producerResult.Gates,
+				Operation:             spec.RetainedValidationOperationBuild,
+				ContractRaw:           artifact.changeRaw,
+				Contract:              artifact.changeContractValue,
+				PolicyRaw:             artifact.policyRaw,
+				Policy:                artifact.policy,
+				ImplementationPlanRaw: artifact.implementationPlanRaw,
+				RegressionPatch:       artifact.regressionPatch,
+				Evidence:              artifact.evidence,
+				BaseCommit:            artifact.baseCommit,
+				TargetTree:            artifact.targetTree,
+				ValidationLevel:       artifact.policy.ValidationSummary().Level,
+				EnabledGates:          artifact.policy.ValidationSummary().EnabledGates,
+				DisabledGates:         artifact.policy.ValidationSummary().DisabledGates,
+				DeferredGates:         artifact.plan.DeferredGates,
+				ProducerGateStatuses:  artifact.producerGateStatuses,
 			}, publisher)
 			if err != nil {
-				return Result{}, fmt.Errorf("retain current workspace validation evidence: %w", err)
-			}
-			if err := requireBuildSourceState(ctx, repo); err != nil {
-				return Result{}, err
-			}
-			postPublicationTree, _, _, err := buildTargetWithTemporaryIndex(ctx, repo, baseCommit)
-			if err != nil {
-				return Result{}, fmt.Errorf("recheck workspace target after retained publication: %w", err)
-			}
-			if postPublicationTree != targetTree {
-				return Result{}, errors.New("workspace changed during validation; no current validation result can be reported")
+				retentionErr := fmt.Errorf("retain generated delivery artifacts: %w", err)
+				return Result{}, finishPackageOutput(packageOutput, nil, "", filepath.Base(result.Path), true, retentionErr)
 			}
 			result.RetainedPaths = completion.PublicationPaths
 			result.RetainedRecordPath = completion.RecordPath
 		}
+		if err := validatePackageOutputBeforeBuildReturn(packageOutput, &result); err != nil {
+			return Result{}, err
+		}
+		packageStage.pass()
 		return result, nil
+	}()
+	packageStage.finish()
+	if buildErr != nil {
+		return Result{}, buildErr
 	}
-	if err := packageOutput.ValidateRequested(); err != nil {
-		return Result{}, err
-	}
-
-	artifact := buildArtifact{
-		opts: opts, objectFormat: objectFormat, baseCommit: baseCommit, targetTree: targetTree,
-		policyRaw: policyRaw, policy: policy, plan: plan, producerGateStatuses: producerResult.Gates, concurrency: producerResult.Concurrency,
-		changeRaw: changeRaw, changeContractValue: changeContract, regressionPatch: regressionPatch, patch: patch, evidence: evidence.Bytes(), baseline: baseline, implementationPlanRaw: implementationPlanRaw,
-	}
-	manifestRaw, err := encodeManifest(artifact)
-	if err != nil {
-		return Result{}, err
-	}
-	result, err := finalizeArtifact(artifact, manifestRaw, packageOutput)
-	if err != nil {
-		return Result{}, err
-	}
-	result.ContractRaw = append([]byte(nil), artifact.changeRaw...)
-	result.PolicyRaw = append([]byte(nil), artifact.policyRaw...)
-	result.ImplementationPlanRaw = append([]byte(nil), artifact.implementationPlanRaw...)
-	result.RegressionPatchRaw = append([]byte(nil), artifact.regressionPatch...)
-	result.Evidence = append([]byte(nil), artifact.evidence...)
-	if retention.RepositoryEnabled() {
-		publisher := func(ctx context.Context, retention artifactretention.State, repo string, retained []artifactretention.Artifact) ([]string, error) {
-			return publishRetainedArtifacts(ctx, retention, repo, retained)
-		}
-		completion, err := retentioncompleteness.Complete(ctx, retention, repo, retentioncompleteness.Inputs{
-			Operation:             spec.RetainedValidationOperationBuild,
-			ContractRaw:           artifact.changeRaw,
-			Contract:              artifact.changeContractValue,
-			PolicyRaw:             artifact.policyRaw,
-			Policy:                artifact.policy,
-			ImplementationPlanRaw: artifact.implementationPlanRaw,
-			RegressionPatch:       artifact.regressionPatch,
-			Evidence:              artifact.evidence,
-			BaseCommit:            artifact.baseCommit,
-			TargetTree:            artifact.targetTree,
-			ValidationLevel:       artifact.policy.ValidationSummary().Level,
-			EnabledGates:          artifact.policy.ValidationSummary().EnabledGates,
-			DisabledGates:         artifact.policy.ValidationSummary().DisabledGates,
-			DeferredGates:         artifact.plan.DeferredGates,
-			ProducerGateStatuses:  artifact.producerGateStatuses,
-		}, publisher)
-		if err != nil {
-			retentionErr := fmt.Errorf("retain generated delivery artifacts: %w", err)
-			return Result{}, finishPackageOutput(packageOutput, nil, "", filepath.Base(result.Path), true, retentionErr)
-		}
-		result.RetainedPaths = completion.PublicationPaths
-		result.RetainedRecordPath = completion.RecordPath
-	}
-	if err := validatePackageOutputBeforeBuildReturn(packageOutput, &result); err != nil {
-		return Result{}, err
-	}
-	return result, nil
+	return buildResult, nil
 }
 
 func validatePackageOutputBeforeBuildReturn(output *packageOutput, result *Result) error {

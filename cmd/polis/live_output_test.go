@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/MarcosAlves90/polis/v6/internal/policyexec"
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
@@ -48,12 +51,17 @@ func issue44PolicyWithHelper(t *testing.T, mode string) string {
 				Argv:           []string{os.Args[0], "-test.run=^TestIssue44CLIStreamHelper$"},
 				Cwd:            ".",
 				TimeoutSeconds: 20,
+				Environment:    &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit},
 			}
 		case "coverage":
 			reason := "disabled for live-output fixture"
 			policy.Gates[i].Mode = spec.GateModeNotApplicable
 			policy.Gates[i].Command = nil
 			policy.Gates[i].Reason = &reason
+			policy.Gates[i].Adapter = ""
+			policy.Gates[i].Report = ""
+			policy.Gates[i].Operator = ""
+			policy.Gates[i].ThresholdPercent = nil
 		}
 	}
 	encoded, err := json.Marshal(policy)
@@ -300,4 +308,150 @@ func TestIssue44BuildStreamsStagesAndResults(t *testing.T) {
 			t.Fatalf("missing stage %q: stages=%v", stage, stages)
 		}
 	}
+}
+
+type pr48BlockingWriter struct {
+	once    sync.Once
+	hit     chan struct{}
+	release chan struct{}
+}
+
+func (w *pr48BlockingWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"type":"output"`)) {
+		w.once.Do(func() { close(w.hit) })
+		<-w.release
+	}
+	return len(p), nil
+}
+
+func pr48StreamPolicy(t *testing.T) (string, spec.Policy) {
+	t.Helper()
+	path := issue44PolicyWithHelper(t, "stream")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var policy spec.Policy
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		t.Fatal(err)
+	}
+	return path, policy
+}
+
+func TestIssue44PR48BlockingSinkDoesNotBlockValidation(t *testing.T) {
+	repo := makeBuildRepo(t)
+	_, policy := pr48StreamPolicy(t)
+	t.Setenv("ISSUE44_CLI_HELPER", "stream")
+	writer := &pr48BlockingWriter{hit: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	releaseSink := func() { releaseOnce.Do(func() { close(writer.release) }) }
+	defer releaseSink()
+	reporter, err := newLiveReporter(true, "json", "", repo, writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reporter.Close()
+	done := make(chan policyexec.Result, 1)
+	go func() {
+		done <- policyexec.ExecuteWithOptions(policy, repo, io.Discard, policyexec.Options{
+			Jobs:         1,
+			OnGateStart:  liveGateStart(reporter, nil, "json", io.Discard),
+			OnGateResult: reporter.GateResult,
+			OnOutput:     liveOutput(reporter),
+		})
+	}()
+	select {
+	case <-writer.hit:
+	case <-time.After(6 * time.Second):
+		t.Fatal("blocking sink never received a live output record")
+	}
+	select {
+	case result := <-done:
+		if result.Overall != spec.StatusPass {
+			t.Fatalf("overall=%s", result.Overall)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("validation blocked while the live sink was blocked")
+	}
+	releaseSink()
+	reporter.Close()
+}
+
+func pr48StageEvents(t *testing.T, stderr string) []string {
+	t.Helper()
+	var events []string
+	for _, record := range issue44LiveRecords(t, stderr) {
+		if record["type"] != "progress" || record["scope"] != "stage" {
+			continue
+		}
+		events = append(events, fmt.Sprintf("%s:%s", record["id"], record["event"]))
+	}
+	return events
+}
+
+func pr48RequireStageOrder(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("stage events=%v want=%v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("stage events=%v want=%v", got, want)
+		}
+	}
+}
+
+func TestIssue44PR48StageLifecycleMatchesExecutionBoundaries(t *testing.T) {
+	repo := makeBuildRepo(t)
+	contract := lockedCLIContract(t, repo)
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("workspace target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	args := []string{"workspace", "validate", "--repo", repo, "--contract", contract, "--format", "json", "--stream-output"}
+	if code := run(args, &out, &errOut); code != exitPass {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	pr48RequireStageOrder(t, pr48StageEvents(t, errOut.String()), []string{
+		"red_green_regression:started",
+		"red_green_regression:completed",
+		"isolated_target_preparation:started",
+		"isolated_target_preparation:completed",
+		"project_gate_execution:started",
+		"project_gate_execution:completed",
+		"source_state_recheck:started",
+		"source_state_recheck:completed",
+	})
+}
+
+func TestIssue44PR48EarlyFailureDoesNotAnnounceStages(t *testing.T) {
+	repo := makeBuildRepo(t)
+	var out, errOut bytes.Buffer
+	args := []string{"workspace", "validate", "--repo", repo, "--contract", filepath.Join(t.TempDir(), "missing.json"), "--format", "json", "--stream-output"}
+	if code := run(args, &out, &errOut); code == exitPass {
+		t.Fatalf("unexpected pass: %s", out.String())
+	}
+	if stages := pr48StageEvents(t, errOut.String()); len(stages) != 0 {
+		t.Fatalf("early failure announced unentered stages: %v", stages)
+	}
+}
+
+func TestIssue44PR48BuildStageLifecycleMatchesPackaging(t *testing.T) {
+	repo := makeBuildRepo(t)
+	contract := lockedCLIContract(t, repo)
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(t.TempDir(), "out")
+	var out, errOut bytes.Buffer
+	args := []string{"build", "--repo", repo, "--project", "gitrex", "--change", "issue44-pr48", "--contract", contract, "--format", "json", "--stream-output", "--out", outDir}
+	if code := run(args, &out, &errOut); code != exitPass {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	pr48RequireStageOrder(t, pr48StageEvents(t, errOut.String()), []string{
+		"locked_baseline_proof:started",
+		"locked_baseline_proof:completed",
+		"artifact_packaging:started",
+		"artifact_packaging:completed",
+	})
 }

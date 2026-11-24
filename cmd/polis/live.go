@@ -19,7 +19,11 @@ import (
 	"github.com/MarcosAlves90/polis/v6/spec"
 )
 
-const liveSchemaVersion = "polis-live-v1"
+const (
+	liveSchemaVersion = "polis-live-v1"
+	liveSinkQueueSize = 256
+	liveSinkCloseWait = 200 * time.Millisecond
+)
 
 var liveContext struct {
 	sync.Mutex
@@ -83,34 +87,56 @@ func streamingRequested(args []string) bool {
 // liveReporter is presentation-only. It emits correlated JSON Lines on stderr
 // and, when requested, to a new external events file. It never writes to the
 // command's stdout or to POLIS evidence, manifests or retained artifacts.
+type liveDelivery struct {
+	line string
+	text string
+}
+
+// liveReporter is presentation-only. Records are annotated and queued without
+// waiting on a sink; a single delivery worker owns all sink writes so a slow or
+// blocked stderr/events-file writer cannot delay validation or gate callbacks.
 type liveReporter struct {
-	enabled  bool
-	format   string
-	runID    string
-	errOut   io.Writer
-	events   *os.File
-	mu       sync.Mutex
-	commands map[string]spec.CommandSpec
+	enabled   bool
+	format    string
+	runID     string
+	errOut    io.Writer
+	events    *os.File
+	mu        sync.Mutex
+	emitMu    sync.Mutex
+	commands  map[string]spec.CommandSpec
+	closed    bool
+	abandoned bool
+	sink      chan liveDelivery
+	sinkDone  chan struct{}
 }
 
 func newLiveReporter(enabled bool, format, eventsFile, repoRoot string, errOut io.Writer) (*liveReporter, error) {
-	reporter := &liveReporter{enabled: enabled, format: format, errOut: errOut, commands: map[string]spec.CommandSpec{}}
+	reporter := &liveReporter{
+		enabled: enabled, format: format, errOut: errOut,
+		commands: map[string]spec.CommandSpec{},
+		sink:     make(chan liveDelivery, liveSinkQueueSize),
+		sinkDone: make(chan struct{}),
+	}
+	ready := func() (*liveReporter, error) {
+		go reporter.deliver()
+		return reporter, nil
+	}
 	if !enabled {
 		if eventsFile != "" {
 			return nil, errors.New("--events-file requires --stream-output")
 		}
-		return reporter, nil
+		return ready()
 	}
 	reporter.runID = liveRunID()
 	if eventsFile == "" {
-		return reporter, nil
+		return ready()
 	}
 	path, err := prepareLiveEventsFile(eventsFile, repoRoot)
 	if err != nil {
 		return nil, err
 	}
 	reporter.events = path
-	return reporter, nil
+	return ready()
 }
 
 func prepareLiveEventsFile(filename, repoRoot string) (*os.File, error) {
@@ -169,11 +195,65 @@ func prepareLiveEventsFile(filename, repoRoot string) (*os.File, error) {
 }
 
 func (r *liveReporter) Close() {
-	if r == nil || r.events == nil {
+	if r == nil {
 		return
 	}
-	_ = r.events.Close()
-	r.events = nil
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.closed = true
+	close(r.sink)
+	r.mu.Unlock()
+	select {
+	case <-r.sinkDone:
+		return
+	case <-time.After(liveSinkCloseWait):
+	}
+	r.mu.Lock()
+	r.abandoned = true
+	r.mu.Unlock()
+}
+
+func (r *liveReporter) offer(delivery liveDelivery) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return false
+	}
+	select {
+	case r.sink <- delivery:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *liveReporter) sinkAbandoned() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.abandoned
+}
+
+func (r *liveReporter) deliver() {
+	defer close(r.sinkDone)
+	for delivery := range r.sink {
+		if r.sinkAbandoned() {
+			continue
+		}
+		if r.format == "json" {
+			_, _ = io.WriteString(r.errOut, delivery.line)
+		} else if delivery.text != "" {
+			_, _ = io.WriteString(r.errOut, delivery.text)
+		}
+		if r.events != nil && !r.sinkAbandoned() {
+			_, _ = io.WriteString(r.events, delivery.line)
+		}
+	}
+	if r.events != nil {
+		_ = r.events.Close()
+	}
 }
 
 func (r *liveReporter) SetCommand(id string, command *spec.CommandSpec) {
@@ -301,19 +381,16 @@ func (r *liveReporter) emit(record map[string]any, text string) {
 	if r == nil || !r.enabled {
 		return
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.emitMu.Lock()
+	defer r.emitMu.Unlock()
 	annotateLiveRecord(record)
 	var line strings.Builder
 	writeJSON(&line, record)
-	if r.format == "json" {
-		_, _ = io.WriteString(r.errOut, line.String())
-	} else if text != "" {
-		_, _ = io.WriteString(r.errOut, sanitizeLiveText(text)+"\n")
+	delivery := liveDelivery{line: line.String()}
+	if r.format != "json" && text != "" {
+		delivery.text = sanitizeLiveText(text) + "\n"
 	}
-	if r.events != nil {
-		_, _ = io.WriteString(r.events, line.String())
-	}
+	_ = r.offer(delivery)
 }
 
 // liveGateStart registers the configured command and retains the ordinary gate

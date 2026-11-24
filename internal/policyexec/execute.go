@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/MarcosAlves90/polis/v6/internal/commandexec"
 	"github.com/MarcosAlves90/polis/v6/internal/pathguard"
@@ -40,38 +39,10 @@ func Execute(policy spec.Policy, repoRoot string, evidence io.Writer) Result {
 
 func ExecuteWithOptions(policy spec.Policy, repoRoot string, evidence io.Writer, opts Options) Result {
 	plan, err := policyplan.Compile(policy)
-	if err != nil && strings.Contains(err.Error(), "requires explicit command environment") {
-		// In-memory callers may build equivalent v3 policies programmatically.
-		// A missing environment is the inherited process environment already
-		// used by the executor; make that equivalence explicit for compilation
-		// without changing any gate, threshold, dependency or evidence rule.
-		plan, err = policyplan.Compile(normalizeImplicitEnvironment(policy))
-	}
 	if err != nil {
 		return Result{Overall: spec.StatusBlocked, Gates: make(map[string]spec.Status, len(policy.Gates))}
 	}
 	return ExecutePlanWithOptions(plan, repoRoot, evidence, opts)
-}
-
-func normalizeImplicitEnvironment(policy spec.Policy) spec.Policy {
-	raw, err := json.Marshal(policy)
-	if err != nil {
-		return policy
-	}
-	var normalized spec.Policy
-	if err := json.Unmarshal(raw, &normalized); err != nil {
-		return policy
-	}
-	for i := range normalized.Gates {
-		command := normalized.Gates[i].Command
-		if command == nil || command.Environment != nil {
-			continue
-		}
-		clone := *command
-		clone.Environment = &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit}
-		normalized.Gates[i].Command = &clone
-	}
-	return normalized
 }
 
 func ExecutePlan(plan policyplan.Plan, repoRoot string, evidence io.Writer) Result {

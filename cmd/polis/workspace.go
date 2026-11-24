@@ -69,22 +69,11 @@ func runWorkspaceValidate(args []string, out, errOut io.Writer) int {
 		return writeFailure(errOut, *format, "POLIS WORKSPACE VALIDATE", exitUsage, err)
 	}
 	defer reporter.Close()
-	stageEnds := []func(string){
-		reporter.Stage("red_green_regression", "replay the captured Red proof and target change gates", "the locked contract must pass in an isolated target worktree"),
-		reporter.Stage("isolated_target_preparation", "prepare the isolated target worktree", "validation must run against the exact locked target tree"),
-		reporter.Stage("project_gate_execution", "execute project gates", "the effective strict plan must pass against the isolated target"),
-	}
-	defer func() {
-		for _, end := range stageEnds {
-			end("FAIL")
-		}
-	}()
-	recheckStage := reporter.Stage("source_state_recheck", "recheck the workspace source state", "the validated tree must still match the current worktree")
-	defer recheckStage("FAIL")
 	writeProgress(errOut, *format, "validate the current workspace against the locked contract", "the current source tree and producer gates must match the contract without creating a delivery artifact")
 	result, err := packagebuild.ValidateWorkspace(ctx, packagebuild.WorkspaceOptions{
 		Repo: root, Policy: *policy, Contract: *contract,
 		RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlan, Jobs: *jobs,
+		OnStageStart:   reporter.Stage,
 		OnGateStart:    liveGateStart(reporter, gateStartProgress(errOut, *format), *format, errOut),
 		OnGateComplete: gateCompleteProgress(errOut, *format),
 		OnGateResult:   reporter.GateResult,
@@ -95,10 +84,6 @@ func runWorkspaceValidate(args []string, out, errOut io.Writer) int {
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS WORKSPACE VALIDATE", exitValidationFailed, err)
 	}
-	for _, end := range stageEnds {
-		end("PASS")
-	}
-	recheckStage("PASS")
 	report := spec.WorkspaceValidationReport{
 		SchemaVersion: 1, Status: "PASS", ValidationKind: "workspace_validation",
 		WorkspaceValidated: true, DeliveryArtifactBuilt: false, DeliveryArtifactVerified: false,

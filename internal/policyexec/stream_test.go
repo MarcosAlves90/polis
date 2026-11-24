@@ -47,6 +47,7 @@ func issue44HelperCommand(mode string) *spec.CommandSpec {
 		Argv:           []string{os.Args[0], "-test.run=^TestIssue44PolicyHelper$", "--", mode},
 		Cwd:            ".",
 		TimeoutSeconds: 20,
+		Environment:    &spec.EnvironmentSpec{Mode: spec.EnvironmentModeInherit},
 	}
 }
 

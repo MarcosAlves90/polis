@@ -192,12 +192,9 @@ func runBuild(args []string, out, errOut io.Writer) int {
 		return writeFailure(errOut, *format, "POLIS BUILD", exitUsage, err)
 	}
 	defer reporter.Close()
-	baselineStage := reporter.Stage("locked_baseline_proof", "verify the locked baseline and producer gates", "the embedded baseline and strict plan must match the locked target")
-	packageStage := reporter.Stage("artifact_packaging", "assemble the delivery artifact", "package integrity is claimed only after all validation passes")
-	defer packageStage("FAIL")
-	defer baselineStage("FAIL")
 	result, err := packagebuild.Build(ctx, packagebuild.Options{
 		Repo: *repo, Policy: *policy, Project: *project, Change: *change, Out: *outDir, Contract: *contract, RegressionPatch: *regressionPatch, ImplementationPlan: *implementationPlanPath, DeferredGates: deferredGates, Jobs: *jobs,
+		OnStageStart:   reporter.Stage,
 		OnGateStart:    liveGateStart(reporter, gateStartProgress(errOut, *format), *format, errOut),
 		OnGateComplete: gateCompleteProgress(errOut, *format),
 		OnGateResult:   reporter.GateResult,
@@ -208,8 +205,6 @@ func runBuild(args []string, out, errOut io.Writer) int {
 	if err != nil {
 		return writeFailure(errOut, *format, "POLIS BUILD", exitUsage, err)
 	}
-	baselineStage("PASS")
-	packageStage("PASS")
 	if *format == "json" {
 		payload := map[string]any{"status": "PASS", "artifact": result.Path, "sha256": result.SHA256, "base_commit": result.BaseCommit, "target_tree": result.TargetTree, "validation_level": result.ValidationLevel, "enabled_gates": result.EnabledGates, "disabled_gates": result.DisabledGates, "deferred_gates": result.DeferredGates, "consumer_validation_required": result.ConsumerValidationRequired, "producer_gate_statuses": result.ProducerGateStatuses, "concurrency": result.Concurrency}
 		if len(result.RetainedPaths) > 0 {
