@@ -213,6 +213,15 @@ func (r *liveReporter) Close() {
 		return
 	case <-time.After(liveSinkCloseWait):
 	}
+	// Setting the flag while holding the delivery lock prevents a worker that
+	// has not started its next write from doing so after Close returns. If a
+	// write is already in flight, the bounded wait above has expired and that
+	// write is allowed to finish before the worker observes the flag.
+	if r.deliveryMu.TryLock() {
+		r.abandoned.Store(true)
+		r.deliveryMu.Unlock()
+		return
+	}
 	r.abandoned.Store(true)
 }
 
