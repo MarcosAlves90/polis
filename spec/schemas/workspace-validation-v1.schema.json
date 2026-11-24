@@ -36,6 +36,48 @@
     "producer_gate_statuses": {
       "type": "object",
       "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "concurrency": {"$ref": "#/$defs/concurrencyReport"}
+  },
+  "$defs": {
+    "concurrencyFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": {"type": "string", "minLength": 1},
+        "gates": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "detail": {"type": "string"}
+      }
+    },
+    "concurrencyReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jobs", "observation", "diagnosis"],
+      "properties": {
+        "jobs": {"type": "integer", "minimum": 1, "maximum": 16},
+        "observation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["overlap_observed", "max_concurrent"],
+          "properties": {
+            "overlap_observed": {"type": "boolean"},
+            "max_concurrent": {"type": "integer", "minimum": 0},
+            "launched_gates": {"type": "array", "items": {"type": "string", "minLength": 1}}
+          }
+        },
+        "diagnosis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["jobs", "can_overlap", "eligible_gates"],
+          "properties": {
+            "jobs": {"type": "integer", "minimum": 1, "maximum": 16},
+            "can_overlap": {"type": "boolean"},
+            "eligible_gates": {"type": "array", "items": {"type": "string", "minLength": 1}},
+            "blockers": {"type": "array", "items": {"$ref": "#/$defs/concurrencyFinding"}}
+          }
+        }
+      }
     }
   }
 }

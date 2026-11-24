@@ -60,6 +60,27 @@ the guarantees provided or absent by the effective policy. Repeat
 consumer. A producer-executed gate cannot depend directly or transitively on a
 deferred gate.
 
+Policy gates are serial unless an enabled command gate explicitly declares
+`"parallel_safe": true`. `polis init --parallel-safe <id>` is repeatable and
+writes that declaration only for reviewed gates; it rejects unknown, coverage,
+disabled, and duplicate IDs and never infers safety from a name or category.
+This is a fail-closed additive declaration, not proof that the command is safe:
+review shared files, ports, caches, credentials, toolchains, and report
+ownership before opting in. Coverage stays exclusive, prerequisites stay
+ordered, and the jobs bound is validated at 1..16.
+
+Plan text and JSON report the same declared concurrency summary: eligible and
+exclusive gates with reason codes, dependency-aware overlap groups, and
+serialization findings. This is a declaration-only preview; it does not claim
+that gates ran or overlapped. `gates`, `workspace validate`, and `build` add a
+presentation-only runtime report with jobs, measured overlap, maximum observed
+concurrency, and blockers. Saved gate-run manifests and external workspace
+reports carry the same additive optional field; older records without it remain
+valid. The strict policy, evidence streams, retained records, and package
+schemas are unchanged. Full reason-code definitions and measured jobs-1/jobs-2
+results are in
+[gate execution and progress](gates-and-progress.md).
+
 Plan JSON version 4 adds `{source, reason}` provenance for the effective
 validation level, gate configuration/state, producer action, consumer
 requirement, dependency edges, and guarantees; the same decisions appear in

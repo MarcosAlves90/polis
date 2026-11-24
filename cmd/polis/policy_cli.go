@@ -29,9 +29,11 @@ func runInit(args []string, out, errOut io.Writer) int {
 	var testArgv argvFlag
 	var coverageArgv argvFlag
 	var disabledGates argvFlag
+	var parallelSafe argvFlag
 	fs.Var(&testArgv, "test-argv", "custom profile test argv element; repeat for each argument")
 	fs.Var(&coverageArgv, "coverage-argv", "custom profile coverage argv element; repeat for each argument")
 	fs.Var(&disabledGates, "disable-gate", "disable a project gate; repeat for each gate id")
+	fs.Var(&parallelSafe, "parallel-safe", "explicitly reviewed gate that may overlap; repeat for each gate id")
 	coverageAdapter := fs.String("coverage-adapter", "", "custom profile coverage adapter")
 	coverageReport := fs.String("coverage-report", "", "custom profile coverage report path")
 	coverageThreshold := fs.Float64("coverage-threshold", 80.0, "custom profile coverage threshold percent")
@@ -51,7 +53,7 @@ func runInit(args []string, out, errOut io.Writer) int {
 	})
 	writeProgress(errOut, "text", "resolve and validate the requested Project Policy", "the generated or previewed policy must be canonical and valid before it is reported")
 	result, err := policyinit.Init(context.Background(), policyinit.Options{
-		Repo: *repo, Profile: *profile, ValidationLevel: *validationLevel, DisabledGates: []string(disabledGates), TestArgv: []string(testArgv), CoverageArgv: []string(coverageArgv),
+		Repo: *repo, Profile: *profile, ValidationLevel: *validationLevel, DisabledGates: []string(disabledGates), ParallelSafe: []string(parallelSafe), TestArgv: []string(testArgv), CoverageArgv: []string(coverageArgv),
 		CoverageAdapter: *coverageAdapter, CoverageReport: *coverageReport, CoverageThreshold: threshold, DryRun: *dryRun,
 	})
 	if err != nil {
@@ -97,6 +99,7 @@ func runPlan(args []string, out, errOut io.Writer) int {
 func writePlanText(out io.Writer, plan policyplan.Plan) {
 	writePlanSummary(out, plan)
 	writePlanDependencies(out, plan.DependencyEdges, plan.ExecutionOrder)
+	writePlanConcurrency(out, plan.Concurrency)
 	writePlanGates(out, plan.Gates)
 	writePlanInvariants(out, plan.MandatoryInvariants)
 	writePlanGuarantees(out, plan.Guarantees)
@@ -108,6 +111,46 @@ func writePlanDependencies(out io.Writer, dependencies []policyplan.DependencyEd
 		fmt.Fprintf(out, "- %s -> %s source=%s reason=%s\n", dependency.DependsOn, dependency.Gate, dependency.Provenance.Source, dependency.Provenance.Reason)
 	}
 	fmt.Fprintf(out, "Execution order: %s\n", strings.Join(executionOrder, ", "))
+}
+
+func writePlanConcurrency(out io.Writer, summary policyplan.ConcurrencySummary) {
+	fmt.Fprintln(out, "Concurrency (declared only; no gates were run):")
+	fmt.Fprintf(out, "Eligible gates: %s\n", displayGateConcurrency(summary.EligibleGates))
+	fmt.Fprintf(out, "Exclusive gates: %s\n", displayGateConcurrency(summary.ExclusiveGates))
+	fmt.Fprintln(out, "Concurrency dependencies:")
+	dependencies := 0
+	for _, entry := range append(append([]policyplan.GateConcurrency(nil), summary.EligibleGates...), summary.ExclusiveGates...) {
+		for _, dependency := range entry.DependsOn {
+			fmt.Fprintf(out, "- %s -> %s\n", entry.Gate, dependency)
+			dependencies++
+		}
+	}
+	if dependencies == 0 {
+		fmt.Fprintln(out, "none")
+	}
+	if len(summary.OverlapGroups) == 0 {
+		fmt.Fprintln(out, "Overlap groups: none")
+	}
+	for _, group := range summary.OverlapGroups {
+		fmt.Fprintf(out, "Overlap group: %s reason=%s\n", displayGateList(group.Gates), group.Reason)
+	}
+	if len(summary.SerializationReasons) == 0 {
+		fmt.Fprintln(out, "Serialization reasons: none")
+	}
+	for _, finding := range summary.SerializationReasons {
+		writeConcurrencyFinding(out, finding, "Serialization reason: ")
+	}
+}
+
+func displayGateConcurrency(entries []policyplan.GateConcurrency) string {
+	if len(entries) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		parts = append(parts, fmt.Sprintf("%s (%s)", entry.Gate, entry.Reason))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func writePlanSummary(out io.Writer, plan policyplan.Plan) {
@@ -178,5 +221,5 @@ func writePlanGuarantees(out io.Writer, guarantees []policyplan.Guarantee) {
 }
 
 func writeInitUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: polis init [--repo <path>] [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--test-argv <arg> ... --coverage-argv <arg> ... --coverage-adapter <adapter> --coverage-report <path> [--coverage-threshold <percent>]] [--dry-run]")
+	fmt.Fprintln(w, "usage: polis init [--repo <path>] [--profile auto|go|custom] [--validation-level strict|standard|minimal] [--disable-gate <id> ...] [--parallel-safe <id> ...] [--test-argv <arg> ... --coverage-argv <arg> ... --coverage-adapter <adapter> --coverage-report <path> [--coverage-threshold <percent>]] [--dry-run]")
 }

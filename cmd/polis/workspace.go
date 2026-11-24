@@ -78,6 +78,7 @@ func runWorkspaceValidate(args []string, out, errOut io.Writer) int {
 		ValidationLevel: result.ValidationLevel,
 		EnabledGates:    result.EnabledGates, DisabledGates: result.DisabledGates,
 		ProducerGateStatuses: result.ProducerGateStatuses,
+		Concurrency:          &result.Concurrency,
 	}
 	reportBytes, err := json.Marshal(report)
 	if err != nil {
@@ -90,12 +91,20 @@ func runWorkspaceValidate(args []string, out, errOut io.Writer) int {
 		}
 	}
 	if *format == "json" {
-		_, _ = out.Write(reportBytes)
+		// The external checkpoint schema stays closed; the command result may
+		// add a presentation-only concurrency report beside those fields.
+		payload := map[string]any{}
+		if err := json.Unmarshal(reportBytes, &payload); err != nil {
+			return writeFailure(errOut, *format, "POLIS WORKSPACE VALIDATE", exitValidationFailed, err)
+		}
+		payload["concurrency"] = result.Concurrency
+		writeJSON(out, payload)
 		return exitPass
 	}
 	fmt.Fprintf(out, "POLIS WORKSPACE VALIDATE: PASS\nBase: %s\nTarget: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\nProducer gate statuses: %v\nWorkspace validated: yes\nDelivery artifact built: no\nDelivery artifact verified: no\n",
 		result.BaseCommit, result.TargetTree, result.ValidationLevel,
 		strings.Join(result.EnabledGates, ", "), strings.Join(result.DisabledGates, ", "), result.ProducerGateStatuses)
+	writeConcurrencyText(out, result.Concurrency)
 	if *outReport != "" {
 		fmt.Fprintf(out, "Report: %s\n", *outReport)
 	}

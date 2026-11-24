@@ -23,18 +23,19 @@ type gateCLIResult struct {
 }
 
 type gatesCLIResult struct {
-	Status                   spec.Status        `json:"status"`
-	ValidationOnly           bool               `json:"validation_only"`
-	ValidationLevel          string             `json:"validation_level"`
-	EnabledGates             []string           `json:"enabled_gates"`
-	DisabledGates            []string           `json:"disabled_gates"`
-	ExecutedGates            []string           `json:"executed_gates"`
-	GateResults              []gateCLIResult    `json:"gate_results"`
-	DeliveryArtifactBuilt    bool               `json:"delivery_artifact_built"`
-	DeliveryArtifactVerified bool               `json:"delivery_artifact_verified"`
-	DeliveryArtifactNotice   string             `json:"delivery_artifact_notice"`
-	Run                      *gaterun.Manifest  `json:"run,omitempty"`
-	Diagnostic               *diagnostic.Report `json:"diagnostic,omitempty"`
+	Status                   spec.Status            `json:"status"`
+	ValidationOnly           bool                   `json:"validation_only"`
+	ValidationLevel          string                 `json:"validation_level"`
+	EnabledGates             []string               `json:"enabled_gates"`
+	DisabledGates            []string               `json:"disabled_gates"`
+	ExecutedGates            []string               `json:"executed_gates"`
+	GateResults              []gateCLIResult        `json:"gate_results"`
+	Concurrency              spec.ConcurrencyReport `json:"concurrency"`
+	DeliveryArtifactBuilt    bool                   `json:"delivery_artifact_built"`
+	DeliveryArtifactVerified bool                   `json:"delivery_artifact_verified"`
+	DeliveryArtifactNotice   string                 `json:"delivery_artifact_notice"`
+	Run                      *gaterun.Manifest      `json:"run,omitempty"`
+	Diagnostic               *diagnostic.Report     `json:"diagnostic,omitempty"`
 }
 
 func runGates(args []string, out, errOut io.Writer) int {
@@ -109,6 +110,7 @@ func gatesResult(plan policyplan.Plan, execution policyexec.Result) gatesCLIResu
 		DisabledGates:            append([]string{}, plan.DisabledGates...),
 		ExecutedGates:            executedGates,
 		GateResults:              gateResults,
+		Concurrency:              execution.Concurrency,
 		DeliveryArtifactBuilt:    false,
 		DeliveryArtifactVerified: false,
 		DeliveryArtifactNotice:   deliveryArtifactNotice,
@@ -124,6 +126,36 @@ func safeGatePrerequisite(raw string) string {
 		}
 	}
 	return ""
+}
+
+// writeConcurrencyFinding renders one stable finding on text result surfaces.
+// Plan serialization reasons and runtime blockers share the same shape.
+func writeConcurrencyFinding(out io.Writer, finding spec.ConcurrencyFinding, prefix string) {
+	fmt.Fprintf(out, "%s%s gates=%s", prefix, finding.Reason, displayGateList(finding.Gates))
+	if finding.Detail != "" {
+		fmt.Fprintf(out, " detail=%s", finding.Detail)
+	}
+	fmt.Fprintln(out)
+}
+
+// writeConcurrencyText reports the declared diagnosis and observed scheduler
+// result on command surfaces. It never changes gate status, evidence, or
+// delivery semantics.
+func writeConcurrencyText(out io.Writer, report spec.ConcurrencyReport) {
+	fmt.Fprintf(out, "Concurrency: jobs=%d overlap_observed=%t max_concurrent=%d can_overlap=%t\n",
+		report.Jobs, report.Observation.OverlapObserved, report.Observation.MaxConcurrent, report.Diagnosis.CanOverlap)
+	launched := append([]string(nil), report.Observation.LaunchedGates...)
+	sort.Strings(launched)
+	fmt.Fprintf(out, "Concurrency launched gates: %s\n", displayGateList(launched))
+	fmt.Fprintf(out, "Concurrency eligible gates: %s\n", displayGateList(report.Diagnosis.EligibleGates))
+	if len(report.Diagnosis.Blockers) == 0 {
+		fmt.Fprintln(out, "Concurrency blockers: none")
+		return
+	}
+	fmt.Fprintln(out, "Concurrency blockers:")
+	for _, finding := range report.Diagnosis.Blockers {
+		writeConcurrencyFinding(out, finding, "- ")
+	}
 }
 
 func gateWasRun(gateID string, status spec.Status, execution policyexec.Result) bool {
@@ -170,6 +202,7 @@ func writeGatesText(out io.Writer, report gatesCLIResult) {
 		}
 		fmt.Fprintln(out)
 	}
+	writeConcurrencyText(out, report.Concurrency)
 	fmt.Fprintln(out, "Delivery artifact: not built or verified")
 	fmt.Fprintf(out, "%s\n", report.DeliveryArtifactNotice)
 	if report.Run != nil {

@@ -187,13 +187,14 @@ func runBuild(args []string, out, errOut io.Writer) int {
 		return writeFailure(errOut, *format, "POLIS BUILD", exitUsage, err)
 	}
 	if *format == "json" {
-		payload := map[string]any{"status": "PASS", "artifact": result.Path, "sha256": result.SHA256, "base_commit": result.BaseCommit, "target_tree": result.TargetTree, "validation_level": result.ValidationLevel, "enabled_gates": result.EnabledGates, "disabled_gates": result.DisabledGates, "deferred_gates": result.DeferredGates, "consumer_validation_required": result.ConsumerValidationRequired, "producer_gate_statuses": result.ProducerGateStatuses}
+		payload := map[string]any{"status": "PASS", "artifact": result.Path, "sha256": result.SHA256, "base_commit": result.BaseCommit, "target_tree": result.TargetTree, "validation_level": result.ValidationLevel, "enabled_gates": result.EnabledGates, "disabled_gates": result.DisabledGates, "deferred_gates": result.DeferredGates, "consumer_validation_required": result.ConsumerValidationRequired, "producer_gate_statuses": result.ProducerGateStatuses, "concurrency": result.Concurrency}
 		if len(result.RetainedPaths) > 0 {
 			payload["retained_paths"] = result.RetainedPaths
 		}
 		writeJSON(out, payload)
 	} else {
 		fmt.Fprintf(out, "POLIS BUILD: PASS\nArtifact: %s\nSHA256: %s\nBase: %s\nTarget: %s\nValidation level: %s\nEnabled gates: %s\nDisabled gates: %s\nDeferred gates: %s\nConsumer validation required: %t\nProducer gate statuses: %v\n", result.Path, result.SHA256, result.BaseCommit, result.TargetTree, result.ValidationLevel, strings.Join(result.EnabledGates, ", "), strings.Join(result.DisabledGates, ", "), strings.Join(result.DeferredGates, ", "), result.ConsumerValidationRequired, result.ProducerGateStatuses)
+		writeConcurrencyText(out, result.Concurrency)
 		if len(result.RetainedPaths) > 0 {
 			fmt.Fprintf(out, "Retained artifacts: %s\n", strings.Join(result.RetainedPaths, ", "))
 		}

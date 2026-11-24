@@ -14,20 +14,21 @@ const MaxWorkspaceValidationReportBytes = 1 << 20
 
 // WorkspaceValidationReport is a local, unsigned checkpoint, not a delivery artifact.
 type WorkspaceValidationReport struct {
-	SchemaVersion            int               `json:"schema_version"`
-	Status                   string            `json:"status"`
-	ValidationKind           string            `json:"validation_kind"`
-	WorkspaceValidated       bool              `json:"workspace_validated"`
-	DeliveryArtifactBuilt    bool              `json:"delivery_artifact_built"`
-	DeliveryArtifactVerified bool              `json:"delivery_artifact_verified"`
-	BaseCommit               string            `json:"base_commit"`
-	TargetTree               string            `json:"target_tree"`
-	ContractSHA256           string            `json:"contract_sha256"`
-	PolicySHA256             string            `json:"policy_sha256"`
-	ValidationLevel          string            `json:"validation_level"`
-	EnabledGates             []string          `json:"enabled_gates"`
-	DisabledGates            []string          `json:"disabled_gates"`
-	ProducerGateStatuses     map[string]Status `json:"producer_gate_statuses"`
+	SchemaVersion            int                `json:"schema_version"`
+	Status                   string             `json:"status"`
+	ValidationKind           string             `json:"validation_kind"`
+	WorkspaceValidated       bool               `json:"workspace_validated"`
+	DeliveryArtifactBuilt    bool               `json:"delivery_artifact_built"`
+	DeliveryArtifactVerified bool               `json:"delivery_artifact_verified"`
+	BaseCommit               string             `json:"base_commit"`
+	TargetTree               string             `json:"target_tree"`
+	ContractSHA256           string             `json:"contract_sha256"`
+	PolicySHA256             string             `json:"policy_sha256"`
+	ValidationLevel          string             `json:"validation_level"`
+	EnabledGates             []string           `json:"enabled_gates"`
+	DisabledGates            []string           `json:"disabled_gates"`
+	ProducerGateStatuses     map[string]Status  `json:"producer_gate_statuses"`
+	Concurrency              *ConcurrencyReport `json:"concurrency,omitempty"`
 }
 
 // DecodeWorkspaceValidationReport strictly decodes the bounded v1 checkpoint.
@@ -92,10 +93,13 @@ func requireWorkspaceValidationReportFields(raw []byte) error {
 		"contract_sha256", "policy_sha256", "validation_level", "enabled_gates",
 		"disabled_gates", "producer_gate_statuses",
 	}
-	allowed := make(map[string]struct{}, len(required))
+	allowed := make(map[string]struct{}, len(required)+1)
 	for _, field := range required {
 		allowed[field] = struct{}{}
 	}
+	// Optional additive field for the bounded concurrency report. Older v1
+	// checkpoints without it remain valid and retain their original meaning.
+	allowed["concurrency"] = struct{}{}
 	for field := range fields {
 		if _, ok := allowed[field]; !ok {
 			return fmt.Errorf("workspace validation report contains unknown field %q", field)

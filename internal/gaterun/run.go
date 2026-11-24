@@ -250,6 +250,8 @@ func Run(ctx context.Context, repo string, plan policyplan.Plan, opts Options) (
 		}
 	}
 	manifest.Status = result.Overall
+	report := result.Concurrency
+	manifest.Concurrency = &report
 	if err := manifest.seal(); err != nil {
 		return manifest, result, err
 	}
