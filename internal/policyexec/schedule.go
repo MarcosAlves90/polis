@@ -43,9 +43,18 @@ type Options struct {
 }
 
 type completion struct {
-	id         string
-	outcome    Outcome
-	evidence   []byte
+	id                 string
+	outcome            Outcome
+	evidence           []byte
+	executionStartedAt time.Time
+	finishedAt         time.Time
+}
+
+// executionInterval is the measured command execution window. Scheduler launch
+// bookkeeping and OnGateStart callbacks are not execution and must not be
+// counted as overlap.
+type executionInterval struct {
+	startedAt  time.Time
 	finishedAt time.Time
 }
 
@@ -69,9 +78,10 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 		return result
 	}
 	result.Concurrency.Diagnosis = plan.ConcurrencyDiagnosis(policyplan.ConcurrencyOptions{Jobs: opts.Jobs, Selected: opts.Selected})
-	peakConcurrent := 0
 	gates := plan.GatePolicies()
 	pending, running := map[string]bool{}, map[string]bool{}
+	workerCapWaits := map[string]bool{}
+	intervals := make([]executionInterval, 0, len(gates))
 	startedAt := map[string]time.Time{}
 	records := map[string][]byte{}
 	finished := make(chan completion, len(gates))
@@ -79,6 +89,9 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 		result.Gates[c.id] = c.outcome.Status
 		result.Outcomes[c.id] = c.outcome
 		records[c.id] = c.evidence
+		if !c.executionStartedAt.IsZero() {
+			intervals = append(intervals, executionInterval{startedAt: c.executionStartedAt, finishedAt: c.finishedAt})
+		}
 		if c.outcome.Action != "omitted" {
 			result.Overall = combine(result.Overall, c.outcome.Status)
 		}
@@ -116,8 +129,18 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 					immediate = &Outcome{Status: spec.StatusBlocked, Action: "blocked", Reason: "prerequisite " + failed + " did not pass"}
 				}
 			}
-			if immediate == nil && (len(running) >= opts.Jobs || !canOverlap(gate, gates, running)) {
-				continue
+			if immediate == nil {
+				if len(running) >= opts.Jobs {
+					// Only a gate that could otherwise overlap is truly waiting
+					// on a worker slot; exclusivity has its own reason code.
+					if canOverlap(gate, gates, running) {
+						workerCapWaits[gate.ID] = true
+					}
+					continue
+				}
+				if !canOverlap(gate, gates, running) {
+					continue
+				}
 			}
 			if immediate == nil && opts.Reuse != nil {
 				if cached, ok := opts.Reuse(gate, result); ok {
@@ -133,9 +156,6 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 			delete(pending, gate.ID)
 			running[gate.ID] = true
 			result.Concurrency.Observation.LaunchedGates = append(result.Concurrency.Observation.LaunchedGates, gate.ID)
-			if len(running) > peakConcurrent {
-				peakConcurrent = len(running)
-			}
 			startedAt[gate.ID] = time.Now()
 			progress = true
 			if opts.OnGateStart != nil {
@@ -143,8 +163,10 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 			}
 			go func(gate spec.GatePolicy) {
 				var buf bytes.Buffer
+				executionStarted := time.Now()
 				outcome := executeGate(gate, repo, &buf)
-				finished <- completion{id: gate.ID, outcome: outcome, evidence: buf.Bytes(), finishedAt: time.Now()}
+				finished <- completion{id: gate.ID, outcome: outcome, evidence: buf.Bytes(),
+					executionStartedAt: executionStarted, finishedAt: time.Now()}
 			}(gate)
 		}
 		if len(running) > 0 {
@@ -171,8 +193,19 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 		}
 	}
 	sort.Strings(result.Concurrency.Observation.LaunchedGates)
+	peakConcurrent, overlapObserved := measuredConcurrency(intervals)
 	result.Concurrency.Observation.MaxConcurrent = peakConcurrent
-	result.Concurrency.Observation.OverlapObserved = peakConcurrent > 1
+	result.Concurrency.Observation.OverlapObserved = overlapObserved
+	if opts.Jobs > 1 && len(workerCapWaits) != 0 {
+		waits := make([]string, 0, len(workerCapWaits))
+		for id := range workerCapWaits {
+			waits = append(waits, id)
+		}
+		result.Concurrency.Diagnosis.Blockers = append(result.Concurrency.Diagnosis.Blockers,
+			spec.ConcurrencyFinding{Reason: spec.ConcurrencyWorkerCap, Gates: waits,
+				Detail: fmt.Sprintf("eligible gates waited for a worker slot with jobs=%d", opts.Jobs)})
+		result.Concurrency.Diagnosis.Blockers = spec.NormalizeConcurrencyFindings(result.Concurrency.Diagnosis.Blockers)
+	}
 	if !result.Concurrency.Observation.OverlapObserved && opts.Jobs > 1 {
 		reused := make([]string, 0, len(result.Concurrency.Diagnosis.EligibleGates))
 		blocked := make([]string, 0, len(result.Concurrency.Diagnosis.EligibleGates))
@@ -203,6 +236,34 @@ func ExecutePlanWithOptions(plan policyplan.Plan, repo string, evidence io.Write
 		_, _ = evidence.Write(records[gate.ID])
 	}
 	return result
+}
+
+// measuredConcurrency derives overlap from real command execution windows.
+// Intervals are half-open: a command ending at the instant another starts is
+// serial, not concurrent. Results are independent of completion channel order.
+func measuredConcurrency(intervals []executionInterval) (int, bool) {
+	ordered := append([]executionInterval(nil), intervals...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].startedAt.Equal(ordered[j].startedAt) {
+			return ordered[i].finishedAt.Before(ordered[j].finishedAt)
+		}
+		return ordered[i].startedAt.Before(ordered[j].startedAt)
+	})
+	active := make([]time.Time, 0, len(ordered))
+	peak := 0
+	for _, interval := range ordered {
+		remaining := active[:0]
+		for _, end := range active {
+			if end.After(interval.startedAt) {
+				remaining = append(remaining, end)
+			}
+		}
+		active = append(remaining, interval.finishedAt)
+		if len(active) > peak {
+			peak = len(active)
+		}
+	}
+	return peak, peak > 1
 }
 
 func prerequisites(gate spec.GatePolicy, statuses map[string]spec.Status) (bool, string) {
